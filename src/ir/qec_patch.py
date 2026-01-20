@@ -9,7 +9,7 @@ class QECPatch(ABC):
     
     # Constants 
     STORAGE_PRECISION = 6 # Float Storage, for accurate visualization
-    GRID_SCALE = 10000 # Logic Lookup, convert the coordinates to integers for robustness
+    GRID_SCALE = 1000 # Logic Lookup, convert the coordinates to integers for robustness
 
     def __init__(self, **kwargs):
         """

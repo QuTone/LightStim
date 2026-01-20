@@ -291,27 +291,33 @@ class RotatedSurfaceCodeExtractionBlock:
             
             # 3.1 Handle X-Stabilizers (Syndrome is Control, Data is Target)
             for syn_coord in self.system.syndrome_coords_x:
-                target_data_coord = (
-                    round(syn_coord[0] + dx_x[0], 6), 
-                    round(syn_coord[1] + dx_x[1], 6)
-                    )
-                
-                if target_data_coord in self.system.data_coords:
-                    syn_idx = self.system.index_map[syn_coord]
-                    data_idx = self.system.index_map[target_data_coord]
-                    cnot_targets.extend([syn_idx, data_idx]) # Control -> Target
+                raw_target = (
+                    syn_coord[0] + dx_x[0], 
+                    syn_coord[1] + dx_x[1]
+                )
+                target_key = self.system.get_grid_key(raw_target)
+
+                if target_key in self.system.grid_map:
+                    neighbor_idx = self.system.grid_map[target_key]
+                    if neighbor_idx in self.system.data_qubit_indices:
+                        syn_idx = self.system.index_map[syn_coord]
+                        data_idx = neighbor_idx
+                        cnot_targets.extend([syn_idx, data_idx]) # Syndrome -> Data
 
             # 3.2 Handle Z-Stabilizers (Data is Control, Syndrome is Target)
             for syn_coord in self.system.syndrome_coords_z:
-                target_data_coord = (
-                    round(syn_coord[0] + dx_z[0], 6), 
-                    round(syn_coord[1] + dx_z[1], 6)
-                    )
+                raw_target = (
+                    syn_coord[0] + dx_z[0], 
+                    syn_coord[1] + dx_z[1]
+                )
+                target_key = self.system.get_grid_key(raw_target)
                 
-                if target_data_coord in self.system.data_coords:
-                    syn_idx = self.system.index_map[syn_coord]
-                    data_idx = self.system.index_map[target_data_coord]
-                    cnot_targets.extend([data_idx, syn_idx]) # Control -> Target
+                if target_key in self.system.grid_map:
+                    neighbor_idx = self.system.grid_map[target_key]
+                    if neighbor_idx in self.system.data_qubit_indices:
+                        syn_idx = self.system.index_map[syn_coord]
+                        data_idx = neighbor_idx
+                        cnot_targets.extend([data_idx, syn_idx]) # Data -> Syndrome
 
             # Apply CNOTs if any pairs exist in this tick
             if cnot_targets:

@@ -168,20 +168,23 @@ class RepetitionCodeExtractionBlock:
             self.system.transform_vector(vec) for vec in canonical_tick_deltas
         ]
 
-
         for dx_z in current_tick_deltas:
             cnot_targets = []
             
             for syn_coord in self.system.syndrome_coords:
-                target_data_coord = (
-                    round(syn_coord[0] + dx_z[0], 4), 
-                    round(syn_coord[1] + dx_z[1], 4)
-                    )
-                
-                if target_data_coord in self.system.data_coords:
-                    syn_idx = self.system.index_map[syn_coord]
-                    data_idx = self.system.index_map[target_data_coord]
-                    cnot_targets.extend([data_idx, syn_idx]) # Control -> Target
+                raw_target = (
+                    syn_coord[0] + dx_z[0], 
+                    syn_coord[1] + dx_z[1]
+                )
+                target_key = self.system.get_grid_key(raw_target)
+    
+                if target_key in self.system.grid_map:
+                    neighbor_idx = self.system.grid_map[target_key]
+                    if neighbor_idx in self.system.data_qubit_indices:
+                        syn_idx = self.system.index_map[syn_coord]
+                        data_idx = neighbor_idx
+                        # Data -> Syndrome (CNOT)
+                        cnot_targets.extend([data_idx, syn_idx])
             
             if cnot_targets:
                 self.circuit.append("CNOT", cnot_targets)

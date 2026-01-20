@@ -249,55 +249,60 @@ class UnrotatedSurfaceCodeExtractionBlock:
         # Unrotated Surface Code scheduling typically involves 4 interactions per stabilizer,
         # but the provided source uses a 6-tick schedule for avoiding conflicts.
         
-        # Format: (dx_z, dx_x)
+        # Format: (dx_x, dx_z)
         # dx_z: Offset for Z-stabilizers (Data -> Ancilla)
         # dx_x: Offset for X-stabilizers (Ancilla -> Data)
-        # (0, 0) means no operation for that type in that tick.
         canonical_tick_deltas = [
-            ((-1, 0), (0, 0)),  # Tick 1: Z checks Top
-            ((+1, 0), (0, 0)),  # Tick 2: Z checks Bottom
-            ((0, +1), (0, +1)), # Tick 3: Z checks Right / X checks Right (or Bottom depending on coord sys)
-            ((0, -1), (0, -1)), # Tick 4: Z checks Left / X checks Left
-            ((0, 0), (-1, 0)),  # Tick 5: X checks Top
-            ((0, 0), (+1, 0))   # Tick 6: X checks Bottom
+            ((0, 0), (-1, 0)),  # Tick 1
+            ((0, 0), (+1, 0)),  # Tick 2
+            ((0, +1), (0, +1)), # Tick 3
+            ((0, -1), (0, -1)), # Tick 4
+            ((-1, 0), (0, 0)),  # Tick 5
+            ((+1, 0),(0, 0))    # Tick 6
         ]
 
         current_tick_deltas = []
-        for vec_z, vec_x in canonical_tick_deltas:
+        for vec_x, vec_z in canonical_tick_deltas:
             global_vec_z = self.system.transform_vector(vec_z)
             global_vec_x = self.system.transform_vector(vec_x)
-            current_tick_deltas.append((global_vec_z, global_vec_x))
+            current_tick_deltas.append((global_vec_x, global_vec_z))
 
-        for dx_z, dx_x in current_tick_deltas:
+        for dx_x, dx_z in current_tick_deltas:
             cnot_targets = []
             
             # 3.1 Handle X-Stabilizers (Syndrome is Control, Data is Target)
             # Only process if dx_x is not (0,0)
             if dx_x != (0, 0):
                 for syn_coord in self.system.syndrome_coords_x:
-                    target_data_coord = (
-                        round(syn_coord[0] + dx_x[0], 6), 
-                        round(syn_coord[1] + dx_x[1], 6)
-                        )
-                    
-                    if target_data_coord in self.system.data_coords:
-                        syn_idx = self.system.index_map[syn_coord]
-                        data_idx = self.system.index_map[target_data_coord]
-                        cnot_targets.extend([syn_idx, data_idx]) # Control -> Target
+                    raw_target = (
+                        syn_coord[0] + dx_x[0], 
+                        syn_coord[1] + dx_x[1]
+                    )
+                    target_key = self.system.get_grid_key(raw_target)
+
+                    if target_key in self.system.grid_map:
+                        neighbor_idx = self.system.grid_map[target_key]
+                        if neighbor_idx in self.system.data_qubit_indices:
+                            syn_idx = self.system.index_map[syn_coord]
+                            data_idx = neighbor_idx
+                            cnot_targets.extend([syn_idx, data_idx]) # Syndrome -> Data
 
             # 3.2 Handle Z-Stabilizers (Data is Control, Syndrome is Target)
             # Only process if dx_z is not (0,0)
             if dx_z != (0, 0):
                 for syn_coord in self.system.syndrome_coords_z:
-                    target_data_coord = (
-                        round(syn_coord[0] + dx_z[0], 6), 
-                        round(syn_coord[1] + dx_z[1], 6)
-                        )
+                    raw_target = (
+                        syn_coord[0] + dx_z[0], 
+                        syn_coord[1] + dx_z[1]
+                    )
+                    target_key = self.system.get_grid_key(raw_target)
                     
-                    if target_data_coord in self.system.data_coords:
-                        syn_idx = self.system.index_map[syn_coord]
-                        data_idx = self.system.index_map[target_data_coord]
-                        cnot_targets.extend([data_idx, syn_idx]) # Control -> Target
+                    if target_key in self.system.grid_map:
+                        neighbor_idx = self.system.grid_map[target_key]
+                        if neighbor_idx in self.system.data_qubit_indices:
+                            syn_idx = self.system.index_map[syn_coord]
+                            data_idx = neighbor_idx
+                            cnot_targets.extend([data_idx, syn_idx]) # Data -> Syndrome
 
             # Apply CNOTs if any pairs exist in this tick
             if cnot_targets:
