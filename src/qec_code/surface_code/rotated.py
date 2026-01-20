@@ -1,6 +1,7 @@
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Literal, Set
 import stim
 from src.ir.qec_patch import QECPatch
+from src.ir.coupler import BaseCoupler
 
 # -----------------------------------------------------------------------------
 # Code Patch Class Definition
@@ -62,15 +63,36 @@ class RotatedSurfaceCode(QECPatch):
             raise ValueError("'shift' must be a tuple of two integers.")
         if self.distance_z % 2 == 0 or self.distance_x % 2 == 0:
             raise ValueError("Both 'distance_z' and 'distance_x' must be odd integers.")
+    
+    @property
+    def syndrome_coords_x(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[i] for i in sorted(self.syndrome_indices_x)]
+
+    @property
+    def syndrome_coords_z(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[i] for i in sorted(self.syndrome_indices_z)]
+
+
+    def add_qubit(self, x: float, y: float, role: Literal['data', 'syndrome_x', 'syndrome_z'], uid: Optional[int] = None) -> int:
+        uid = super().add_qubit(x, y, role, uid)
+
+        if role == 'data': # Handled by superclass already
+            pass
+        elif role == 'syndrome_x':
+            self.syndrome_indices_x.add(uid)
+        elif role == 'syndrome_z':
+            self.syndrome_indices_z.add(uid)
+        else:
+            raise ValueError(f"Invalid role: {role}")
+
+        return uid
 
     def build(self):
         d_z = self.distance_z
         d_x = self.distance_x
         
-        # Initialize helper lists for subclass specific usage
-        self.data_coords = []
-        self.syndrome_coords_x = []
-        self.syndrome_coords_z = []
+        self.syndrome_indices_x: Set[int] = set()
+        self.syndrome_indices_z: Set[int] = set()
         
         # -----------------------------------------------------------------------
         # Phase 1: Geometry Registration
@@ -81,45 +103,32 @@ class RotatedSurfaceCode(QECPatch):
                 # Odd rows: Data Qubits
                 for x in range(d_z):
                     coord = (2 * x + 1, y)
-                    self.add_qubit(*coord)
-                    self.data_coords.append(coord)
+                    self.add_qubit(*coord, role='data')
             else:
                 # Even rows: syndrome Qubits
                 # Logic copied from original to preserve exact layout
                 if y == 0: # Top row
                     for x in range((d_z - 1) // 2):
                         coord = (4 * x + 2, 0)
-                        self.add_qubit(*coord)
-                        self.syndrome_coords_x.append(coord)
-                        self.syndrome_coords.append(coord)
+                        self.add_qubit(*coord, role='syndrome_x')
                 elif y == 2 * d_x: # Bottom row
                     for x in range((d_z - 1) // 2):
                         coord = (4 * x + 4, 2 * d_x)
-                        self.add_qubit(*coord)
-                        self.syndrome_coords_x.append(coord)
-                        self.syndrome_coords.append(coord)
+                        self.add_qubit(*coord, role='syndrome_x')
                 elif y % 4 == 2: # Middle rows type A
                     for x in range((d_z + 1) // 2):
                         coord = (4 * x + 2, y) # Z syndrome
-                        self.add_qubit(*coord)
-                        self.syndrome_coords_z.append(coord)
-                        self.syndrome_coords.append(coord)
+                        self.add_qubit(*coord, role='syndrome_z')
                     for x in range((d_z - 1) // 2):
                         coord = (4 * x + 4, y) # X syndrome
-                        self.add_qubit(*coord)
-                        self.syndrome_coords_x.append(coord)
-                        self.syndrome_coords.append(coord)
+                        self.add_qubit(*coord, role='syndrome_x')
                 elif y % 4 == 0: # Middle rows type B
                     for x in range((d_z + 1) // 2):
                         coord = (4 * x, y) # Z syndrome
-                        self.add_qubit(*coord)
-                        self.syndrome_coords_z.append(coord)
-                        self.syndrome_coords.append(coord)
+                        self.add_qubit(*coord, role='syndrome_z')
                     for x in range((d_z - 1) // 2):
                         coord = (4 * x + 2, y) # X syndrome
-                        self.add_qubit(*coord)
-                        self.syndrome_coords_x.append(coord)
-                        self.syndrome_coords.append(coord)
+                        self.add_qubit(*coord, role='syndrome_x')
 
         # -----------------------------------------------------------------------
         # Phase 2: Physics Construction (Stabilizers)
@@ -198,43 +207,14 @@ class RotatedSurfaceCode(QECPatch):
         if self.shift != (0, 0):
             self.shift_coords(*self.shift)
 
-    # --- Helpers ---
-
-    def shift_coords(self, dx: float, dy: float):
-        """Override to update subclass-specific lists"""
-        # 1. Update Master Maps via Base Class
-        super().shift_coords(dx, dy)
-        
-        # 2. Update Subclass Lists
-        self.syndrome_coords_x = self._apply_shift_to_list(self.syndrome_coords_x, dx, dy)
-        self.syndrome_coords_z = self._apply_shift_to_list(self.syndrome_coords_z, dx, dy)
-        
-        # Note: Data coords and syndrome coords are already updated in the base class. 
-        # Logicals and Stabilizers are index-based, so they don't need updates!
-
-    def transpose_coords(self):
-        """
-        Reflects the surface code layout across y=x.
-        Logical operators are physically rotated but their code distance remains unchanged.
-        """
-        # 1. Base class: Update Master Maps, data_coords, syndrome_coords
-        super().transpose_coords()
-
-        # 2. Update Subclass Lists
-        self.syndrome_coords_x = self._apply_transpose_to_list(self.syndrome_coords_x)
-        self.syndrome_coords_z = self._apply_transpose_to_list(self.syndrome_coords_z)
-        
-        # 3. NO swapping of distances!
-        # self.distance_z is still the weight of Logical Z (now vertical).
-
     def get_info(self):
         info = super().get_info()
         info.update({
             'distance_z': self.distance_z,
             'distance_x': self.distance_x,
-            'num_data_qubits': len(self.data_coords),
-            'num_x_syndromes': len(self.syndrome_coords_x),
-            'num_z_syndromes': len(self.syndrome_coords_z),
+            'num_data_qubits': len(self.data_qubit_indices),
+            'num_x_syndromes': len(self.syndrome_indices_x),
+            'num_z_syndromes': len(self.syndrome_indices_z),
             'data_coords': self.data_coords,
             'syndrome_coords_z': self.syndrome_coords_z,
             'syndrome_coords_x': self.syndrome_coords_x,
@@ -293,19 +273,28 @@ class RotatedSurfaceCodeExtractionBlock:
         # Format: ((dx_x, dy_x), (dx_z, dy_z))
         # dx_x/dy_x is the offset for X-stabilizer checks
         # dx_z/dy_z is the offset for Z-stabilizer checks
-        tick_deltas = [
+        canonical_tick_deltas = [
             ((+1, +1), (+1, +1)), # Tick 1: NE interaction
             ((-1, +1), (+1, -1)), # Tick 2: NW / SE interaction
             ((+1, -1), (-1, +1)), # Tick 3: SE / NW interaction
             ((-1, -1), (-1, -1))  # Tick 4: SW interaction
         ]
 
-        for dx_x, dx_z in tick_deltas:
+        current_tick_deltas = []
+        for vec_z, vec_x in canonical_tick_deltas:
+            global_vec_z = self.system.transform_vector(vec_z)
+            global_vec_x = self.system.transform_vector(vec_x)
+            current_tick_deltas.append((global_vec_z, global_vec_x))
+
+        for dx_x, dx_z in current_tick_deltas:
             cnot_targets = []
             
             # 3.1 Handle X-Stabilizers (Syndrome is Control, Data is Target)
             for syn_coord in self.system.syndrome_coords_x:
-                target_data_coord = (syn_coord[0] + dx_x[0], syn_coord[1] + dx_x[1])
+                target_data_coord = (
+                    round(syn_coord[0] + dx_x[0], 6), 
+                    round(syn_coord[1] + dx_x[1], 6)
+                    )
                 
                 if target_data_coord in self.system.data_coords:
                     syn_idx = self.system.index_map[syn_coord]
@@ -314,7 +303,10 @@ class RotatedSurfaceCodeExtractionBlock:
 
             # 3.2 Handle Z-Stabilizers (Data is Control, Syndrome is Target)
             for syn_coord in self.system.syndrome_coords_z:
-                target_data_coord = (syn_coord[0] + dx_z[0], syn_coord[1] + dx_z[1])
+                target_data_coord = (
+                    round(syn_coord[0] + dx_z[0], 6), 
+                    round(syn_coord[1] + dx_z[1], 6)
+                    )
                 
                 if target_data_coord in self.system.data_coords:
                     syn_idx = self.system.index_map[syn_coord]
@@ -337,3 +329,31 @@ class RotatedSurfaceCodeExtractionBlock:
         self.circuit.append("M", syn_indices)
         
         # Note: No final TICK here. CircuitBuilder controls the flow.
+
+
+# -----------------------------------------------------------------------------
+# ZZ Coupler
+# -----------------------------------------------------------------------------
+class RotatedZZCoupler(BaseCoupler):
+    """
+    Connects two RotatedSurfaceCode patches horizontally to measure Logical ZZ.
+    It stitches the rightmost Z-boundary of the left patch to the leftmost Z-boundary of the right patch.
+    It accommodates the case where two patches have different code distances.
+    """
+    def __init__(self, name: str, left_patch: RotatedSurfaceCode, right_patch: RotatedSurfaceCode):
+        # 注意：这里我们不需要额外的 offset 参数，因为我们假设 left_patch 和 right_patch
+        # 已经在 System 里有了确定的 Global Coordinates (通过它們各自的 shift 参数)。
+        # Coupler 将直接读取它们的 absolute coordinates 来计算缝隙。
+        
+        self.left_patch = left_patch
+        self.right_patch = right_patch
+        
+        # 初始化基类
+        super().__init__(name)
+        
+        # 立即构建
+        self.build()
+
+    def build(self):
+        # 这里将是你实现几何计算的地方
+        pass

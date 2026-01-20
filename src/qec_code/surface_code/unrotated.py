@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Literal, Set
 import stim
 from src.ir.qec_patch import QECPatch
 
@@ -65,17 +65,35 @@ class UnrotatedSurfaceCode(QECPatch):
         if self.distance_z < 2 or self.distance_x < 2:
             raise ValueError("Code distance must be at least 2.")
 
+    @property
+    def syndrome_coords_x(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[i] for i in sorted(self.syndrome_indices_x)]
+
+    @property
+    def syndrome_coords_z(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[i] for i in sorted(self.syndrome_indices_z)]
+
+    def add_qubit(self, x: float, y: float, role: Literal['data', 'syndrome_x', 'syndrome_z'], uid: Optional[int] = None) -> int:
+        uid = super().add_qubit(x, y, role, uid)
+
+        if role == 'data': # Handled by superclass already
+            pass
+        elif role == 'syndrome_x':
+            self.syndrome_indices_x.add(uid)
+        elif role == 'syndrome_z':
+            self.syndrome_indices_z.add(uid)
+        else:
+            raise ValueError(f"Invalid role: {role}")
+
+        return uid
+
+
     def build(self):
         dz = self.distance_z
         dx = self.distance_x
-        
-        # Initialize helper lists (Terminology: Syndrome instead of Ancilla)
-        self.data_coords = []
-        self.syndrome_coords_x = []
-        self.syndrome_coords_z = []
-        
-        # Populate the base class's main list (assuming base class now uses syndrome_coords)
-        self.syndrome_coords = [] 
+
+        self.syndrome_indices_x: Set[int] = set()
+        self.syndrome_indices_z: Set[int] = set()
 
         # -----------------------------------------------------------------------
         # Phase 1: Geometry Registration
@@ -87,29 +105,23 @@ class UnrotatedSurfaceCode(QECPatch):
                 # Z-syndromes at (2x + 1, y)
                 for x in range(dz - 1):
                     coord = (2 * x + 1, y)
-                    self.add_qubit(*coord)
-                    self.syndrome_coords_x.append(coord)
-                    self.syndrome_coords.append(coord)
+                    self.add_qubit(*coord, role='syndrome_x')
                 
                 # Data qubits at (2x, y)
                 for x in range(dz):
                     coord = (2 * x, y)
-                    self.add_qubit(*coord)
-                    self.data_coords.append(coord)
+                    self.add_qubit(*coord, role='data')
             else:
                 # Odd rows: Contains Z-syndromes and Data qubits
                 # Z-syndromes at (2x, y)
                 for x in range(dz):
                     coord = (2 * x, y)
-                    self.add_qubit(*coord)
-                    self.syndrome_coords_z.append(coord)
-                    self.syndrome_coords.append(coord)
+                    self.add_qubit(*coord, role='syndrome_z')
                 
                 # Data qubits at (2x + 1, y)
                 for x in range(dz - 1):
                     coord = (2 * x + 1, y)
-                    self.add_qubit(*coord)
-                    self.data_coords.append(coord)
+                    self.add_qubit(*coord, role='data')
 
         # -----------------------------------------------------------------------
         # Phase 2: Physics Construction (Stabilizers)
@@ -171,36 +183,6 @@ class UnrotatedSurfaceCode(QECPatch):
         if self.shift != (0, 0):
             self.shift_coords(*self.shift)
         
-
-
-    # --- Helpers ---
-
-    def shift_coords(self, dx: float, dy: float):
-        """
-        Override to update subclass-specific lists.
-        Note: self.data_coords and self.syndrome_coords are updated by the base class.
-        """
-        # 1. Update Master Maps via Base Class
-        super().shift_coords(dx, dy)
-        
-        # 2. Update Subclass Lists (Specific Syndrome Types)
-        self.syndrome_coords_x = self._apply_shift_to_list(self.syndrome_coords_x, dx, dy)
-        self.syndrome_coords_z = self._apply_shift_to_list(self.syndrome_coords_z, dx, dy)
-
-    def transpose_coords(self):
-        """
-        Reflects the surface code layout across y=x.
-        Logical operators are physically rotated but their code distance remains unchanged.
-        """
-        # 1. Base class: Update Master Maps, data_coords, syndrome_coords
-        super().transpose_coords()
-
-        # 2. Update Subclass Lists
-        self.syndrome_coords_x = self._apply_transpose_to_list(self.syndrome_coords_x)
-        self.syndrome_coords_z = self._apply_transpose_to_list(self.syndrome_coords_z)
-        
-        # 3. NO swapping of distances!
-        # self.distance_z is still the weight of Logical Z (now vertical).
 
     def get_info(self):
         info = super().get_info()
@@ -271,7 +253,7 @@ class UnrotatedSurfaceCodeExtractionBlock:
         # dx_z: Offset for Z-stabilizers (Data -> Ancilla)
         # dx_x: Offset for X-stabilizers (Ancilla -> Data)
         # (0, 0) means no operation for that type in that tick.
-        tick_deltas = [
+        canonical_tick_deltas = [
             ((-1, 0), (0, 0)),  # Tick 1: Z checks Top
             ((+1, 0), (0, 0)),  # Tick 2: Z checks Bottom
             ((0, +1), (0, +1)), # Tick 3: Z checks Right / X checks Right (or Bottom depending on coord sys)
@@ -280,14 +262,23 @@ class UnrotatedSurfaceCodeExtractionBlock:
             ((0, 0), (+1, 0))   # Tick 6: X checks Bottom
         ]
 
-        for dx_z, dx_x in tick_deltas:
+        current_tick_deltas = []
+        for vec_z, vec_x in canonical_tick_deltas:
+            global_vec_z = self.system.transform_vector(vec_z)
+            global_vec_x = self.system.transform_vector(vec_x)
+            current_tick_deltas.append((global_vec_z, global_vec_x))
+
+        for dx_z, dx_x in current_tick_deltas:
             cnot_targets = []
             
             # 3.1 Handle X-Stabilizers (Syndrome is Control, Data is Target)
             # Only process if dx_x is not (0,0)
             if dx_x != (0, 0):
                 for syn_coord in self.system.syndrome_coords_x:
-                    target_data_coord = (syn_coord[0] + dx_x[0], syn_coord[1] + dx_x[1])
+                    target_data_coord = (
+                        round(syn_coord[0] + dx_x[0], 6), 
+                        round(syn_coord[1] + dx_x[1], 6)
+                        )
                     
                     if target_data_coord in self.system.data_coords:
                         syn_idx = self.system.index_map[syn_coord]
@@ -298,7 +289,10 @@ class UnrotatedSurfaceCodeExtractionBlock:
             # Only process if dx_z is not (0,0)
             if dx_z != (0, 0):
                 for syn_coord in self.system.syndrome_coords_z:
-                    target_data_coord = (syn_coord[0] + dx_z[0], syn_coord[1] + dx_z[1])
+                    target_data_coord = (
+                        round(syn_coord[0] + dx_z[0], 6), 
+                        round(syn_coord[1] + dx_z[1], 6)
+                        )
                     
                     if target_data_coord in self.system.data_coords:
                         syn_idx = self.system.index_map[syn_coord]

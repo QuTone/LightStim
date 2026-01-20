@@ -51,10 +51,6 @@ class RepetitionCode(QECPatch):
 
     def build(self):
         d = self.distance
-        
-        # Initialize lists
-        self.data_coords = []
-        self.syndrome_coords = []
 
         # -----------------------------------------------------------------------
         # Phase 1: Geometry Registration (Linear Chain at y=0)
@@ -62,12 +58,7 @@ class RepetitionCode(QECPatch):
         # Total length = 2*d - 1
         for x in range(2 * d - 1):
             coord = (x, 0)
-            self.add_qubit(*coord)
-            
-            if x % 2 == 0:
-                self.data_coords.append(coord)
-            else:
-                self.syndrome_coords.append(coord)
+            self.add_qubit(*coord, role='data' if x % 2 == 0 else 'syndrome')
 
         # -----------------------------------------------------------------------
         # Phase 2: Physics Construction (Stabilizers)
@@ -167,51 +158,36 @@ class RepetitionCodeExtractionBlock:
         # Injectors (like CodeCapacity) look for this to inject errors on data qubits
         self.circuit.append("TICK", tag="SE_start") 
 
-        # --- Step 2: CNOT Layer 1 (Left Neighbor) ---
-        # According to source: "First layer of CNOTs from data to ancilla"
-        # Based on layout, we assume this is Left Data -> Syndrome
-        cnot_targets_1 = []
-        
-        for syn_coord in self.system.syndrome_coords:
-            # syn_coord is (x, 0)
-            # Left neighbor data is at (x-1, 0)
-            left_data_coord = (syn_coord[0] - 1, 0)
-            
-            # Check if neighbor exists and is a data qubit
-            if left_data_coord in self.system.data_coords:
-                syn_idx = self.system.index_map[syn_coord]
-                data_idx = self.system.index_map[left_data_coord]
-                
-                # Z-Stabilizer: Data is Control, Syndrome is Target
-                cnot_targets_1.extend([data_idx, syn_idx])
-        
-        if cnot_targets_1:
-            self.circuit.append("CNOT", cnot_targets_1)
-        
-        self.circuit.append("TICK")
+        # --- Step 2: CNOT Layers ---
+        canonical_tick_deltas = [
+            (-1, 0),  # Tick 1: Z checks Left
+            (+1, 0)   # Tick 2: Z checks Right
+        ]
 
-        # --- Step 3: CNOT Layer 2 (Right Neighbor) ---
-        # According to source: "Second layer... reverse order" -> Right Data -> Syndrome
-        cnot_targets_2 = []
-        
-        for syn_coord in self.system.syndrome_coords:
-            # Right neighbor data is at (x+1, 0)
-            right_data_coord = (syn_coord[0] + 1, 0)
-            
-            if right_data_coord in self.system.data_coords:
-                syn_idx = self.system.index_map[syn_coord]
-                data_idx = self.system.index_map[right_data_coord]
-                
-                # Z-Stabilizer: Data is Control, Syndrome is Target
-                cnot_targets_2.extend([data_idx, syn_idx])
-        
-        if cnot_targets_2:
-            self.circuit.append("CNOT", cnot_targets_2)
-            
-        self.circuit.append("TICK")
+        current_tick_deltas = [
+            self.system.transform_vector(vec) for vec in canonical_tick_deltas
+        ]
 
-        # --- Step 4: Measurement ---
-        # Measure all syndrome qubits
-        # Note: Source used 'MR', but we split into 'R' at start and 'M' at end
-        # to fit the standard loop structure better.
+
+        for dx_z in current_tick_deltas:
+            cnot_targets = []
+            
+            for syn_coord in self.system.syndrome_coords:
+                target_data_coord = (
+                    round(syn_coord[0] + dx_z[0], 4), 
+                    round(syn_coord[1] + dx_z[1], 4)
+                    )
+                
+                if target_data_coord in self.system.data_coords:
+                    syn_idx = self.system.index_map[syn_coord]
+                    data_idx = self.system.index_map[target_data_coord]
+                    cnot_targets.extend([data_idx, syn_idx]) # Control -> Target
+            
+            if cnot_targets:
+                self.circuit.append("CNOT", cnot_targets)
+            
+            self.circuit.append("TICK")
+
+        # --- Step 3: Measurement ---
+        # Measure all syndrome qubits in Z basis
         self.circuit.append("M", syn_indices)

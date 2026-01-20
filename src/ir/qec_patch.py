@@ -1,9 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, List, Set, Optional
+from typing import Tuple, Dict, List, Set, Optional, Any, Literal
 import stim
 import numpy as np
+import math
+
 
 class QECPatch(ABC):
+    
+    # Constants 
+    STORAGE_PRECISION = 6 # Float Storage, for accurate visualization
+    GRID_SCALE = 10000 # Logic Lookup, convert the coordinates to integers for robustness
+
     def __init__(self, **kwargs):
         """
         Base class for QEC Patches (Codes).
@@ -15,18 +22,21 @@ class QECPatch(ABC):
         # --- 1. Geometry Containers (The "Where") ---
         # Master source of truth for coordinates
         self.qubit_coords: Dict[int, Tuple[float, float]] = {} 
+
+        self.data_qubit_indices: Set[int] = set()
+        self.syndrome_qubit_indices: Set[int] = set()
+
         self.index_map: Dict[Tuple[float, float], int] = {}
-        
-        # Helper lists for visualization/classification (Optional but recommended)
-        self.data_coords: List[Tuple[float, float]] = []
-        self.syndrome_coords: List[Tuple[float, float]] = []
+        self.grid_map: Dict[Tuple[int, int], int] = {}
         
         # --- 2. Physics Containers (The "What") ---
         # Master source of truth for error correction properties
         # Store as stim.PauliString for efficiency
-        self.stabilizers: List[stim.PauliString] = [] 
-        self.logical_ops: List[stim.PauliString] = [] 
+        self.stabilizers: List[Dict[str, Any]] = [] 
+        self.logical_ops: List[Dict[str, Any]] = [] 
         self.num_logicals: int = 0
+        self.rotation_angle: float = 0.0
+        self.is_transposed: bool = False
         
         # --- 3. Build Process ---
         self.params = kwargs
@@ -37,6 +47,14 @@ class QECPatch(ABC):
     def num_qubits(self) -> int:
         """Dynamic property that returns the current number of qubits."""
         return len(self.qubit_coords)
+
+    @property
+    def data_coords(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[i] for i in sorted(self.data_qubit_indices)]
+    
+    @property
+    def syndrome_coords(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[i] for i in sorted(self.syndrome_qubit_indices)]
 
     @classmethod
     def from_config(cls, config: Dict[str, any]) -> 'QECPatch':
@@ -54,25 +72,47 @@ class QECPatch(ABC):
         1. Call self.add_qubit(x, y) to register coordinates.
         2. Construct stim.PauliString and append to self.stabilizers and self.logical_ops.
         """
-        pass
+        raise NotImplementedError("Subclass must implement this method")
 
+    def _rebuild_grid_map(self):
+        """
+        Refreshes self.grid_map based on current self.qubit_coords.
+        Call this whenever coordinates change!
+        """
+        self.grid_map = {}
+        for idx, coord in self.qubit_coords.items():
+            key = self.get_grid_key(coord)
+            self.grid_map[key] = idx
+    
     # --- Geometry Helper Methods ---
 
-    def add_qubit(self, x: float, y: float, is_data: bool = True) -> int:
+    def add_qubit(self, x: float, y: float, role: Literal['data', 'syndrome', 'syndrome_x', 'syndrome_z'], uid: Optional[int] = None) -> int:
         """
-        Register a qubit. Returns its assigned integer index.
+        Register a qubit. Returns its assigned integer index (uid).
+        Update the qubit coords and 
         Use this in your subclass build() loop.
         """
-        if (x, y) in self.index_map:
-            return self.index_map[(x, y)]
+        pos = self.snap_coord((x, y))
+
+        if pos in self.index_map:
+            return self.index_map[pos]
         
-        idx = len(self.qubit_coords)
-        self.qubit_coords[idx] = (x, y)
-        self.index_map[(x, y)] = idx
+        if uid is None:
+            uid = len(self.qubit_coords)
+
+        self.qubit_coords[uid] = pos
+        self.index_map[pos] = uid
+        grid_key = self.get_grid_key(pos)
+        self.grid_map[grid_key] = uid
         
-        # Optional: categorize automatically if you want, 
-        # or let subclass handle data/syndrome lists manually.
-        return idx
+        if role == 'data':
+            self.data_qubit_indices.add(uid)
+        elif role.startswith('syndrome'):
+            self.syndrome_qubit_indices.add(uid)
+        else:
+            raise ValueError(f"Invalid role: {role}")
+
+        return uid
 
     @staticmethod
     def _apply_shift_to_list(coords_list: List[Tuple[float, float]], dx: float, dy: float) -> List[Tuple[float, float]]:
@@ -83,25 +123,105 @@ class QECPatch(ABC):
     def _apply_transpose_to_list(coords_list: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
         """Helper: swaps x and y for a list of coordinates."""
         return [(y, x) for (x, y) in coords_list]
+    
+    @staticmethod
+    def _rotate_transform(pos: Tuple[float, float], theta: float, center: Tuple[float, float]) -> Tuple[float, float]:
+        """Helper to transform a single point."""
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        cx, cy = center
+        x, y = pos
+        dx, dy = x - cx, y - cy
+        
+        # Counter-Clockwise Rotation Matrix application
+        nx = dx * cos_t - dy * sin_t
+        ny = dx * sin_t + dy * cos_t
+        
+        return QECPatch.snap_coord((nx + cx, ny + cy))
+    
+    @staticmethod
+    def _apply_rotation_to_list(coord_list: List[Tuple[float, float]], theta: float, center: Tuple[float, float]) -> List[Tuple[float, float]]:
+        """Helper to transform a list of coordinates."""
+        return [QECPatch._rotate_transform(c, theta, center) for c in coord_list]
 
+    @staticmethod
+    def snap_coord(pos: Tuple[float, float]) -> Tuple[float, float]:
+        """
+        Cleans floating point noise for storage and visualization.
+        Retains high precision (e.g., 6 decimals).
+        """
+        x, y = pos
+        nx = round(x, QECPatch.STORAGE_PRECISION)
+        ny = round(y, QECPatch.STORAGE_PRECISION)
+        # eliminate -0.0
+        if nx == -0.0: nx = 0.0
+        if ny == -0.0: ny = 0.0
+        return (nx, ny)
+    
+    @staticmethod
+    def get_grid_key(pos: Tuple[float, float]) -> Tuple[int, int]:
+        """
+        Converts a float coordinate to a robust INTEGER key.
+        Includes epsilon bias to fix rounding cliffs (e.g. .5 cases).
+        """
+        x, y = pos
+        epsilon = 1e-7
+        
+        ix = int(round((x + epsilon) * QECPatch.GRID_SCALE))
+        iy = int(round((y + epsilon) * QECPatch.GRID_SCALE))
+        return (ix, iy)
 
+    def transform_vector(self, local_vec: Tuple[float, float]) -> Tuple[float, float]:
+        """
+        Transforms a LOCAL interaction vector (delta) into a GLOBAL vector
+        based on the patch's current orientation (transpose + rotation).
+        
+        Args:
+            local_vec: (dx, dy) in the canonical local frame.
+        
+        Returns:
+            (gx, gy) in the global frame.
+        """
+        dx, dy = local_vec
+
+        # 1. Handle Transpose (Reflection across y=x)
+        # If transposed, local x becomes global y, local y becomes global x
+        if getattr(self, 'is_transposed', False):
+            dx, dy = dy, dx
+        
+        # 2. Handle Rotation
+        # Use the static helper, BUT use (0,0) as center because vectors verify direction, not position.
+        theta = getattr(self, 'rotation_angle', 0.0)
+        
+        if abs(theta) < 1e-6:
+            return (dx, dy)
+        
+        # Reuse your existing static method
+        return self._rotate_transform((dx, dy), center=(0, 0), theta=theta)
+
+    # --- Coordinate Transformation Methods ---
     def shift_coords(self, dx: float, dy: float):
         """
         Base implementation: updates the MASTER records.
         """
         # 1. Update Master Maps (qubit_coords, index_map)
         new_coords = {}
-        new_map = {}
+
         for idx, (x, y) in self.qubit_coords.items():
             nx, ny = x + dx, y + dy
-            new_coords[idx] = (nx, ny)
-            new_map[(nx, ny)] = idx
-        self.qubit_coords = new_coords
-        self.index_map = new_map
+            new_coords[idx] = self.snap_coord((nx, ny))
 
-        # 2. Update Common Lists (Known to Base)
-        self.data_coords = self._apply_shift_to_list(self.data_coords, dx, dy)
-        self.syndrome_coords = self._apply_shift_to_list(self.syndrome_coords, dx, dy)
+        self.qubit_coords = new_coords
+
+        self.index_map = {pos: idx for idx, pos in self.qubit_coords.items()}
+        self._rebuild_grid_map()
+
+        # 3. Update syndrome coords for the stabilizers
+        for stab in self.stabilizers:
+            if 'syn_idx' in stab:
+                idx = stab['syn_idx']
+                if idx in self.qubit_coords:
+                    stab['syn_coord'] = self.qubit_coords[idx]
         
         # Note: We do NOT need to update self.stabilizers or self.logicals 
         # because they rely on qubit indices, which haven't changed!
@@ -113,18 +233,74 @@ class QECPatch(ABC):
         """
         # 1. Update Master Maps (qubit_coords, index_map)
         new_coords = {}
-        new_map = {}
+    
         for idx, (x, y) in self.qubit_coords.items():
             nx, ny = y, x # Swap!
-            new_coords[idx] = (nx, ny)
-            new_map[(nx, ny)] = idx
+            new_coords[idx] = self.snap_coord((nx, ny))
         
         self.qubit_coords = new_coords
-        self.index_map = new_map
 
-        # 2. Update Common Lists
-        self.data_coords = self._apply_transpose_to_list(self.data_coords)
-        self.syndrome_coords = self._apply_transpose_to_list(self.syndrome_coords)
+        # 2. Rebuild the lookup maps
+        self.index_map = {pos: idx for idx, pos in self.qubit_coords.items()}
+        self._rebuild_grid_map()
+        
+        # 3. Update syndrome coords for the stabilizers
+        for stab in self.stabilizers:
+            if 'syn_idx' in stab:
+                idx = stab['syn_idx']
+                if idx in self.qubit_coords:
+                    stab['syn_coord'] = self.qubit_coords[idx]
+        
+        self.is_transposed = not self.is_transposed
+    
+    def rotate_coords(self, theta: float, center: Optional[Tuple[float, float]] = None):
+        """
+        Rotates the entire patch around a 'center' point by 'theta' (radians, Counter-Clockwise, from x-axis to y-axis).
+        
+        Math:
+        To rotate clockwise by theta:
+        x' = cx + (x-cx)cos(theta) + (y-cy)sin(theta)
+        y' = cy - (x-cx)sin(theta) + (y-cy)cos(theta)
+        """
+        # 1. Determine Center
+        if center is None:
+            # Calculate geometric center (centroid of the bounding box)
+            all_x = [c[0] for c in self.qubit_coords.values()]
+            all_y = [c[1] for c in self.qubit_coords.values()]
+            
+            if not all_x: # Empty patch
+                center = (0.0, 0.0)
+            else:
+                min_x, max_x = min(all_x), max(all_x)
+                min_y, max_y = min(all_y), max(all_y)
+                center = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+
+        # 2. Update Master Maps (qubit_coords, index_map)
+        new_coords = {}
+
+        for idx, coord in self.qubit_coords.items():
+            new_coord = self._rotate_transform(coord, theta, center)
+            new_coords[idx] = new_coord
+            
+        self.qubit_coords = new_coords
+
+        # 3. Rebuild the lookup maps
+        self.index_map = {pos: idx for idx, pos in self.qubit_coords.items()}
+        self._rebuild_grid_map()
+
+        # 4. Update Stabilizers (Coordinate Metadata)
+        for stab in self.stabilizers:
+            if 'syn_idx' in stab:
+                idx = stab['syn_idx']
+                if idx in self.qubit_coords:
+                     stab['syn_coord'] = self.qubit_coords[idx] # Avoid double calculation
+                else:
+                    raise ValueError(f"Synaptic index {idx} not found in qubit coordinates.")
+            else:
+                raise ValueError(f"Stabilizer {stab} does not have a syndrome qubit index.")
+
+        # 5. Update accumulated rotation angle and rebuild grid map
+        self.rotation_angle = (self.rotation_angle + theta) % (2 * np.pi)
 
     # --- Algebraic Helper Methods (The Bridge) ---
 
@@ -166,7 +342,9 @@ class QECPatch(ABC):
             'code_name': self.__class__.__name__,
             'num_qubits': len(self.qubit_coords),
             'num_stabilizers': len(self.stabilizers),
-            'params': self.params
+            'params': self.params,
+            'is_transposed': self.is_transposed,
+            'rotation_angle': self.rotation_angle,
         }
     
     # --- Stim Helper Methods for Pauli Strings ---
@@ -207,7 +385,7 @@ class QECPatch(ABC):
         logical_op_record  = {
             "pauli": ps,
             "type": pauli_type, # "X", "Z"
-            "indices": data_indices
+            "data_indices": data_indices
         }
         
         self.logical_ops.append(logical_op_record)
