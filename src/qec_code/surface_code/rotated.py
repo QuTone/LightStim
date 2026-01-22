@@ -1,10 +1,10 @@
 from typing import Tuple, Dict, List, Optional, Literal, Set
 import stim
 from src.ir.qec_patch import QECPatch
-from src.ir.coupler import BaseCoupler
+from src.ir.coupler import LogicalCoupler
 
 # -----------------------------------------------------------------------------
-# Code Patch Class Definition
+# Part 1. Code Patch Class Definition
 # -----------------------------------------------------------------------------
 class RotatedSurfaceCode(QECPatch):
     """
@@ -229,7 +229,7 @@ class RotatedSurfaceCode(QECPatch):
 
 
 # -----------------------------------------------------------------------------
-# Syndrome Extraction Block
+# Part 2. Syndrome Extraction Block
 # -----------------------------------------------------------------------------
 class RotatedSurfaceCodeExtractionBlock:
     """
@@ -256,6 +256,8 @@ class RotatedSurfaceCodeExtractionBlock:
         self._build_circuit()
 
     def _build_circuit(self):
+
+        is_system = hasattr(self.system, 'patches') and hasattr(self.system, 'spatial_map')
         # --- Step 1: Reset Syndrome Qubits ---
         # Reset all syndrome qubits to |0> (Z basis)
         syn_indices = [self.system.index_map[c] for c in self.system.syndrome_coords]
@@ -280,43 +282,55 @@ class RotatedSurfaceCodeExtractionBlock:
             ((-1, -1), (-1, -1))  # Tick 4: SW interaction
         ]
 
-        current_tick_deltas = []
-        for vec_z, vec_x in canonical_tick_deltas:
-            global_vec_z = self.system.transform_vector(vec_z)
-            global_vec_x = self.system.transform_vector(vec_x)
-            current_tick_deltas.append((global_vec_z, global_vec_x))
+        # current_tick_deltas = []
+        # for vec_z, vec_x in canonical_tick_deltas:
+        #     global_vec_z = self.system.transform_vector(vec_z)
+        #     global_vec_x = self.system.transform_vector(vec_x)
+        #     current_tick_deltas.append((global_vec_z, global_vec_x))
 
-        for dx_x, dx_z in current_tick_deltas:
+        for dx_x, dx_z in canonical_tick_deltas:
             cnot_targets = []
             
             # 3.1 Handle X-Stabilizers (Syndrome is Control, Data is Target)
             for syn_coord in self.system.syndrome_coords_x:
+                if is_system:
+                    owner_patch = self.system.patches[self.system.spatial_map[syn_coord]][0]
+                else:
+                    owner_patch = self.system
+                dx_x_global = owner_patch.transform_vector(dx_x)
                 raw_target = (
-                    syn_coord[0] + dx_x[0], 
-                    syn_coord[1] + dx_x[1]
+                    syn_coord[0] + dx_x_global[0], 
+                    syn_coord[1] + dx_x_global[1]
                 )
-                target_key = self.system.get_grid_key(raw_target)
+                target_key = owner_patch.get_grid_key(raw_target)
 
-                if target_key in self.system.grid_map:
-                    neighbor_idx = self.system.grid_map[target_key]
-                    if neighbor_idx in self.system.data_qubit_indices:
+                if target_key in owner_patch.grid_map:
+                    neighbor_idx = owner_patch.grid_map[target_key]
+                    if neighbor_idx in owner_patch.data_qubit_indices:
                         syn_idx = self.system.index_map[syn_coord]
-                        data_idx = neighbor_idx
+                        data_coord = owner_patch.qubit_coords[neighbor_idx]
+                        data_idx = self.system.index_map[data_coord]
                         cnot_targets.extend([syn_idx, data_idx]) # Syndrome -> Data
 
             # 3.2 Handle Z-Stabilizers (Data is Control, Syndrome is Target)
             for syn_coord in self.system.syndrome_coords_z:
+                if is_system:
+                    owner_patch = self.system.patches[self.system.spatial_map[syn_coord]][0]
+                else:
+                    owner_patch = self.system
+                dx_z_global = owner_patch.transform_vector(dx_z)
                 raw_target = (
-                    syn_coord[0] + dx_z[0], 
-                    syn_coord[1] + dx_z[1]
+                    syn_coord[0] + dx_z_global[0], 
+                    syn_coord[1] + dx_z_global[1]
                 )
-                target_key = self.system.get_grid_key(raw_target)
+                target_key = owner_patch.get_grid_key(raw_target)
                 
-                if target_key in self.system.grid_map:
-                    neighbor_idx = self.system.grid_map[target_key]
-                    if neighbor_idx in self.system.data_qubit_indices:
+                if target_key in owner_patch.grid_map:
+                    neighbor_idx = owner_patch.grid_map[target_key]
+                    if neighbor_idx in owner_patch.data_qubit_indices:
                         syn_idx = self.system.index_map[syn_coord]
-                        data_idx = neighbor_idx
+                        data_coord = owner_patch.qubit_coords[neighbor_idx]
+                        data_idx = self.system.index_map[data_coord]
                         cnot_targets.extend([data_idx, syn_idx]) # Data -> Syndrome
 
             # Apply CNOTs if any pairs exist in this tick
@@ -338,28 +352,18 @@ class RotatedSurfaceCodeExtractionBlock:
 
 
 # -----------------------------------------------------------------------------
-# ZZ Coupler
+# Part 3. Couplers
 # -----------------------------------------------------------------------------
-class RotatedZZCoupler(BaseCoupler):
-    """
-    Connects two RotatedSurfaceCode patches horizontally to measure Logical ZZ.
-    It stitches the rightmost Z-boundary of the left patch to the leftmost Z-boundary of the right patch.
-    It accommodates the case where two patches have different code distances.
-    """
-    def __init__(self, name: str, left_patch: RotatedSurfaceCode, right_patch: RotatedSurfaceCode):
-        # 注意：这里我们不需要额外的 offset 参数，因为我们假设 left_patch 和 right_patch
-        # 已经在 System 里有了确定的 Global Coordinates (通过它們各自的 shift 参数)。
-        # Coupler 将直接读取它们的 absolute coordinates 来计算缝隙。
-        
-        self.left_patch = left_patch
-        self.right_patch = right_patch
-        
-        # 初始化基类
-        super().__init__(name)
-        
-        # 立即构建
-        self.build()
+class RotatedTwoPatchCoupler(LogicalCoupler):
+
+    EXPECTED_PATCH_COUNT = 2
 
     def build(self):
-        # 这里将是你实现几何计算的地方
-        pass
+        patch_a = self.patches[0]
+        patch_b = self.patches[1]
+        
+        # ... 实现具体的铺砖逻辑 (Case 1, Case 2 锯齿填充) ...
+        # self.add_qubit(...)
+        # self.stabilizers.append(...)
+
+    

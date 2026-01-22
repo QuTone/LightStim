@@ -2,6 +2,7 @@ import stim
 from typing import Dict, List, Tuple, Set, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from src.ir.qec_patch import QECPatch
+import copy
 
 if TYPE_CHECKING:
     from src.ir.coupler import BaseCoupler
@@ -69,14 +70,14 @@ class QECSystem:
             raise ValueError(f"Patch '{name}' already exists in the system.")
         
         # 1. Store reference
+        patch = copy.deepcopy(patch)
+        patch.shift_coords(offset[0], offset[1])
         self.patches[name] = (patch, offset)
-        off_x, off_y = offset
 
         # ======================================================================
         # Step 1: Global Identity Registration
         # ======================================================================
-        for local_coord in patch.index_map.keys():
-            global_coord = (local_coord[0] + off_x, local_coord[1] + off_y)
+        for global_coord, local_index in patch.index_map.items():
             
             # Collision Check
             if global_coord in self.index_map:
@@ -97,29 +98,24 @@ class QECSystem:
         # Step 2: Classification / Categorization
         # ======================================================================
         # Helper to shift coords and extend global lists
-        def shift_and_extend(source_list_name: str, target_global_list: List[Tuple[int, int]]):
-            # Still using getattr here strictly for OPTIONAL sub-class attributes 
-            # (like syndrome_coords_x/z which might not exist in all patches)
-            local_list = getattr(patch, source_list_name, [])
-            for local in local_list:
-                target_global_list.append((local[0] + off_x, local[1] + off_y))
-
-        shift_and_extend('data_coords', self.data_coords)
-        shift_and_extend('syndrome_coords', self.syndrome_coords)
-        shift_and_extend('syndrome_coords_x', self.syndrome_coords_x)
-        shift_and_extend('syndrome_coords_z', self.syndrome_coords_z)
+        self.data_coords.extend(patch.data_coords)
+        self.syndrome_coords.extend(patch.syndrome_coords)
+        if hasattr(patch, 'syndrome_coords_x'):
+            self.syndrome_coords_x.extend(patch.syndrome_coords_x)
+        if hasattr(patch, 'syndrome_coords_z'):
+            self.syndrome_coords_z.extend(patch.syndrome_coords_z)
 
         # ======================================================================
         # Step 3: Stabilizer and Logical Operator Translation
         # ======================================================================
         for i, stab in enumerate(patch.stabilizers):
-            global_stab = self._translate_stabilizer(stab, patch, offset)
+            global_stab = self._translate_stabilizer(stab, patch, offset = (0,0))
             global_stab['patch_name'] = name
             global_stab['local_index'] = i
             self.stabilizers.append(global_stab)
 
         for i, op in enumerate(patch.logical_ops):
-            global_op = self._translate_logical_op(op, patch, offset)
+            global_op = self._translate_logical_op(op, patch, offset = (0,0))
             global_op['patch_name'] = name
             global_op['local_index'] = i
             self.logical_ops.append(global_op)

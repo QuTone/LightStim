@@ -1,6 +1,7 @@
 from typing import Tuple, Dict, List
 import stim
 from src.ir.qec_patch import QECPatch
+from src.ir.coupler import LogicalCoupler
 
 # -----------------------------------------------------------------------------
 # Code Patch Class Definition
@@ -164,25 +165,29 @@ class RepetitionCodeExtractionBlock:
             (+1, 0)   # Tick 2: Z checks Right
         ]
 
-        current_tick_deltas = [
-            self.system.transform_vector(vec) for vec in canonical_tick_deltas
-        ]
+        # current_tick_deltas = [
+        #     self.system.transform_vector(vec) for vec in canonical_tick_deltas
+        # ]
 
-        for dx_z in current_tick_deltas:
+        for dx_z in canonical_tick_deltas:
             cnot_targets = []
             
             for syn_coord in self.system.syndrome_coords:
+                owner_patch = self.system.patches[self.system.spatial_map[syn_coord]][0]
+                dx_z_global = owner_patch.transform_vector(dx_z)
+
                 raw_target = (
-                    syn_coord[0] + dx_z[0], 
-                    syn_coord[1] + dx_z[1]
+                    syn_coord[0] + dx_z_global[0], 
+                    syn_coord[1] + dx_z_global[1]
                 )
-                target_key = self.system.get_grid_key(raw_target)
+                target_key = owner_patch.get_grid_key(raw_target)
     
-                if target_key in self.system.grid_map:
-                    neighbor_idx = self.system.grid_map[target_key]
-                    if neighbor_idx in self.system.data_qubit_indices:
+                if target_key in owner_patch.grid_map:
+                    neighbor_idx = owner_patch.grid_map[target_key]
+                    if neighbor_idx in owner_patch.data_qubit_indices:
                         syn_idx = self.system.index_map[syn_coord]
-                        data_idx = neighbor_idx
+                        data_coord = owner_patch.qubit_coords[neighbor_idx]
+                        data_idx = self.system.index_map[data_coord]
                         # Data -> Syndrome (CNOT)
                         cnot_targets.extend([data_idx, syn_idx])
             

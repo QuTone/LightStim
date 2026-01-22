@@ -1,32 +1,60 @@
-from typing import Set, Tuple, List, Dict
+from typing import List, Set, Tuple, Optional
 from src.ir.qec_patch import QECPatch
 
-class BaseCoupler(QECPatch):
+class LogicalCoupler(QECPatch):
     """
-    A Coupler IS A QECPatch, but (1) has no logical operators, and
-    (2) has extra logic for enabling interactions between other patches encoding logical qubits.
-    
-    Inherited Attributes:
-    - qubit_coords, index_map: Manages the qubits used by the coupler.
-    - stabilizers: These are the "New Stabilizers" of the coupler, and measuring them enables logical measurements between the patches.
-    - data_coords, syndrome_coords: Categorized qubit coordinates used by the coupler.
-    
-    New Attributes:
-    - conflicting_stabilizer_coords: A set of syndrome coordinates whose associated stabilizers from other patches
-      must be DISABLED when this coupler is active. Instead, the stabilizers of the coupler sharing the same syndrome coordinates are ACTIVATED.
+    Base class for all couplers.
+    Manages connections between N patches.
     """
-    def __init__(self, name: str, **kwargs):
-        # Initialize as a standard patch
-        super().__init__(**kwargs) 
+    
+    # Subclasses must override this attribute to define the expected number of patches.
+    # If None, it indicates support for any number of patches (variable length).
+    EXPECTED_PATCH_COUNT: Optional[int] = None 
+
+    def __init__(self, patches: List[QECPatch], name: str = "coupler", **kwargs):
+        # 1. Init Base (QECPatch)
+        # This initializes empty containers for qubit_coords, stabilizers, etc.
+        super().__init__(**kwargs)
+        
         self.name = name
+        self.patches = patches
+        
+        # 2. Validation Logic
+        self._validate_patch_count()
+        
+        # 3. Conflict Management Container (populated by subclass build or detect_conflicts)
         self.conflicting_stabilizer_coords: Set[Tuple[int, int]] = set()
-        # Note: No logical operators are needed for a coupler.
+
+        # 4. Trigger Build Process (The Builder Pattern)
+        self.build()
+
+    def _validate_patch_count(self):
+        """
+        Enforces the patch count constraint defined by the subclass.
+        """
+        expected = self.EXPECTED_PATCH_COUNT
+        actual = len(self.patches)
+        
+        if expected is not None and actual != expected:
+            raise ValueError(
+                f"{self.__class__.__name__} expects {expected} patches, "
+                f"but got {actual}."
+            )
 
     def build(self):
         """
-        Subclasses implement this to:
-        1. Populate self.qubit_coords, self.data_coords... 
-        2. Populate self.stabilizers 
-        3. Populate self.conflicting_stabilizers
+        [Abstract Interface]
+        Subclasses MUST implement this to generate the physical geometry.
+        1. Add qubits (self.add_qubit) to fill the gap.
+        2. Define coupler stabilizers (self.stabilizers).
         """
-        raise NotImplementedError
+        raise NotImplementedError("Subclasses must implement 'build' to define geometry.")
+
+    def detect_conflicts(self):
+        """
+        [Automation Logic]
+        Generic logic to find commutativity conflicts.
+        (Shared across all coupler types)
+        """
+        # ... your conflict detection code ...
+        pass
