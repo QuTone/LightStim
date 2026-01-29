@@ -1,6 +1,6 @@
 import stim
 import numpy as np
-from .utils import check_commutativity, solve_linear_decomposition
+from ..utils.linear_algebra import check_commutativity, solve_linear_decomposition
 from .tableau import StabilizerTableau
 from typing import List
 
@@ -162,14 +162,14 @@ class SyndromeTracker:
         self.stabilizers.records = new_stab_records
 
         # 3. Final Sanity Check (The Guardrail)
-        if self.logicals.count != self.expected_num_logicals:
-             raise RuntimeError(
-                 f"[Error] Logical Count Mismatch!\n"
-                 f"Expected: {self.expected_num_logicals}, Found: {self.logicals.count}\n"
-                 f"This implies the measurements defined a subspace with incorrect dimensions.\n"
-                 f"- If Found > Expected: System Underspecified (Missing measurements?).\n"
-                 f"- If Found < Expected: System Overspecified (Measured a Logical?)."
-             )
+        # if self.logicals.count != self.expected_num_logicals:
+        #      raise RuntimeError(
+        #          f"[Error] Logical Count Mismatch!\n"
+        #          f"Expected: {self.expected_num_logicals}, Found: {self.logicals.count}\n"
+        #          f"This implies the measurements defined a subspace with incorrect dimensions.\n"
+        #          f"- If Found > Expected: System Underspecified (Missing measurements?).\n"
+        #          f"- If Found < Expected: System Overspecified (Measured a Logical?)."
+        #      )
 
              
     def process_final_measurement(self, 

@@ -3,7 +3,7 @@
 import stim
 from typing import Type, Literal, Optional, Any
 
-from ..circuit.builder import CircuitBuilder
+from ..ir.builder import CircuitBuilder
 from ..ir.tracker import SyndromeTracker
 from ..noise.config import NoiseConfig
 
@@ -18,7 +18,7 @@ class MemoryExperiment:
     """
 
     def __init__(self, 
-                 qec_patch: Any,  # The System/Geometry object
+                 qec_system: Any,  # The System/Geometry object
                  extraction_block_class: Type, # Class ref, e.g. RotatedSurfaceCodeExtractionBlock
                  rounds: int,
                  noise_params: NoiseConfig,
@@ -34,7 +34,7 @@ class MemoryExperiment:
             noise_model: Strategy string ('code_capacity', 'phenomenological', etc.)
             basis: Memory basis to preserve ('X' or 'Z').
         """
-        self.patch = qec_patch
+        self.system = qec_system
         self.block_class = extraction_block_class
         self.rounds = rounds
         self.noise_params = noise_params
@@ -51,11 +51,11 @@ class MemoryExperiment:
         Constructs the full, noisy Stim circuit for the experiment.
         """
         # 1. Setup
-        num_qubits = len(self.patch.qubit_coords)
-        num_logicals = self.patch.num_logicals
+        num_qubits = len(self.system.qubit_coords)
+        num_logicals = self.system.num_logicals
         
         self.tracker = SyndromeTracker(num_qubits=num_qubits, expected_num_logicals=num_logicals)
-        self.builder = CircuitBuilder(tracker=self.tracker, system_config=self.patch, if_detector=self.if_detector)
+        self.builder = CircuitBuilder(tracker=self.tracker, system_config=self.system, if_detector=self.if_detector)
 
         # 2. Coordinate Definitions
         # ----------------------------------------------------------------------
@@ -67,7 +67,7 @@ class MemoryExperiment:
         # Initialize Data Qubits in the target memory basis.
         # The Tracker will automatically register the initial stabilizers.
         print("Initializing...")
-        data_indices = [self.patch.index_map[coord] for coord in self.patch.data_coords]
+        data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
         init_dict = {q: self.basis for q in data_indices}
         self.builder.initialize(init_dict=init_dict, n=num_qubits)
 
@@ -76,7 +76,7 @@ class MemoryExperiment:
         # Instantiate the block to get the unit-cell circuit (One Round)
         # We pass self.patch because the Block needs coordinate info
         print("Building syndrome extraction rounds...")
-        se_block = self.block_class(self.patch)
+        se_block = self.block_class(self.system)
         se_round = se_block.circuit
 
         # Apply the loop using Builder, construct detectors
@@ -90,7 +90,7 @@ class MemoryExperiment:
         # Measure data qubits in the memory basis. Construct detectors and logical observables.
         print("Measuring data qubits...")
         measurements = {q: self.basis for q in data_indices}
-        self.builder.apply_final_readout(final_measurements=measurements)
+        self.builder.apply_data_readout(final_measurements=measurements)
 
         # 6. Noise Injection
         # ----------------------------------------------------------------------

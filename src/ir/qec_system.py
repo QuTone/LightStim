@@ -1,11 +1,9 @@
 import stim
-from typing import Dict, List, Tuple, Set, Any, TYPE_CHECKING
+from typing import Dict, List, Tuple, Set, Any
 from dataclasses import dataclass
 from src.ir.qec_patch import QECPatch
 import copy
-
-if TYPE_CHECKING:
-    from src.ir.coupler import BaseCoupler
+from src.ir.coupler import LogicalCouplerProtocol
 
 class QECSystem:
     """
@@ -15,49 +13,134 @@ class QECSystem:
     1. Manages the global aggregation of coordinate system, qubit indexing, stabilizers, 
     and logical operators from multiple patches.
     2. Define couplers to enable logical operations between patches.
-    3. Provides a unified view for the CircuitBuilder.
+    3. Tracking Stabilizer Activities (masked/unmasked) for the CircuitBuilder.
     """
     
     def __init__(self):
         # 1. Components Registry
         # name -> (patch_object, offset_tuple)
-        self.patches: Dict[str, Tuple[QECPatch, Tuple[int, int]]] = {} 
+        self.patches: Dict[str, Tuple[QECPatch, Tuple[float, float]]] = {} # including code patches and coupler patches
+        self.coupler_protocols: Dict[str, 'LogicalCouplerProtocol'] = {}
+        self.coupler_patches: Dict[str, QECPatch] = {}
+        # self._coupler_cache: Dict[str, str] = {} # For next phase of development
+
 
         # 2. Global State & Indexing
-        self.index_map: Dict[Tuple[int, int], int] = {} # (x, y) coordinate -> global_index
-        self.qubit_coords: Dict[int, Tuple[int, int]] = {} # global_index -> (x, y) coordinate
+        self.index_map: Dict[Tuple[float, float], int] = {} # (x, y) coordinate -> global_index
+        self.qubit_coords: Dict[int, Tuple[float, float]] = {} # global_index -> (x, y) coordinate
+        self.grid_map: Dict[Tuple[int, int], int] = {} # (x, y) coordinate -> global_index
         self.next_index = 0
-        
-        # Spatial Map: (x, y) -> patch_name 
-        # Used for collision detection and debugging
-        self.spatial_map: Dict[Tuple[int, int], str] = {}
 
-        # 3. Aggregated System Properties (Global View)
-        # These lists store GLOBAL coordinates
-        self.data_coords: List[Tuple[int, int]] = []
-        self.syndrome_coords_x: List[Tuple[int, int]] = []
-        self.syndrome_coords_z: List[Tuple[int, int]] = []
-        self.syndrome_coords: List[Tuple[int, int]] = [] # All syndromes
-        
-        # 4. Global Stabilizers
-        # Stores stabilizers with GLOBAL INDICES, ready for CircuitBuilder
-        # Same format as in qec_patch.py
-        self.stabilizers: List[Dict[str, Any]] = []
-        self.logical_ops: List[Dict[str, Any]] = []
+        # 3. Qubit Categorization (Global Sets of Indices)
+        self.data_indices: Set[int] = set()
+        self.syndrome_indices: Set[int] = set()
+        self.syndrome_indices_x: Set[int] = set()
+        self.syndrome_indices_z: Set[int] = set()
+
+        # 4. Global Stabilizers (The Master List)
+        # The list index IS the stabilizer unique ID.
+        self.stabilizers: List[Dict[str, Any]] = [] 
+        self._stabilizer_signatures: Dict[str, Any] = {}
+        self.logical_ops: List[Dict[str, Any]] = [] 
         self.num_logicals: int = 0
 
-        # 5. Couplers. Special for QEC Systems, enabling logical operations between patches.
-        self.couplers: Dict[str, 'BaseCoupler'] = {} 
-        self.active_couplers = set[str]()
+        # 5. Dynamic Stabilizer Activities
+        # Stores indices of self.stabilizers that are currently ON.
+        self.active_stabilizer_indices: Set[int] = set()
+        # coupler_name -> stabilizer_indices
+        # The stabilizers indices that are paused because of the coupler's activation.
+        self.paused_stabilizer_indices: Dict[str, Set[int]] = {}
+        
+        # Owner Map: (x, y) -> patch_name, Determine the owner of the qubit.
+        # Used for collision detection and debugging
+        self.owner_map: Dict[Tuple[int, int], str] = {}
+        # Local to Global Map: patch_name -> local_index -> global_index
+        self.local_to_global_map: Dict[str, Dict[int, int]] = {}
 
     @property
     def num_qubits(self) -> int:
         return self.next_index
     
+    @property
+    def data_coords(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[idx] for idx in self.data_indices]
+    
+    @property
+    def syndrome_coords(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[idx] for idx in self.syndrome_indices]
+    
+    @property
+    def syndrome_coords_x(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[idx] for idx in self.syndrome_indices_x]
+    
+    @property
+    def syndrome_coords_z(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[idx] for idx in self.syndrome_indices_z]
+    
+    @property
+    def active_stabilizers(self) -> List[Dict[str, Any]]:
+        return [self.stabilizers[idx] for idx in sorted(self.active_stabilizer_indices)]
+    
+    @ property
+    def active_stabilizers_x(self) -> List[Dict[str, Any]]:
+        return [self.stabilizers[idx] for idx in sorted(self.active_stabilizer_indices) if self.stabilizers[idx].get('type') == 'X']
+    
+    @ property
+    def active_stabilizers_z(self) -> List[Dict[str, Any]]:
+        return [self.stabilizers[idx] for idx in sorted(self.active_stabilizer_indices) if self.stabilizers[idx].get('type') == 'Z']
+
+    @property
+    def active_syndrome_indices(self) -> List[int]:
+        """
+        Returns the set of unique global indices for syndrome qubits 
+        that belong to CURRENTLY ACTIVE stabilizers.
+        Used to generate 'R' and 'M' instructions only for relevant qubits.
+        """
+        return [
+            self.stabilizers[uid]['syn_idx'] 
+            for uid in self.active_stabilizer_indices
+        ]
+
+    @property
+    def active_syndrome_indices_x(self) -> List[int]:
+        """
+        Returns indices of syndrome qubits measuring active X-stabilizers.
+        Used to determine where to apply Hadamard gates (or basis change).
+        """
+        return [
+            self.stabilizers[uid]['syn_idx'] 
+            for uid in self.active_stabilizer_indices 
+            if self.stabilizers[uid].get('type') == 'X'
+        ]
+
+    @property
+    def active_syndrome_indices_z(self) -> List[int]:
+        """
+        Returns indices of syndrome qubits measuring active Z-stabilizers.
+        """
+        return [
+            self.stabilizers[uid]['syn_idx'] 
+            for uid in self.active_stabilizer_indices 
+            if self.stabilizers[uid].get('type') == 'Z'
+        ]
+
+    @property
+    def active_syndrome_coords(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[idx] for idx in self.active_syndrome_indices]
+    
+    @property
+    def active_syndrome_coords_x(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[idx] for idx in self.active_syndrome_indices_x]
+    
+    @property
+    def active_syndrome_coords_z(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[idx] for idx in self.active_syndrome_indices_z]
+
+
     # ======================================================================
     # Part 1. Patch Management, Information Aggregation
     # ======================================================================
-    def add_patch(self, name: str, patch: QECPatch, offset: Tuple[int, int] = (0, 0)):
+    def add_patch(self, patch: QECPatch, offset: Tuple[float, float] = (0, 0), name: str = None, is_active: bool = True):
         """
         Registers a QECPatch onto the global canvas at a specific offset.
         
@@ -65,145 +148,97 @@ class QECSystem:
             name: Unique identifier for the patch (e.g., "logical_1").
             patch: The QECPatch object (contains local coords and stabilizers).
             offset: (x_shift, y_shift) to place the patch on the canvas.
+            is_active: If True, immediately unmasks the patch's stabilizers.
         """
         if name in self.patches:
             raise ValueError(f"Patch '{name}' already exists in the system.")
+        
+        if name is None:
+            name = f"patch_{len(self.patches)+ len(self.coupler_patches)}"
         
         # 1. Store reference
         patch = copy.deepcopy(patch)
         patch.shift_coords(offset[0], offset[1])
         self.patches[name] = (patch, offset)
+        # Note: the patch is already shifted, we just record the offset for the patch.
 
-        # ======================================================================
-        # Step 1: Global Identity Registration
-        # ======================================================================
-        for global_coord, local_index in patch.index_map.items():
+        # 2. Global Identity Registration
+        local_to_global_map = {}
+        self.local_to_global_map[name] = {}
+
+        for global_coord, local_index in patch.index_map.items(): # the patch is already shifted to the global coordinate system
             
             # Collision Check
             if global_coord in self.index_map:
-                existing_owner = self.spatial_map[global_coord]
+                existing_owner = self.owner_map[global_coord]
                 raise ValueError(
                     f"Coordinate collision at {global_coord}. "
                     f"Trying to add patch '{name}', but occupied by '{existing_owner}'."
                 )
             
-            # Assign Unique Global Index
+            # Assign Unique Global Index, Categorize the qubit
             idx = self.next_index
             self.index_map[global_coord] = idx
             self.qubit_coords[idx] = global_coord
-            self.spatial_map[global_coord] = name
+            self.owner_map[global_coord] = name
+            grid_key = patch.get_grid_key(global_coord)
+            self.grid_map[grid_key] = idx
+            local_to_global_map[local_index] = idx
+            self.local_to_global_map[name][local_index] = idx
+
+            # Categorize
+            if local_index in patch.data_indices:
+                self.data_indices.add(idx)
+            if local_index in patch.syndrome_indices:
+                self.syndrome_indices.add(idx)
+            if hasattr(patch, 'syndrome_indices_x'):
+                if local_index in patch.syndrome_indices_x:
+                    self.syndrome_indices_x.add(idx)
+            if hasattr(patch, 'syndrome_indices_z'):
+                if local_index in patch.syndrome_indices_z:
+                    self.syndrome_indices_z.add(idx)
+            
+    
             self.next_index += 1
 
-        # ======================================================================
-        # Step 2: Classification / Categorization
-        # ======================================================================
-        # Helper to shift coords and extend global lists
-        self.data_coords.extend(patch.data_coords)
-        self.syndrome_coords.extend(patch.syndrome_coords)
-        if hasattr(patch, 'syndrome_coords_x'):
-            self.syndrome_coords_x.extend(patch.syndrome_coords_x)
-        if hasattr(patch, 'syndrome_coords_z'):
-            self.syndrome_coords_z.extend(patch.syndrome_coords_z)
+        # 3. Stabilizer and Logical Operator Translation
+        stabilizer_indices = []
 
-        # ======================================================================
-        # Step 3: Stabilizer and Logical Operator Translation
-        # ======================================================================
-        for i, stab in enumerate(patch.stabilizers):
-            global_stab = self._translate_stabilizer(stab, patch, offset = (0,0))
+        for stab in patch.stabilizers:
+            global_stab = self._translate_record(stab, local_to_global_map)
             global_stab['patch_name'] = name
-            global_stab['local_index'] = i
-            self.stabilizers.append(global_stab)
+            # Generate the stabilizer signature
+            pauli_indices = sorted(global_stab['data_indices'])
+            signature = (global_stab['type'], tuple(pauli_indices))
 
-        for i, op in enumerate(patch.logical_ops):
-            global_op = self._translate_logical_op(op, patch, offset = (0,0))
+            if signature in self._stabilizer_signatures:
+                existing_uid = self._stabilizer_signatures[signature]
+                stabilizer_indices.append(existing_uid)
+                continue
+            
+            new_uid = len(self.stabilizers)
+            self.stabilizers.append(global_stab)
+            self._stabilizer_signatures[signature] = new_uid
+            stabilizer_indices.append(new_uid)
+
+        for op in patch.logical_ops:
+            global_op = self._translate_record(op, local_to_global_map)
             global_op['patch_name'] = name
-            global_op['local_index'] = i
             self.logical_ops.append(global_op)
+            # We don't need to track the logical operator indices for now.
         
         # 4. Add number of logical qubits from the patch
         self.num_logicals += patch.num_logicals
 
-    def _translate_stabilizer(self, local_stab: Dict, patch: QECPatch, offset: Tuple[int, int]) -> Dict:
-        off_x, off_y = offset
-        
-        # 1. Translate syndrome qubit
-        loc_syn_coord = local_stab.get('syn_coord')
-        if loc_syn_coord is None:
-             raise ValueError("Stabilizer record missing 'syn_coord'.")
-        
-        glob_syn_coord = (loc_syn_coord[0] + off_x, loc_syn_coord[1] + off_y)
-        if glob_syn_coord not in self.index_map:
-            raise KeyError(f"Stabilizer ancilla {glob_syn_coord} not found in global map.")
-        glob_syn_idx = self.index_map[glob_syn_coord]
-        
-        # 2. Translate Data & Pauli Basis
-        glob_data_indices = []
-        glob_paulis = {} # Replaces stim.PauliString
-        
-        local_ps = local_stab.get('pauli') # stim.PauliString object from patch
-        local_data_indices = local_stab.get('data_indices', [])
-        
-        for loc_idx in local_data_indices:
-            # A. Convert Index: Local -> Coord -> Global
-            if loc_idx not in patch.qubit_coords:
-                 raise KeyError(f"Local qubit index {loc_idx} not found in patch.")
-            loc_coord = patch.qubit_coords[loc_idx]
-            glob_coord = (loc_coord[0] + off_x, loc_coord[1] + off_y)
-            
-            if glob_coord not in self.index_map:
-                raise KeyError(f"Stabilizer data qubit {glob_coord} not found in global map.")
-            
-            glob_idx = self.index_map[glob_coord]
-            glob_data_indices.append(glob_idx)
-            
-            # B. Extract Pauli Basis (Crucial for mixed stabilizer like XZZX)
-            if local_ps is not None:
-                # 0=I, 1=X, 2=Y, 3=Z. We usually map to char for readability.
-                basis_code = local_ps[loc_idx] 
-                basis_char = {1: 'X', 2: 'Y', 3: 'Z', 0: 'I'}.get(basis_code, 'I')
-                glob_paulis[glob_idx] = basis_char
-            
-        return {
-            'paulis': glob_paulis,          # <--- Dictionary instead of Stim Object
-            'type': local_stab.get('type'),
-            'data_indices': glob_data_indices,
-            'syn_coord': glob_syn_coord,
-            'syn_idx': glob_syn_idx
-        }
-    
-    def _translate_logical_op(self, local_op: Dict, patch: QECPatch, offset: Tuple[int, int]) -> Dict:
-        off_x, off_y = offset
-        
-        local_ps = local_op.get('pauli')
-        local_indices = local_op.get('data_indices', [])
-        
-        glob_indices = []
-        glob_paulis = {}
-        
-        for loc_idx in local_indices:
-            # Index Translation
-            if loc_idx not in patch.qubit_coords:
-                 raise KeyError(f"Local logical qubit index {loc_idx} not found.")
-            loc_coord = patch.qubit_coords[loc_idx]
-            glob_coord = (loc_coord[0] + off_x, loc_coord[1] + off_y)
-            
-            if glob_coord not in self.index_map:
-                raise KeyError(f"Logical qubit {glob_coord} not found in global map.")
-            
-            glob_idx = self.index_map[glob_coord]
-            glob_indices.append(glob_idx)
-            
-            # Basis Extraction
-            if local_ps is not None:
-                basis_code = local_ps[loc_idx]
-                basis_char = {1: 'X', 2: 'Y', 3: 'Z', 0: 'I'}.get(basis_code, 'I')
-                glob_paulis[glob_idx] = basis_char
-            
-        return {
-            'paulis': glob_paulis, # Important if logical operator is mixed
-            'type': local_op.get('type'),
-            'data_indices': glob_indices,
-        }
+        # 5. Set Initial Active Stabilizers
+        if is_active:
+            self.active_stabilizer_indices.update(stabilizer_indices)
+
+        return patch
+
+    # ======================================================================
+    # Helper Methods
+    # ======================================================================
 
     def get_info(self) -> Dict[str, Any]:
         """
@@ -223,87 +258,190 @@ class QECSystem:
             'num_logicals': self.num_logicals,
             'num_stabilizers': len(self.stabilizers),
             'patches': patch_infos,
+            'coupler_patches': self.coupler_patches,
+            'coupler_protocols': self.coupler_protocols,
             'global_layout': {
                 'num_data': len(self.data_coords),
                 'num_syndrome': len(self.syndrome_coords),
-                'bbox': self._get_bounding_box()
             },
         }
+    
+    def _translate_record(self, record: Dict, local_to_global_map: Dict[int, int]) -> Dict:
+        """
+        Translates a stabilizer/logical record from local/coordinate context to global index context.
+        
+        Handles two cases:
+        1. Code Patch (Standard): {"pauli": {id: pauli_type}, "type": ..., "data_indices": ..., 
+        "syn_coord": ..., "syn_idx": ...}
+        2. Coupler Patch (Hybrid): {'pauli': {coord: pauli_type}, 'type': ..., 'syn_coord': ...}
+        
+        Args:
+            record: The raw stabilizer record from the patch.
+            local_to_global_map: Mapping from local_uid -> global_uid for the CURRENT patch.
+            
+        Returns:
+            A unified record with global indices: 
+            {'paulis': {global_idx: type}, 'syn_idx': global_idx, ...}
+        """
+        new_record = record.copy()
+    
+        # --- 1. Process Pauli Support (Data Qubits) ---
+        global_pauli = {}
+        raw_pauli = record.get('pauli', {}) 
+        
+        for key, pauli_type in raw_pauli.items():
+            if isinstance(key, int): # Code Patch (Local Index)
+                if key in local_to_global_map:
+                    global_pauli[local_to_global_map[key]] = pauli_type
+                else:
+                    raise ValueError(f"Local index {key} not found in current patch map.")
+            elif isinstance(key, tuple): # Coupler Patch (Global Coordinate)
+                if key in self.index_map:
+                    global_pauli[self.index_map[key]] = pauli_type
+                else:
+                    raise ValueError(f"Coordinate {key} not found in System.")
+        
+        new_record['pauli'] = global_pauli
 
-    def _get_bounding_box(self) -> Tuple[Tuple[int, int], Tuple[int, int]]:
-        """Helper to find the (min_x, min_y) and (max_x, max_y) of the system."""
-        if not self.index_map:
-            return ((0,0), (0,0))
-        all_coords = list(self.index_map.keys())
-        min_x = min(c[0] for c in all_coords)
-        max_x = max(c[0] for c in all_coords)
-        min_y = min(c[1] for c in all_coords)
-        max_y = max(c[1] for c in all_coords)
-        return ((min_x, min_y), (max_x, max_y))
+        # --- 2. Process Data Indices ---
+        if 'data_indices' in record:
+            # Case A: Standard Code Patch
+            raw_data_indices = record['data_indices']
+            global_data_indices = [local_to_global_map[local_idx] for local_idx in raw_data_indices]
+            new_record['data_indices'] = global_data_indices
+        else:
+            # Case B: Coupler Patch (Auto-generate from pauli keys)
+            new_record['data_indices'] = sorted(list(global_pauli.keys()))
+        
+        # --- 3. Process Syndrome Index ---
+        if 'syn_idx' in record: 
+            # Case A: Standard Code Patch (Local Index)
+            new_record['syn_idx'] = local_to_global_map[record['syn_idx']]
+        elif 'syn_coord' in record:
+            # Case B: Coupler Patch (Coord -> Global Index)
+            # Since Coupler format lacks syn_idx, we must look it up via coord
+            coord = record['syn_coord']
+            if coord in self.index_map:
+                new_record['syn_idx'] = self.index_map[coord]
+            else:
+                raise ValueError(f"Syndrome coordinate {coord} not found in System.")
 
+        return new_record
 
     # ======================================================================
     # Part 2. Coupler Management
     # ======================================================================
-    def add_coupler(self, coupler: 'BaseCoupler'):
+    def add_coupler_protocol(self, protocol: 'LogicalCouplerProtocol', name: str):
         """
-        Registers a Coupler.
-        1. Reuse add_patch to handle registration of the coupler's qubits.
-        2. Store reference in self.couplers for conflict handling.
+        Registers a Coupler Protocol.
         """
-        # 1. Treat Coupler as a Patch (Physical Registration)
-        # Usually Couplers are defined with absolute coords or relative to patches,
-        # so we pass offset=(0,0).
-        self.add_patch(coupler.name, coupler, offset=(0,0))
-        
-        # 2. Register Logic
-        self.couplers[coupler.name] = coupler
-
-    def activate_coupler(self, name: str):
-        if name not in self.couplers:
-            raise ValueError(f"Unknown coupler: {name}")
-        self.active_couplers.add(name)
-
-    def deactivate_coupler(self, name: str):
-        if name not in self.active_couplers:
-            return # Already inactive or unknown
-        self.active_couplers.remove(name)
-
-    # ==========================================================================
-    # Dynamic Stabilizer Filtering: Current stabilizers of the QEC system
-    # ==========================================================================
+        self.coupler_protocols[name] = protocol
     
-    def get_current_stabilizers(self) -> List[Dict]:
-        """
-        Returns the effective list of stabilizers of the QEC system based on the active couplers.
-        Logic: All Patch Stabs - Conflicts + Active Coupler Stabs
-        """
-        
-        # Calculate the 'Kill set' (stabilizers to be disabled in the QEC system)
-        kill_set = set()
-        for name in self.active_couplers:
-            # We assume the object in self.couplers has the 'conflicting_stabilizer_coords' attribute
-            # We can use getattr to be safe if strictly typing as QECPatch
-            coupler = self.couplers[name]
-            conflicts = getattr(coupler, 'conflicting_stabilizer_coords', set())
-            kill_set.update(conflicts)
 
-        active_list = []
+    def register_coupler(self, 
+                         protocol: 'LogicalCouplerProtocol', 
+                         patch_names: List[str], 
+                         name: str = None, 
+                         **kwargs):
+        """
+        Uses a Protocol to generate a coupler patch between existing patches,
+        and registers it to the system (default: Inactive).
+        """
+        # 1. Retrieve Physical Patches & Offsets
+        patches = []
+        for p_name in patch_names:
+            if p_name not in self.patches:
+                raise ValueError(f"Patch '{p_name}' not found in system.")
+            p_obj, p_off = self.patches[p_name]
+            patches.append(p_obj)
+            
+        # 2. Use the Factory (Protocol) to generate the 'Connector' Patch
+        # This does the heavy lifting: geometry analysis, stabilizer generation
+        coupler_patch = protocol.create_coupler_patch(patches, name=name, **kwargs)
         
-        for stab in self.stabilizers:
-            owner = stab['patch_name']
-            syn_coord = stab['syn_coord']
-            
-            # Case A: Stabilizer belongs to a Coupler
-            if owner in self.couplers:
-                # Only show if ACTIVE
-                if owner in self.active_couplers:
-                    active_list.append(stab)
-            
-            # Case B: Stabilizer belongs to a normal QEC Patch (not a coupler, encoding logical qubits)
-            else:
-                # Show UNLESS it's in the Kill set
-                if syn_coord not in kill_set:
-                    active_list.append(stab)
-                    
-        return active_list
+        # 3. Register it into the System
+        # [Crucial]: Add it with is_active=False
+        # Physically it exists (qubits allocated), but Logically it's OFF.
+        # This will internally call self.add_patch(...)
+        self.add_patch(coupler_patch, offset=(0,0), name=coupler_patch.name, is_active=False)
+        
+        # 4. Store the Protocol reference (optional, for future reconfiguration)
+        # Or store the coupler patch name in a specific list
+        self.coupler_patches[coupler_patch.name] = coupler_patch
+
+        return coupler_patch
+    
+    def activate_coupler(self, coupler_name: str):
+        """
+        Activates a registered coupler.
+        1. Deactivates conflicting stabilizers on the code patches.
+        2. Activates the coupler's stabilizers.
+        3. Saves the 'killed' stabilizers to history for later restoration.
+        """
+        if coupler_name not in self.coupler_patches:
+            raise ValueError(f"Coupler '{coupler_name}' not found.")
+
+        # 0. Idempotency Check, avoid re-activation
+        if coupler_name in self.paused_stabilizer_indices:
+            print(f"Coupler '{coupler_name}' is already active.")
+            return
+
+        coupler_patch = self.coupler_patches[coupler_name]
+
+        # 1. Identify Coupler Stabilizers (The new guys)
+        # We need their UIDs. We can filter self.stabilizers by patch_name
+        coupler_stabilizer_uids = {
+            i for i, s in enumerate(self.stabilizers) 
+            if s.get('patch_name') == coupler_name
+        }
+
+        # 2. Identify Conflicting Stabilizers (The victims)
+        # We assume coupler_patch carries 'conflicting_coords' metadata
+        conflict_coords = getattr(coupler_patch, 'conflicting_stabilizer_coords', set())
+        
+        conflict_uids = set()
+        if conflict_coords:
+            # We need to map Coordinates -> Stabilizer UIDs
+            for uid in self.active_stabilizer_indices:
+                stab = self.stabilizers[uid]
+                if stab['syn_coord'] in conflict_coords:
+                    conflict_uids.add(uid)
+
+        # 3. Execute the stabilizer masking/unmasking
+        
+        # A. Save history (Critical for Deactivation)
+        self.paused_stabilizer_indices[coupler_name] = conflict_uids
+        
+        # B. Deactivate Conflicts
+        self.active_stabilizer_indices.difference_update(conflict_uids)
+        
+        # C. Activate Coupler
+        self.active_stabilizer_indices.update(coupler_stabilizer_uids)
+
+
+    def deactivate_coupler(self, coupler_name: str):
+        """
+        Deactivates a coupler.
+        1. Deactivates the coupler's stabilizers.
+        2. Restores (Re-activates) the stabilizers that were paused by this coupler.
+        """
+        if coupler_name not in self.paused_stabilizer_indices:
+            print(f"Coupler '{coupler_name}' is not currently active (or wasn't activated via this method).")
+            return
+
+        # 1. Identify Coupler Stabilizers
+        coupler_stabilizer_uids = {
+            i for i, s in enumerate(self.stabilizers) 
+            if s.get('patch_name') == coupler_name
+        }
+
+        # 2. Retrieve History
+        restored_uids = self.paused_stabilizer_indices.pop(coupler_name)
+
+        # 3. Execute the stabilizer masking/unmasking
+        
+        # A. Deactivate Coupler
+        self.active_stabilizer_indices.difference_update(coupler_stabilizer_uids)
+        
+        # B. Restore Original Stabilizers
+        self.active_stabilizer_indices.update(restored_uids)

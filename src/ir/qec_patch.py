@@ -23,8 +23,10 @@ class QECPatch(ABC):
         # Master source of truth for coordinates
         self.qubit_coords: Dict[int, Tuple[float, float]] = {} 
 
-        self.data_qubit_indices: Set[int] = set()
-        self.syndrome_qubit_indices: Set[int] = set()
+        self.data_indices: Set[int] = set()
+        self.syndrome_indices: Set[int] = set()
+        self.syndrome_indices_x: Set[int] = set()
+        self.syndrome_indices_z: Set[int] = set()
 
         self.index_map: Dict[Tuple[float, float], int] = {}
         self.grid_map: Dict[Tuple[int, int], int] = {}
@@ -41,6 +43,7 @@ class QECPatch(ABC):
         # --- 3. Build Process ---
         self.params = kwargs
         self._process_params()
+
         self.build() # Call the subclass implementation
     
     @property
@@ -50,11 +53,11 @@ class QECPatch(ABC):
 
     @property
     def data_coords(self) -> List[Tuple[float, float]]:
-        return [self.qubit_coords[i] for i in sorted(self.data_qubit_indices)]
+        return [self.qubit_coords[i] for i in sorted(self.data_indices)]
     
     @property
     def syndrome_coords(self) -> List[Tuple[float, float]]:
-        return [self.qubit_coords[i] for i in sorted(self.syndrome_qubit_indices)]
+        return [self.qubit_coords[i] for i in sorted(self.syndrome_indices)]
 
     @classmethod
     def from_config(cls, config: Dict[str, any]) -> 'QECPatch':
@@ -106,23 +109,19 @@ class QECPatch(ABC):
         self.grid_map[grid_key] = uid
         
         if role == 'data':
-            self.data_qubit_indices.add(uid)
+            self.data_indices.add(uid)
         elif role.startswith('syndrome'):
-            self.syndrome_qubit_indices.add(uid)
+            self.syndrome_indices.add(uid)
+            if role == 'syndrome_x':
+                self.syndrome_indices_x.add(uid)
+            elif role == 'syndrome_z':
+                self.syndrome_indices_z.add(uid)
+            else:
+                raise ValueError(f"Invalid role: {role}")
         else:
             raise ValueError(f"Invalid role: {role}")
 
         return uid
-
-    @staticmethod
-    def _apply_shift_to_list(coords_list: List[Tuple[float, float]], dx: float, dy: float) -> List[Tuple[float, float]]:
-        """Helper to shift a list of coordinates."""
-        return [(x + dx, y + dy) for (x, y) in coords_list]
-    
-    @staticmethod
-    def _apply_transpose_to_list(coords_list: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
-        """Helper: swaps x and y for a list of coordinates."""
-        return [(y, x) for (x, y) in coords_list]
     
     @staticmethod
     def _rotate_transform(pos: Tuple[float, float], theta: float, center: Tuple[float, float]) -> Tuple[float, float]:
@@ -138,11 +137,6 @@ class QECPatch(ABC):
         ny = dx * sin_t + dy * cos_t
         
         return QECPatch.snap_coord((nx + cx, ny + cy))
-    
-    @staticmethod
-    def _apply_rotation_to_list(coord_list: List[Tuple[float, float]], theta: float, center: Tuple[float, float]) -> List[Tuple[float, float]]:
-        """Helper to transform a list of coordinates."""
-        return [QECPatch._rotate_transform(c, theta, center) for c in coord_list]
 
     @staticmethod
     def snap_coord(pos: Tuple[float, float]) -> Tuple[float, float]:
@@ -223,7 +217,7 @@ class QECPatch(ABC):
                 if idx in self.qubit_coords:
                     stab['syn_coord'] = self.qubit_coords[idx]
         
-        # Note: We do NOT need to update self.stabilizers or self.logicals 
+        # Note: We do NOT need to update other keys in self.stabilizers or self.logicals 
         # because they rely on qubit indices, which haven't changed!
 
     def transpose_coords(self):
@@ -301,6 +295,12 @@ class QECPatch(ABC):
 
         # 5. Update accumulated rotation angle and rebuild grid map
         self.rotation_angle = (self.rotation_angle + theta) % (2 * np.pi)
+    
+    def _get_bounds(self) -> Tuple[float, float, float, float]:
+        """Returns (min_x, max_x, min_y, max_y)"""
+        xs = [c[0] for c in self.qubit_coords.values()]
+        ys = [c[1] for c in self.qubit_coords.values()]
+        return min(xs), max(xs), min(ys), max(ys)
 
     # --- Algebraic Helper Methods (The Bridge) ---
 
@@ -314,9 +314,19 @@ class QECPatch(ABC):
         zs_rows = []
         
         for stab in self.stabilizers:
+            # Handle both dict and stim.PauliString formats
+            pauli = stab['pauli']
+            if isinstance(pauli, dict):
+                # Convert dict to stim.PauliString
+                pauli_str = stim.PauliString(num_qubits)
+                for idx, pauli_type in pauli.items():
+                    pauli_str[idx] = pauli_type
+            else:
+                pauli_str = pauli
+            
             # stim.PauliString.to_numpy() returns (xs, zs) boolean arrays
             # bit_packed=False gives generic boolean array
-            xs, zs = stab['pauli'].to_numpy(bit_packed=False)
+            xs, zs = pauli_str.to_numpy(bit_packed=False)
             
             # Pad or truncate if necessary (though usually matches num_qubits)
             if len(xs) < num_qubits:
@@ -350,7 +360,7 @@ class QECPatch(ABC):
     # --- Stim Helper Methods for Pauli Strings ---
     def create_stim_stabilizer(self, target_dict: Dict[Tuple[int, int], str], syn_coord: Optional[Tuple[int, int]] = None, type: Optional[str] = None):
         """Helper to convert dictionary definition to stim.PauliString"""
-        ps = stim.PauliString(self.num_qubits)
+        ps = {}
         data_indices = []
         
         for coord, pauli_type in target_dict.items():
@@ -371,22 +381,23 @@ class QECPatch(ABC):
         
         self.stabilizers.append(stabilizer_record)
 
-    def create_stim_logical(self, coords: List[Tuple[int, int]], pauli_type: str):
+    def create_stim_logical(self, target_dict: Dict[Tuple[int, int], str], op_type: str):
         """Helper to convert list of coords to stim.PauliString"""
-        ps = stim.PauliString(self.num_qubits)
+        ps = {}
         data_indices = []
 
-        for coord in coords:
+        for coord, pauli_type in target_dict.items():
             if coord in self.index_map:
                 idx = self.index_map[coord]
-                ps[self.index_map[coord]] = pauli_type
+                ps[idx] = pauli_type
                 data_indices.append(idx)
         
         logical_op_record  = {
             "pauli": ps,
-            "type": pauli_type, # "X", "Z"
+            "type": op_type,
             "data_indices": data_indices
         }
+        # Note: op_type = "Z" or "X" logical operators, but the corresponding Pauli String can contain "X", "Y", "Z", "I" (pauli_type).
         
         self.logical_ops.append(logical_op_record)
 
