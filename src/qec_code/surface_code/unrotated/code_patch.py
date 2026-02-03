@@ -1,4 +1,5 @@
-from typing import Tuple, Dict, List, Optional, Literal, Set
+from typing import Tuple, Dict, List, Optional, Literal, Set, Any
+from typing_extensions import ParamSpecKwargs
 import stim
 from src.ir.qec_patch import QECPatch
 from src.ir.coupler import LogicalCouplerProtocol
@@ -75,6 +76,16 @@ class UnrotatedSurfaceCode(QECPatch):
     @property
     def syndrome_coords_z(self) -> List[Tuple[float, float]]:
         return [self.qubit_coords[i] for i in sorted(self.syndrome_indices_z)]
+    
+    @property
+    def logical_ops_x(self) -> Dict[str, Any]:
+        log_op_x = [log_op for log_op in self.logical_ops if log_op["type"] == "X"]
+        return log_op_x[0]
+    
+    @property
+    def logical_ops_z(self) -> Dict[str, Any]:
+        log_op_z = [log_op for log_op in self.logical_ops if log_op["type"] == "Z"]
+        return log_op_z[0]
 
 
     def build(self):
@@ -190,3 +201,66 @@ class UnrotatedSurfaceCode(QECPatch):
             'num_logicals': self.num_logicals,
         })
         return info
+
+
+    def shift_logical_operators(self, op_type: Literal["X", "Z"], offset: float):
+        """
+        Shift the existing logical operators of a specific type in-place.
+        
+        Args:
+            op_type: "X" (Vertical logical op) -> shifts along x-axis.
+                    "Z" (Horizontal logical op) -> shifts along y-axis.
+            offset: The distance to shift.
+        """
+        # Find the logical operator of the specified type
+        target_log_op = None
+        for log_op in self.logical_ops:
+            if log_op["type"] == op_type:
+                target_log_op = log_op
+                break
+        
+        if target_log_op is None:
+            raise ValueError(f"No logical operator of type '{op_type}' found.")
+        
+        # Build new pauli dict and data_indices list
+        new_pauli: Dict[int, str] = {}
+        new_data_indices: List[int] = []
+        
+        # Determine shift direction
+        if op_type == "X":
+            # Shift along x-axis (dx = offset, dy = 0)
+            dx, dy = offset, 0.0
+        else:  # op_type == "Z"
+            # Shift along y-axis (dx = 0, dy = offset)
+            dx, dy = 0.0, offset
+        
+        # Process each qubit in the logical operator
+        for old_idx, pauli_type in target_log_op["pauli"].items():
+            # Get current coordinates
+            if old_idx not in self.qubit_coords:
+                raise ValueError(f"Qubit index {old_idx} not found in qubit_coords.")
+            
+            old_coord = self.qubit_coords[old_idx]
+            
+            # Calculate new coordinates
+            new_x = old_coord[0] + dx
+            new_y = old_coord[1] + dy
+            new_coord = self.snap_coord((new_x, new_y))
+            
+            # Find the qubit index at the new coordinate
+            if new_coord not in self.index_map:
+                raise ValueError(f"New coordinate {new_coord} does not have a corresponding qubit index. "
+                               f"Make sure the patch has qubits at the shifted location.")
+            
+            new_idx = self.index_map[new_coord]
+            
+            # Update pauli dict and data_indices
+            new_pauli[new_idx] = pauli_type
+            # Only include data qubits in data_indices
+            if new_idx in self.data_indices:
+                new_data_indices.append(new_idx)
+        
+        # Update the logical operator in-place
+        target_log_op["pauli"] = new_pauli
+        target_log_op["data_indices"] = new_data_indices
+        

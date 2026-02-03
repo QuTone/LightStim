@@ -2,13 +2,26 @@ import numpy as np
 import stim
 from typing import List, Optional
 
-class StabilizerTableau:
+class PauliTableau:
     def __init__(self, num_qubits: int):
         self.num_qubits = num_qubits
         # (M, 2N) Binary Matrix
         self.matrix = np.zeros((0, 2 * num_qubits), dtype=np.uint8)
         # List of lists. records[i] corresponds to matrix[i]
         self.records: List[List[int]] = [] 
+        self._row_map = {}
+    
+    def _row_to_key(self, row: np.ndarray) -> bytes:
+        """Helper: Convert a numpy row to a hashable bytes object."""
+        return row.tobytes()
+    
+    def _rebuild_map(self):
+        """Rebuilds the hash map after row insertion/deletion/reordering."""
+        self._row_map = {}
+        for i in range(self.matrix.shape[0]):
+            key = self._row_to_key(self.matrix[i])
+            self._row_map[key] = i
+
         
     def add_stabilizers(self, paulis: np.ndarray, new_records: Optional[List[List[int]]] = None):
         """
@@ -31,6 +44,7 @@ class StabilizerTableau:
 
         self.matrix = np.vstack([self.matrix, paulis])
         self.records.extend(new_records)
+        self._rebuild_map()
 
     def update_row(self, target_idx: int, source_idx: int):
         """
@@ -57,6 +71,12 @@ class StabilizerTableau:
         """Replaces a stabilizer (e.g. after anti-commutation)."""
         self.matrix[idx] = new_pauli
         self.records[idx] = new_record
+
+    def remove_rows(self, indices: List[int]):
+        """Removes rows from the tableau."""
+        self.matrix = np.delete(self.matrix, indices, axis=0)
+        self.records = [self.records[i] for i in range(len(self.records)) if i not in indices]
+        self._rebuild_map()
 
     def get_record(self, idx: int) -> List[int]:
         return self.records[idx]

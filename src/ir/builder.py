@@ -171,12 +171,14 @@ class CircuitBuilder:
     def mask_stabilizers(self, ids: Set[int]):
         """
         Mask (Deactivate) the stabilizers with the given ids.
+        To be implemented.
         """
         pass
 
     def unmask_stabilizers(self, ids: Set[int]):
         """
         Unmask (Activate) the stabilizers with the given ids.
+        To be implemented.
         """
         pass
 

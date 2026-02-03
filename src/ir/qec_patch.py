@@ -401,3 +401,9 @@ class QECPatch(ABC):
         
         self.logical_ops.append(logical_op_record)
 
+    def reset_rotation_angle(self):
+        self.rotation_angle = 0.0
+    
+    def reset_transposition(self):
+        self.is_transposed = False
+

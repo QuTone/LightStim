@@ -412,7 +412,7 @@ class QECSystem:
         # A. Save history (Critical for Deactivation)
         self.paused_stabilizer_indices[coupler_name] = conflict_uids
         
-        # B. Deactivate Conflicts
+        # B. Deactivate Conflicts and update the stabilizer tableau
         self.active_stabilizer_indices.difference_update(conflict_uids)
         
         # C. Activate Coupler

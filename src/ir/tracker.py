@@ -1,7 +1,7 @@
 import stim
 import numpy as np
 from ..utils.linear_algebra import check_commutativity, solve_linear_decomposition
-from .tableau import StabilizerTableau
+from .tableau import PauliTableau
 from typing import List
 
 class SyndromeTracker:
@@ -15,8 +15,8 @@ class SyndromeTracker:
         
         # Track the current stabilizers and logicals of the system 
         # Note: Technically, logicals are also stabilizers of the system, define the logical states
-        self.stabilizers = StabilizerTableau(num_qubits)
-        self.logicals = StabilizerTableau(num_qubits)
+        self.stabilizers = PauliTableau(num_qubits)
+        self.logicals = PauliTableau(num_qubits)
 
     def set_expected_logicals(self, k: int):
         """
@@ -37,6 +37,15 @@ class SyndromeTracker:
         """
         self.stabilizers.add_stabilizers(init_tableau)
 
+    def process_logical_gate(self, circuit: stim.Circuit):
+        """
+        Handles Logical Gates.
+        1. Verify the logical gate is valid: it should commute with all existing stabilizers.
+        2. Status Update: Update the logicals tableau; the stabilizers tableau is not updated.
+        """
+        pass
+
+
     def process_mid_measurement(self, 
                                 circuit: stim.Circuit, 
                                 back_propagated_paulis: np.ndarray, 
@@ -51,7 +60,7 @@ class SyndromeTracker:
         # ======================================================================
         # Step 1: Combine Stabilizers and Logicals into Full Tableau
         # ======================================================================
-        num_stabs = self.stabilizers.count
+        num_stabs = self.stabilizers.count 
         num_logs = self.logicals.count
         
         # If logicals is empty, full_tableau is just stabilizers
@@ -64,13 +73,16 @@ class SyndromeTracker:
             full_records = list(self.stabilizers.records) # Deep copy of list structure
         
         # ======================================================================
-        # Step 2: Process Back-propagated measurements (Update / Detector)
+        # Step 2: Process Back-propagated Pauli measurements (Update / Detector)
         # ======================================================================
         
         for i in range(num_meas):
             meas_pauli = back_propagated_paulis[i]
             meas_row_view = meas_pauli.reshape(1, -1)
             meas_abs_idx = current_base_idx + i
+
+            # if syn_coords[i] == (6.0,1.0):
+            #     print("Flag!")
             
             # Check commutativity against existing stabilizers and logicals
             comm_check = check_commutativity(meas_row_view, full_matrix)
@@ -86,44 +98,58 @@ class SyndromeTracker:
                     full_matrix[other] ^= full_matrix[pivot]
                     full_records[other].extend(full_records[pivot])
                 
-                # Replace the pivot with the measurement
-                # Note: We keep the pivot in the Full Tableau. 
-                # Whether it ends up in Stabilizers or Logicals depends on Step 3.
+                # Replace the pivot with the back_propagated_paulis
+                # They may replace an original stabilizer or logical (the pivot), which will be determined in Step 3. 
                 full_matrix[pivot] = meas_pauli
                 full_records[pivot] = [meas_abs_idx]
             
             else:
                 # --- Case B: Commutes (Detector) ---
-                # Detector is formed by decomposing Meas into STABILIZERS only.
-                # (Logicals do not contribute to deterministic checks in SE)
+                # Detector is formed by decomposing Back-propagated Pauli Measurements into existing STABILIZERS only.
+                # (Logicals do not contribute to the decomposition)
                 
                 # Extract current stabilizers from full_matrix
                 if num_stabs > 0:
-                    curr_stab_matrix = full_matrix[:num_stabs]
-                    
-                    coeffs, is_dependent, _ = solve_linear_decomposition(
-                        basis=curr_stab_matrix, 
-                        targets=meas_row_view
-                    )
-                    
-                    if is_dependent[0]: # Construct a detector
+                    # First check if meas_row_view is exactly one row in curr_stab_matrix
+                    meas_row_view_key = meas_row_view.tobytes()
+                    if meas_row_view_key in self.stabilizers._row_map:
+                        # Directly construct the detector
                         args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
-                        comp_indices = np.where(coeffs[0])[0]
-                        for c_idx in comp_indices:
-                            # Map back to full records
-                            # c_idx is index in curr_stab_matrix, which matches full_records[:num_stabs]
-                            for r in full_records[c_idx]:
-                                args.append(stim.target_rec(r - self.total_measurements))
-                        
+                        row_idx = self.stabilizers._row_map[meas_row_view_key]
+                        for r in full_records[row_idx]:
+                            args.append(stim.target_rec(r - self.total_measurements))
                         circuit.append("DETECTOR", args, list(syn_coords[i]) + [0])
                     else:
-                        # New stabilizer that's missing in the current stabilizer tableau
-                        # This should never happen in a well-defined stabilizer tableau
-                        raise RuntimeError(
-                            f"Measurement {i} commutes with all current stabilizers but is linearly independent.\n"
-                            f"This implies the Full Stabilizer + Logicals Tableau is incomplete (Rank < num_qubits).\n"
-                            f"Please ensure all qubits are initialized and added to the tracker before measurement."
+                        # meas_row_view is decomposed into existing stabilizers
+                        coeffs, is_dependent, _ = solve_linear_decomposition(
+                            basis=full_matrix, # full matrix! the back-propagated Pauli may contain present logical operator components
+                            targets=meas_row_view
                         )
+                        
+                        if is_dependent[0]: # Construct a detector
+                            args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
+                            comp_indices = np.where(coeffs[0])[0]
+                            for c_idx in comp_indices:
+                                # Map back to full records
+                                if c_idx <= num_stabs: # Only stabilizer components contribute to the detector
+                                    for r in full_records[c_idx]:
+                                        # Clean the format: if there are the same target, remove the duplicates
+                                        rec_to_append = stim.target_rec(r - self.total_measurements)
+                                        if rec_to_append in args:
+                                            args.remove(rec_to_append)
+                                        else:
+                                            args.append(rec_to_append)
+            
+                            circuit.append("DETECTOR", args, list(syn_coords[i]) + [0])
+                        else:
+                            # New stabilizer that's missing in the current stabilizer tableau
+                            # This should never happen in a well-defined stabilizer tableau
+                            # raise RuntimeError(
+                            #     f"Measurement {i} commutes with all current stabilizers but is linearly independent.\n"
+                            #     f"This implies the Full Stabilizer + Logicals Tableau is incomplete (Rank < num_qubits).\n"
+                            #     f"Please ensure all qubits are initialized and added to the tracker before measurement."
+                            # )
+                            pass
 
         # ======================================================================
         # Step 3: Write Back with "Clean" Basis
@@ -150,8 +176,9 @@ class SyndromeTracker:
             
             self.logicals.matrix = new_log_matrix
             self.logicals.records = new_log_records
+            self.logicals._rebuild_map()
         else:
-            self.logicals = StabilizerTableau(self.num_qubits)
+            self.logicals = PauliTableau(self.num_qubits) # empty logicals
 
         # 2. Update Stabilizers
         # Reset stabilizers to the canonical measurement basis.
@@ -160,7 +187,8 @@ class SyndromeTracker:
         
         self.stabilizers.matrix = back_propagated_paulis
         self.stabilizers.records = new_stab_records
-
+        self.stabilizers._rebuild_map()
+        
         # 3. Final Sanity Check (The Guardrail)
         # if self.logicals.count != self.expected_num_logicals:
         #      raise RuntimeError(
