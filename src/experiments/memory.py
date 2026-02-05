@@ -20,9 +20,9 @@ class MemoryExperiment:
     def __init__(self, 
                  qec_system: Any,  # The System/Geometry object
                  extraction_block_class: Type, # Class ref, e.g. RotatedSurfaceCodeExtractionBlock
-                 rounds: int,
-                 noise_params: NoiseConfig,
-                 noise_model: str = 'circuit_level',
+                 rounds: int = 2,
+                 noise_params: Optional[NoiseConfig] = None,
+                 noise_model: Optional[str] = 'circuit_level',
                  basis: Literal['X', 'Z'] = 'Z',
                  if_detector: bool = True):
         """
@@ -77,11 +77,10 @@ class MemoryExperiment:
         # We pass self.patch because the Block needs coordinate info
         print("Building syndrome extraction rounds...")
         se_block = self.block_class(self.system)
-        se_round = se_block.circuit
 
         # Apply the loop using Builder, construct detectors
         self.builder.apply_syndrome_extraction(
-            circuit_chunk=se_round, 
+            circuit_chunk=se_block.circuit, 
             rounds=self.rounds
         )
 
@@ -95,13 +94,15 @@ class MemoryExperiment:
         # 6. Noise Injection
         # ----------------------------------------------------------------------
         # Finally, wrap the clean topological circuit with the requested noise model.
-        print("Injecting noise...")
-        noisy_circuit = self.builder.build_noisy_circuit(
-            noise_params=self.noise_params,
-            noise_model=self.noise_model
-        )
-
-        return noisy_circuit
+        if self.noise_params is not None:
+            print("Injecting noise...")
+            noisy_circuit = self.builder.build_noisy_circuit(
+                noise_params=self.noise_params,
+                noise_model=self.noise_model
+            )
+            return noisy_circuit
+        else:
+            return self.builder.circuit
 
 
     # Log Helper Functions

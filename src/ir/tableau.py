@@ -9,7 +9,7 @@ class PauliTableau:
         self.matrix = np.zeros((0, 2 * num_qubits), dtype=np.uint8)
         # List of lists. records[i] corresponds to matrix[i]
         self.records: List[List[int]] = [] 
-        self._row_map = {}
+        self._row_map = {} # Given a Pauli string in bytes format, return the row index in the tableau.
     
     def _row_to_key(self, row: np.ndarray) -> bytes:
         """Helper: Convert a numpy row to a hashable bytes object."""

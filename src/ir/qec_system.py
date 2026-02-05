@@ -53,7 +53,8 @@ class QECSystem:
         
         # Owner Map: (x, y) -> patch_name, Determine the owner of the qubit.
         # Used for collision detection and debugging
-        self.owner_map: Dict[Tuple[int, int], str] = {}
+        self.coord_to_owner_map: Dict[Tuple[float, float], str] = {}
+        self.index_to_owner_map: Dict[int, str] = {}
         # Local to Global Map: patch_name -> local_index -> global_index
         self.local_to_global_map: Dict[str, Dict[int, int]] = {}
 
@@ -170,7 +171,7 @@ class QECSystem:
             
             # Collision Check
             if global_coord in self.index_map:
-                existing_owner = self.owner_map[global_coord]
+                existing_owner = self.coord_to_owner_map[global_coord]
                 raise ValueError(
                     f"Coordinate collision at {global_coord}. "
                     f"Trying to add patch '{name}', but occupied by '{existing_owner}'."
@@ -180,11 +181,12 @@ class QECSystem:
             idx = self.next_index
             self.index_map[global_coord] = idx
             self.qubit_coords[idx] = global_coord
-            self.owner_map[global_coord] = name
+            self.coord_to_owner_map[global_coord] = name
             grid_key = patch.get_grid_key(global_coord)
             self.grid_map[grid_key] = idx
             local_to_global_map[local_index] = idx
             self.local_to_global_map[name][local_index] = idx
+            self.index_to_owner_map[idx] = name
 
             # Categorize
             if local_index in patch.data_indices:

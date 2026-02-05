@@ -98,6 +98,9 @@ class CircuitBuilder:
         # Append clean chunk to actual circuit
         self.circuit += circuit_chunk
         
+        total_measurements = self.tracker.total_measurements
+        meas_rec_to_idx_map_update = {total_measurements + i: syn_idx for i, syn_idx in enumerate(syn_qubit_indices)}
+        self.tracker.meas_rec_to_idx_map.update(meas_rec_to_idx_map_update)
         # Ask Tracker to process it (Update Tableau + Generate Detectors)
         if self.if_detector:
             self.tracker.process_mid_measurement(
@@ -105,6 +108,7 @@ class CircuitBuilder:
                 back_propagated_paulis=back_propagated_paulis,
                 syn_coords=syn_coords
             )
+        
         
         # ======================================================================
         # Phase 2: Repeat Rounds (Stim Loop)
@@ -133,6 +137,11 @@ class CircuitBuilder:
             
             self.circuit.append(stim.CircuitRepeatBlock(rounds - 1, loop_body))
             
+            # Update the meas_rec_to_idx_map for the repeated rounds
+            total_measurements = self.tracker.total_measurements
+            for r in range(rounds - 1):
+                self.tracker.meas_rec_to_idx_map.update({total_measurements + num_syn * r + i: syn_idx for i, syn_idx in enumerate(syn_qubit_indices)})
+            
             # Update Tracker Counter, but the tableau does not need to be updated again
             meas_record_offset = num_syn * (rounds - 1)
             self.tracker.total_measurements += meas_record_offset
@@ -140,7 +149,7 @@ class CircuitBuilder:
                 records = self.tracker.stabilizers.records[i]
                 shift_records = [rec + meas_record_offset for rec in records]
                 self.tracker.stabilizers.records[i] = shift_records
-
+            
     # --------------------------------------------------------------------------
     # C. Logical Gate
     # --------------------------------------------------------------------------
@@ -216,7 +225,7 @@ class CircuitBuilder:
             self.tracker.process_final_measurement(
                 circuit=self.circuit,
                 final_paulis=final_paulis,
-                syndrome_coords=self.system.syndrome_coords 
+                idx_to_coord_map=self.system.qubit_coords 
             )
 
     # --------------------------------------------------------------------------

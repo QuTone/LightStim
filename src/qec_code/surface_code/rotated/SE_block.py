@@ -73,7 +73,7 @@ class RotatedSurfaceCodeExtractionBlock:
             for stab in active_stabilizers_x:
                 syn_coord = stab['syn_coord']
                 syn_idx = stab['syn_idx']
-                owner_patch = self.system.patches[self.system.owner_map[syn_coord]][0]
+                owner_patch = self.system.patches[self.system.coord_to_owner_map[syn_coord]][0]
                 dx_x_global = owner_patch.transform_vector(dx_x)
                 raw_target = (
                     syn_coord[0] + dx_x_global[0], 
@@ -90,7 +90,7 @@ class RotatedSurfaceCodeExtractionBlock:
             for stab in active_stabilizers_z:
                 syn_coord = stab['syn_coord']
                 syn_idx = stab['syn_idx']
-                owner_patch = self.system.patches[self.system.owner_map[syn_coord]][0]
+                owner_patch = self.system.patches[self.system.coord_to_owner_map[syn_coord]][0]
                 dx_z_global = owner_patch.transform_vector(dx_z)
                 raw_target = (
                     syn_coord[0] + dx_z_global[0], 
