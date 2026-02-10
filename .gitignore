@@ -30,6 +30,9 @@ ENV/
 .ipynb_checkpoints
 *.ipynb_checkpoints/
 
+# Claude Code
+CLAUDE.md
+
 # IDE
 .vscode/
 .idea/
