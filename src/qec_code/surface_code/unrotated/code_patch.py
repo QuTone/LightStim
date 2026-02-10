@@ -263,4 +263,3 @@ class UnrotatedSurfaceCode(QECPatch):
         # Update the logical operator in-place
         target_log_op["pauli"] = new_pauli
         target_log_op["data_indices"] = new_data_indices
-        

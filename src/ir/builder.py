@@ -151,13 +151,24 @@ class CircuitBuilder:
                 self.tracker.stabilizers.records[i] = shift_records
             
     # --------------------------------------------------------------------------
-    # C. Logical Gate
+    # C. Logical Gate & Unitary Operations
     # --------------------------------------------------------------------------
-    def apply_logical_gate(self, gate_type: str, target_qubits: List[int]):
+    def apply_unitary_block(self, unitary_block: stim.Circuit):
         """
-        Applies a logical gate to the target qubits.
+        Applies a unitary circuit block and updates the tracker's tableau.
+        
+        This method is used for logical operations (e.g., transversal CNOT) that
+        need to update the stabilizer tableau to reflect the unitary transformation.
+        
+        Args:
+            unitary_block: A Stim circuit containing only unitary operations (no measurements/resets).
         """
-        pass
+        # Append the unitary block to the circuit
+        self.circuit += unitary_block
+        
+        # Update the tracker's tableau to reflect the unitary transformation
+        if self.if_detector:
+            self.tracker.process_unitary_block(unitary_block)
 
     # --------------------------------------------------------------------------
     # D. Logical Coupler Activity, Stabilizer Masking/Unmasking

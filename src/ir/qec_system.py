@@ -236,7 +236,51 @@ class QECSystem:
         if is_active:
             self.active_stabilizer_indices.update(stabilizer_indices)
 
-        return patch
+        # 6. Create and return global patch view (with global indices)
+        # This is a deep copy of the patch with all indices converted to global
+        global_patch = copy.deepcopy(patch)
+        
+        # Convert data_indices from local to global
+        global_patch.data_indices = {local_to_global_map[local_idx] for local_idx in patch.data_indices}
+        
+        # Convert syndrome_indices from local to global
+        global_patch.syndrome_indices = {local_to_global_map[local_idx] for local_idx in patch.syndrome_indices}
+        
+        # Convert syndrome_indices_x and syndrome_indices_z if they exist
+        if hasattr(patch, 'syndrome_indices_x'):
+            global_patch.syndrome_indices_x = {local_to_global_map[local_idx] for local_idx in patch.syndrome_indices_x}
+        if hasattr(patch, 'syndrome_indices_z'):
+            global_patch.syndrome_indices_z = {local_to_global_map[local_idx] for local_idx in patch.syndrome_indices_z}
+        
+        # Convert logical_ops indices from local to global
+        for logical_op in global_patch.logical_ops:
+            # Update pauli string indices
+            new_pauli = {}
+            for local_idx, pauli_type in logical_op['pauli'].items():
+                if local_idx in local_to_global_map:
+                    new_pauli[local_to_global_map[local_idx]] = pauli_type
+            logical_op['pauli'] = new_pauli
+            
+            # Update data_indices
+            logical_op['data_indices'] = [local_to_global_map[local_idx] for local_idx in logical_op['data_indices'] if local_idx in local_to_global_map]
+        
+        # Convert stabilizers indices from local to global
+        for stabilizer in global_patch.stabilizers:
+            # Update pauli string indices
+            new_pauli = {}
+            for local_idx, pauli_type in stabilizer['pauli'].items():
+                if local_idx in local_to_global_map:
+                    new_pauli[local_to_global_map[local_idx]] = pauli_type
+            stabilizer['pauli'] = new_pauli
+            
+            # Update data_indices
+            stabilizer['data_indices'] = [local_to_global_map[local_idx] for local_idx in stabilizer['data_indices'] if local_idx in local_to_global_map]
+            
+            # Update syn_idx if it exists
+            if stabilizer.get('syn_idx') is not None and stabilizer['syn_idx'] in local_to_global_map:
+                stabilizer['syn_idx'] = local_to_global_map[stabilizer['syn_idx']]
+
+        return global_patch
 
     # ======================================================================
     # Helper Methods

@@ -39,13 +39,101 @@ class SyndromeTracker:
         """
         self.stabilizers.add_stabilizers(init_tableau)
 
-    def process_logical_gate(self, circuit: stim.Circuit):
+
+    def process_unitary_block(self, circuit_chunk: stim.Circuit):
         """
-        Handles Logical Gates.
-        1. Verify the logical gate is valid: it should commute with all existing stabilizers.
-        2. Status Update: Update the logicals tableau; the stabilizers tableau is not updated.
+        Evolves the internal stabilizer/logical tableau by applying a unitary circuit chunk.
+        Update Rule: S_new = S_old @ Symplectic_Matrix
+        
+        Args:
+            circuit_chunk: A Stim circuit containing only unitary operations (no measurements/resets).
         """
-        pass
+        # 1. Convert Circuit to Tableau (Forward Evolution)
+        # We ignore noise/measurement to treat it as a pure Clifford unitary
+        # Note: Unlike back-propagation, we do NOT invert the tableau here.
+        # We want the forward evolution U.
+        u_tableau = stim.Tableau.from_circuit(
+            circuit_chunk, 
+            ignore_noise=True, 
+            ignore_measurement=True, 
+            ignore_reset=True
+        )
+        
+        # 2. Get Symplectic Components
+        # Output shapes are (n_chunk, n_chunk)
+        # x2x: X component of X generators' image
+        # x2z: Z component of X generators' image
+        # z2x: X component of Z generators' image
+        # z2z: Z component of Z generators' image
+        x2x, x2z, z2x, z2z, _, _ = u_tableau.to_numpy()
+        
+        # Convert to standard integer numpy arrays (uint8 is sufficient for mod 2)
+        x2x = x2x.astype(np.uint8)
+        x2z = x2z.astype(np.uint8)
+        z2x = z2x.astype(np.uint8)
+        z2z = z2z.astype(np.uint8)
+        
+        # 3. Padding Logic (Alignment to System Size)
+        n_chunk = len(u_tableau)
+        n_sys = self.num_qubits
+        
+        if n_chunk > n_sys:
+            raise ValueError(f"Circuit chunk involves qubit {n_chunk-1}, exceeding system size {n_sys}.")
+        
+        # We need to construct the full 2N x 2N symplectic matrix M.
+        # The structure of M for right-multiplication (Row Vector @ M) is:
+        # M = [ X->X  X->Z ]
+        #     [ Z->X  Z->Z ]
+        #
+        # So:
+        # Top-Left: x2x
+        # Top-Right: x2z
+        # Bottom-Left: z2x
+        # Bottom-Right: z2z
+        
+        if n_chunk == n_sys:
+            # No padding needed, construct directly
+            top = np.hstack([x2x, x2z])      # (N, 2N)
+            bottom = np.hstack([z2x, z2z])   # (N, 2N)
+            symplectic_matrix = np.vstack([top, bottom]) # (2N, 2N)
+            
+        else:
+            # Need padding. The operation is Identity on qubits [n_chunk, n_sys).
+            # Identity Symplectic Matrix structure:
+            # [ I  0 ]
+            # [ 0  I ]
+            
+            # 3.1 Initialize full matrix as Identity
+            full_M = np.eye(2 * n_sys, dtype=np.uint8)
+            
+            # 3.2 Fill the active region
+            # Top-Left (X->X)
+            full_M[:n_chunk, :n_chunk] = x2x
+            # Top-Right (X->Z)
+            full_M[:n_chunk, n_sys:n_sys+n_chunk] = x2z
+            # Bottom-Left (Z->X)
+            full_M[n_sys:n_sys+n_chunk, :n_chunk] = z2x
+            # Bottom-Right (Z->Z)
+            full_M[n_sys:n_sys+n_chunk, n_sys:n_sys+n_chunk] = z2z
+            
+            symplectic_matrix = full_M
+
+        # 4. Perform Symplectic Update (Conjugation) for Stabilizers
+        # self.stabilizers.matrix shape: (K_stabilizers, 2*n_sys)
+        # symplectic_matrix shape: (2*n_sys, 2*n_sys)
+        # Result: Each row P becomes P' = P @ M
+        if self.stabilizers.count > 0:
+            # Using matmul (@) and modulo 2
+            self.stabilizers.matrix = (self.stabilizers.matrix @ symplectic_matrix) % 2
+            self.stabilizers.matrix = self.stabilizers.matrix.astype(np.uint8)
+            self.stabilizers._rebuild_map()
+        
+        # 5. Perform Symplectic Update for Logicals
+        if self.logicals.count > 0:
+            # Using matmul (@) and modulo 2
+            self.logicals.matrix = (self.logicals.matrix @ symplectic_matrix) % 2
+            self.logicals.matrix = self.logicals.matrix.astype(np.uint8)
+            self.logicals._rebuild_map()
 
 
     def process_mid_measurement(self, 
@@ -58,7 +146,7 @@ class SyndromeTracker:
         num_meas = back_propagated_paulis.shape[0]
         current_base_idx = self.total_measurements
         self.total_measurements += num_meas
-
+        
         # ======================================================================
         # Step 1: Combine Stabilizers and Logicals into Full Tableau
         # ======================================================================
@@ -105,7 +193,7 @@ class SyndromeTracker:
                 if pivot >= num_stabs:
                     # The pivot is a logical operator, decreases one degree of freedom
                     self.expected_num_logicals -= 1
-            
+                
             else:
                 # --- Case B: Commutes (Detector) ---
                 # Detector is formed by decomposing Back-propagated Pauli Measurements into existing STABILIZERS only.
@@ -114,11 +202,13 @@ class SyndromeTracker:
                 # Extract current stabilizers from full_matrix
                 if num_stabs > 0:
                     # First check if meas_row_view is exactly one row in curr_stab_matrix
-                    meas_row_view_key = meas_row_view.tobytes()
-                    if meas_row_view_key in self.stabilizers._row_map:
+                    # Directly compare meas_row_view against current stabilizer rows
+                    curr_stab_matrix = full_matrix[:num_stabs]
+                    matching_rows = np.where(np.all(curr_stab_matrix == meas_row_view, axis=1))[0]
+                    if len(matching_rows) > 0:
                         # Directly construct the detector
+                        row_idx = matching_rows[0]  # Take the first matching row
                         args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
-                        row_idx = self.stabilizers._row_map[meas_row_view_key]
                         for r in full_records[row_idx]:
                             args.append(stim.target_rec(r - self.total_measurements))
                         circuit.append("DETECTOR", args, list(syn_coords[i]) + [0])
@@ -228,7 +318,7 @@ class SyndromeTracker:
                 #  f"- If Found < Expected: System Overspecified (Measured a Logical?)."
              )
 
-             
+
     def process_final_measurement(self, 
                                   circuit: stim.Circuit, 
                                   final_paulis: np.ndarray,
@@ -267,7 +357,7 @@ class SyndromeTracker:
         # We MUST track which rows represent stabilizers that are destroyed by the measurement.
         # A destroyed stabilizer cannot form a deterministic detector.
         destroyed_rows = set()
-
+        
         for i in range(num_new_meas):
             meas_pauli = final_paulis[i]
             meas_row_view = meas_pauli.reshape(1, -1)
