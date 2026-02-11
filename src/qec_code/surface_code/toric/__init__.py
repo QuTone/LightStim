@@ -1,11 +1,7 @@
-"""Toric surface code package.
-Currently a placeholder; implementations live in code_patch.py and SE_block.py.
-"""
+from .code_patch import ToricCode
+from .SE_block import ToricCodeExtractionBlock
 
-__all__ = []
-
-"""Toric surface code package.
-Currently a placeholder; implementations live in code_patch.py and SE_block.py.
-"""
-
-__all__ = []
+__all__ = [
+    "ToricCode",
+    "ToricCodeExtractionBlock",
+]

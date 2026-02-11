@@ -54,13 +54,6 @@ QEC_Simulator/
 │   │           ├── code_patch.py
 │   │           └── SE_block.py
 │   │
-│   ├── experiments/              # Experiment Orchestrators
-│   │   ├── memory.py             # Memory experiment
-│   │   ├── two_patch_LS_unrotated.py  # Two-patch Lattice Surgery
-│   │   ├── CNOT_LS.py           # Lattice Surgery CNOT (3-patch)
-│   │   ├── CNOT_trans.py         # Transversal CNOT gate
-│   │   └── ghz.py                # GHZ state preparation
-│   │
 │   ├── noise/                    # Noise Injection System
 │   │   ├── config.py             # Noise configuration
 │   │   ├── injector.py           # Noise injection logic
@@ -76,6 +69,14 @@ QEC_Simulator/
 │   │
 │   └── processing/               # Processing and analysis tools
 │       └── ...
+│
+├── experiments/                  # Experiment Orchestrators
+│   ├── memory.py                 # Memory experiment
+│   ├── two_patch_LS_unrotated.py # Two-patch Lattice Surgery
+│   ├── CNOT_LS.py                # Lattice Surgery CNOT (3-patch)
+│   ├── CNOT_trans.py             # Transversal CNOT gate
+│   ├── state_injection.py        # State injection (corner/middle)
+│   └── ghz.py                    # GHZ state preparation
 │
 └── requirements.txt              # Python dependencies
 ```
@@ -174,7 +175,7 @@ noisy_circuit = builder.build_noisy_circuit(
 Single-patch quantum memory with syndrome extraction:
 
 ```python
-from src.experiments.memory import MemoryExperiment
+from experiments.memory import MemoryExperiment
 from src.qec_code.surface_code.rotated import RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock
 from src.noise.config import NoiseConfig
 
@@ -198,7 +199,7 @@ circuit = experiment.build()
 Transversal CNOT gate between two surface code patches:
 
 ```python
-from src.experiments.CNOT_trans import CNOTTransExperiment
+from experiments.CNOT_trans import CNOTTransExperiment
 
 experiment = CNOTTransExperiment(
     distance=3,
@@ -219,7 +220,7 @@ circuit = experiment.build()
 Two-patch Lattice Surgery with coupler activation:
 
 ```python
-from src.experiments.two_patch_LS_unrotated import TwoPatchLSExperiment
+from experiments.two_patch_LS_unrotated import TwoPatchLSExperiment
 
 experiment = TwoPatchLSExperiment(
     patch1_config={"distance": 3},
@@ -241,7 +242,7 @@ circuit = experiment.build()
 Three-patch Lattice Surgery CNOT experiment:
 
 ```python
-from src.experiments.CNOT_LS import CNOTLSExperiment
+from experiments.CNOT_LS import CNOTLSExperiment
 
 experiment = CNOTLSExperiment(
     patch_configs={
@@ -264,7 +265,7 @@ circuit = experiment.build()
 GHZ state preparation using transversal CNOT gates:
 
 ```python
-from src.experiments.ghz import GHZExperiment
+from experiments.ghz import GHZExperiment
 
 experiment = GHZExperiment(
     distance=3,

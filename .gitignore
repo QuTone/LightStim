@@ -51,7 +51,8 @@ htmlcov/
 archive/
 
 # Processing (temporary processing files)
-# src/processing/
+processing/
+external/
 
 # Simulation outputs
 *.csv

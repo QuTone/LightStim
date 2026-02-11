@@ -1,0 +1,78 @@
+"""
+Worker functions for parallel simulation (CPU and GPU).
+
+Used when post-selection is required; otherwise sinter.collect handles parallelism.
+"""
+
+import os
+from multiprocessing import Manager
+from typing import Any, Callable, Dict, List, Optional
+
+import numpy as np
+import stim
+
+
+def _decode_worker_cpu(
+    circuit: stim.Circuit,
+    decoder_name: str,
+    decoder_params: Dict[str, Any],
+    batch_size: int,
+    max_shots: int,
+    max_errors: int,
+    post_select_indices: List[int],
+    shots_counter,
+    post_counter,
+    errors_counter,
+    lock,
+    worker_id: int = 0,
+    gpu_id: Optional[int] = None,
+) -> None:
+    """
+    Single worker process: sample -> post-select -> decode.
+    Updates shared counters (shots_counter, post_counter, errors_counter) under lock.
+    """
+    from .registry import get_decoder
+    from .post_select import apply_post_selection
+
+    if gpu_id is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
+    decoder = get_decoder(decoder_name, **decoder_params)
+    dem = circuit.detector_error_model(
+        decompose_errors=getattr(decoder, "decompose_errors", False),
+        approximate_disjoint_errors=True,
+    )
+    compiled = decoder.compile_decoder_for_dem(dem=dem)
+    sampler = dem.compile_sampler(seed=os.getpid() + worker_id * 10000)
+
+    while True:
+        with lock:
+            if shots_counter.value >= max_shots or errors_counter.value >= max_errors:
+                break
+
+        det_data, obs_data = sampler.sample(
+            shots=batch_size,
+            separate_observables=True,
+            bit_packed=False,
+        )
+
+        det_filtered, obs_filtered = apply_post_selection(
+            det_data, obs_data, post_select_indices
+        )
+        kept = det_filtered.shape[0]
+        if kept == 0:
+            with lock:
+                shots_counter.value += det_data.shape[0]
+            continue
+
+        det_packed = np.packbits(det_filtered, axis=1)
+        obs_packed = np.packbits(obs_filtered, axis=1)
+        pred_packed = compiled.decode_shots_bit_packed(
+            bit_packed_detection_event_data=det_packed,
+        )
+        batch_errors = int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
+
+        with lock:
+            shots_counter.value += det_data.shape[0]
+            post_counter.value += kept
+            errors_counter.value += batch_errors

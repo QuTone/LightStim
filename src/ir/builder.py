@@ -3,7 +3,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional, Union, Literal, Set
 from dataclasses import dataclass
 
-from ..ir.tracker import SyndromeTracker
+from ..ir.tracker import SyndromeTracker, _append_detector
 from ..noise.config import NoiseConfig
 from ..noise.injector import NoiseInjector
 
@@ -132,8 +132,13 @@ class CircuitBuilder:
                     rec_current = -num_syn + i
                     rec_prev = -num_syn + i - num_syn
                     
-                    coord = syn_coords[i]
-                    loop_body.append("DETECTOR", [stim.target_rec(rec_current), stim.target_rec(rec_prev)], list(coord) + [0]) 
+                    coord = list(syn_coords[i]) + [0]
+                    _append_detector(
+                        loop_body,
+                        [stim.target_rec(rec_current), stim.target_rec(rec_prev)],
+                        coord,
+                        post_select=tuple(coord) in self.tracker.post_select_detector_coords,
+                    ) 
             
             self.circuit.append(stim.CircuitRepeatBlock(rounds - 1, loop_body))
             self.circuit.append("TICK")

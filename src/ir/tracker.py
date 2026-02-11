@@ -3,10 +3,35 @@ import warnings
 import numpy as np
 from ..utils.linear_algebra import check_commutativity, solve_linear_decomposition
 from .tableau import PauliTableau
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Set
+
+# Tag for post-selection: detectors with this tag are used for post-selection filtering
+POST_SELECT_TAG = "post-select"
+
+
+def _append_detector(
+    circuit: stim.Circuit,
+    args: list,
+    coords: list,
+    post_select: bool = False,
+) -> None:
+    """Append a DETECTOR instruction, optionally with post-select tag."""
+    if post_select:
+        try:
+            circuit.append("DETECTOR", args, coords, tag=POST_SELECT_TAG)
+        except TypeError:
+            circuit.append("DETECTOR", args, coords)
+    else:
+        circuit.append("DETECTOR", args, coords)
+
 
 class SyndromeTracker:
-    def __init__(self, num_qubits: int, expected_num_logicals: int = 0):
+    def __init__(
+        self,
+        num_qubits: int,
+        expected_num_logicals: int = 0,
+        post_select_detector_coords: Optional[Set[Tuple[float, ...]]] = None,
+    ):
         # Number of physical qubits (include data, syndrome, and potentially other ancilla qubits)
         self.num_qubits = num_qubits
         # Number of logical qubits (should be the total number of logical qubits in the QEC system)
@@ -20,7 +45,8 @@ class SyndromeTracker:
         # Note 2: Stabilizer tableau allows linear dependencies between rows (e.g. toric code, BB code), but logicals do not in general..
         self.stabilizers = PauliTableau(num_qubits)
         self.logicals = PauliTableau(num_qubits)
-        self.stabilizer_with_logical_components = set() # Row indices of stabilizers that contain logical components
+        self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
+        self.post_select_detector_coords = post_select_detector_coords or set()
 
     def set_expected_logicals(self, k: int):
         """
@@ -211,7 +237,11 @@ class SyndromeTracker:
                         args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
                         for r in full_records[row_idx]:
                             args.append(stim.target_rec(r - self.total_measurements))
-                        circuit.append("DETECTOR", args, list(syn_coords[i]) + [0])
+                        coords = list(syn_coords[i]) + [0]
+                        _append_detector(
+                            circuit, args, coords,
+                            post_select=tuple(coords) in self.post_select_detector_coords,
+                        )
                     else: # meas_row is not exactly one row in curr_stab_matrix, but a linear combination of rows in the full matrix
                         # decompose meas_row into existing stabilizers
                         coeffs, is_dependent, _ = solve_linear_decomposition(
@@ -245,7 +275,11 @@ class SyndromeTracker:
                                     else:
                                         args.append(rec_to_append) # this logic is essentially the addition modulo 2
             
-                            circuit.append("DETECTOR", args, list(syn_coords[i]) + [0])
+                            coords = list(syn_coords[i]) + [0]
+                            _append_detector(
+                                circuit, args, coords,
+                                post_select=tuple(coords) in self.post_select_detector_coords,
+                            )
                         else:
                             # Measurement row commute but is independent of the current full tableau,
                             # but this should never happen in a well-defined full tableau, unless there are degrees of freedom missing.
@@ -426,7 +460,11 @@ class SyndromeTracker:
             # 3. Output:
             if k < num_stabs and k not in self.stabilizer_with_logical_components:
                 # Stabilizer -> DETECTOR
-                circuit.append("DETECTOR", args, list(det_coord) + [1])
+                coords = list(det_coord) + [1]
+                _append_detector(
+                    circuit, args, coords,
+                    post_select=tuple(coords) in self.post_select_detector_coords,
+                )
             else:
                 # Logical -> OBSERVABLE
                 circuit.append("OBSERVABLE_INCLUDE", args, [logical_observable_idx])

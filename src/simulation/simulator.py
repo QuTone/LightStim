@@ -3,19 +3,21 @@ import sinter
 import pandas as pd
 import multiprocessing as mp
 import time
-from typing import List, Dict, Any, Literal
+from typing import List, Dict, Any, Literal, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
-# Import internal modules
 from .decoder import BaseDecoder, SinterMWPMDecoder, NvidiaBpOsdDecoder
+from .decoder_backend import SimulationPipeline, ExperimentTask as PipelineExperimentTask, DecoderConfig
 from .gpu_worker import _gpu_decode_worker_process
 
-@dataclass
+
 class ExperimentTask:
-    """Standard input format for our simulator."""
-    circuit: stim.Circuit
-    json_metadata: Dict[str, Any]
+    """Standard input format for our simulator (alias for pipeline)."""
+    def __init__(self, circuit: stim.Circuit, json_metadata: Optional[Dict[str, Any]] = None):
+        self.circuit = circuit
+        self.json_metadata = json_metadata or {}
+
 
 class QECSimulator:
     """
@@ -31,57 +33,52 @@ class QECSimulator:
                   tasks: List[ExperimentTask], 
                   max_shots: int = 1_000_000,
                   max_errors: int = 1000,
-                  decoder: BaseDecoder = None, # 接收我们定义的 Decoder 对象
-                  gpu_ids: List[int] = [0]) -> pd.DataFrame:
+                  decoder: BaseDecoder = None,
+                  gpu_ids: List[int] = [0],
+                  output_dir: Optional[str] = None,
+                  post_select_detector_indices: Optional[List[int]] = None) -> pd.DataFrame:
         
         if decoder is None:
-            decoder = SinterMWPMDecoder() # Default
+            decoder = SinterMWPMDecoder()
 
         print(f"Starting Simulation Batch | Backend: {self.backend} | Decoder: {decoder.name}")
         
         if self.backend == 'sinter_cpu':
-            return self._run_sinter(tasks, max_shots, max_errors, decoder)
+            return self._run_via_pipeline(
+                tasks, max_shots, max_errors, decoder,
+                output_dir=output_dir,
+                post_select_detector_indices=post_select_detector_indices,
+            )
         elif self.backend == 'nvidia_gpu':
             return self._run_gpu(tasks, max_shots, max_errors, decoder, gpu_ids)
         else:
             raise ValueError(f"Unknown backend: {self.backend}")
 
     # ==========================================================================
-    # Backend 1: Sinter (CPU)
+    # Backend 1: Via SimulationPipeline (CPU, supports post-selection)
     # ==========================================================================
-    def _run_sinter(self, tasks, max_shots, max_errors, decoder) -> pd.DataFrame:
-        # 转换任务格式
-        sinter_tasks = [
-            sinter.Task(circuit=t.circuit, json_metadata=t.json_metadata)
-            for t in tasks
-        ]
-
-        # 调用 Sinter
-        stats = sinter.collect(
-            num_workers=self.num_workers,
-            tasks=sinter_tasks,
-            decoders=[decoder.name], # e.g. 'pymatching'
+    def _run_via_pipeline(
+        self,
+        tasks: List[ExperimentTask],
+        max_shots: int,
+        max_errors: int,
+        decoder: BaseDecoder,
+        output_dir: Optional[str] = None,
+        post_select_detector_indices: Optional[List[int]] = None,
+    ) -> pd.DataFrame:
+        pipeline = SimulationPipeline(
+            decoder_config=DecoderConfig(decoder.name, backend="cpu", params=getattr(decoder, "params", {})),
             max_shots=max_shots,
             max_errors=max_errors,
-            print_progress=True,
-            save_resume_filepath=f"sinter_resume_{datetime.now().strftime('%Y%m%d')}.csv"
+            num_workers=self.num_workers,
+            output_dir=output_dir,
+            post_select_detector_indices=post_select_detector_indices,
         )
-        
-        # 格式化输出
-        data = []
-        for s in stats:
-            row = {
-                "shots": s.shots,
-                "errors": s.errors,
-                "decoder": s.decoder,
-                "seconds": s.seconds,
-                **s.json_metadata
-            }
-            if s.shots > 0:
-                row["logical_error_rate"] = s.errors / s.shots
-            data.append(row)
-            
-        return pd.DataFrame(data)
+        pipeline_tasks = [
+            PipelineExperimentTask(t.circuit, t.json_metadata)
+            for t in tasks
+        ]
+        return pipeline.run_batch(pipeline_tasks)
 
     # ==========================================================================
     # Backend 2: Custom GPU (NVIDIA)
