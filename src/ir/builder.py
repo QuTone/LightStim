@@ -136,6 +136,7 @@ class CircuitBuilder:
                     loop_body.append("DETECTOR", [stim.target_rec(rec_current), stim.target_rec(rec_prev)], list(coord) + [0]) 
             
             self.circuit.append(stim.CircuitRepeatBlock(rounds - 1, loop_body))
+            self.circuit.append("TICK")
             
             # Update the meas_rec_to_idx_map for the repeated rounds
             total_measurements = self.tracker.total_measurements
@@ -150,8 +151,9 @@ class CircuitBuilder:
                 shift_records = [rec + meas_record_offset for rec in records]
                 self.tracker.stabilizers.records[i] = shift_records
             
+            
     # --------------------------------------------------------------------------
-    # C. Logical Gate & Unitary Operations
+    # C. Unitary Block (Logical Gates, Unitary Encoding, etc.)
     # --------------------------------------------------------------------------
     def apply_unitary_block(self, unitary_block: stim.Circuit):
         """
@@ -165,10 +167,10 @@ class CircuitBuilder:
         """
         # Append the unitary block to the circuit
         self.circuit += unitary_block
+        self.circuit.append("TICK")
         
         # Update the tracker's tableau to reflect the unitary transformation
-        if self.if_detector:
-            self.tracker.process_unitary_block(unitary_block)
+        self.tracker.process_unitary_block(unitary_block)
 
     # --------------------------------------------------------------------------
     # D. Logical Coupler Activity, Stabilizer Masking/Unmasking

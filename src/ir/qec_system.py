@@ -266,19 +266,30 @@ class QECSystem:
         
         # Convert stabilizers indices from local to global
         for stabilizer in global_patch.stabilizers:
-            # Update pauli string indices
+            raw_pauli = stabilizer.get('pauli', {})
             new_pauli = {}
-            for local_idx, pauli_type in stabilizer['pauli'].items():
-                if local_idx in local_to_global_map:
-                    new_pauli[local_to_global_map[local_idx]] = pauli_type
+            for key, pauli_type in raw_pauli.items():
+                if isinstance(key, int):  # Code Patch (local index)
+                    if key in local_to_global_map:
+                        new_pauli[local_to_global_map[key]] = pauli_type
+                elif isinstance(key, tuple):  # Coupler Patch (coord)
+                    if key in self.index_map:
+                        new_pauli[self.index_map[key]] = pauli_type
             stabilizer['pauli'] = new_pauli
-            
-            # Update data_indices
-            stabilizer['data_indices'] = [local_to_global_map[local_idx] for local_idx in stabilizer['data_indices'] if local_idx in local_to_global_map]
-            
+
+            # Update data_indices (Code Patch has it; Coupler derives from pauli)
+            if 'data_indices' in stabilizer:
+                stabilizer['data_indices'] = [local_to_global_map[i] for i in stabilizer['data_indices'] if i in local_to_global_map]
+            else:
+                stabilizer['data_indices'] = sorted(list(new_pauli.keys()))
+
             # Update syn_idx if it exists
             if stabilizer.get('syn_idx') is not None and stabilizer['syn_idx'] in local_to_global_map:
                 stabilizer['syn_idx'] = local_to_global_map[stabilizer['syn_idx']]
+            elif stabilizer.get('syn_coord') is not None:
+                coord = stabilizer['syn_coord']
+                if coord in self.index_map:
+                    stabilizer['syn_idx'] = self.index_map[coord]
 
         return global_patch
 

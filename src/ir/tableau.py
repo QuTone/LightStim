@@ -8,21 +8,8 @@ class PauliTableau:
         # (M, 2N) Binary Matrix
         self.matrix = np.zeros((0, 2 * num_qubits), dtype=np.uint8)
         # List of lists. records[i] corresponds to matrix[i]
-        self.records: List[List[int]] = [] 
-        self._row_map = {} # Given a Pauli string in bytes format, return the row index in the tableau.
-    
-    def _row_to_key(self, row: np.ndarray) -> bytes:
-        """Helper: Convert a numpy row to a hashable bytes object."""
-        return row.tobytes()
-    
-    def _rebuild_map(self):
-        """Rebuilds the hash map after row insertion/deletion/reordering."""
-        self._row_map = {}
-        for i in range(self.matrix.shape[0]):
-            key = self._row_to_key(self.matrix[i])
-            self._row_map[key] = i
+        self.records: List[List[int]] = []
 
-        
     def add_stabilizers(self, paulis: np.ndarray, new_records: Optional[List[List[int]]] = None):
         """
         Batch add stabilizers.
@@ -44,7 +31,6 @@ class PauliTableau:
 
         self.matrix = np.vstack([self.matrix, paulis])
         self.records.extend(new_records)
-        self._rebuild_map()
 
     def update_row(self, target_idx: int, source_idx: int):
         """
@@ -76,7 +62,6 @@ class PauliTableau:
         """Removes rows from the tableau."""
         self.matrix = np.delete(self.matrix, indices, axis=0)
         self.records = [self.records[i] for i in range(len(self.records)) if i not in indices]
-        self._rebuild_map()
 
     def get_record(self, idx: int) -> List[int]:
         return self.records[idx]
