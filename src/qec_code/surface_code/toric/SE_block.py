@@ -35,11 +35,11 @@ class ToricCodeExtractionBlock:
 
     def _build_circuit(self):
         active_syn_indices = self.system.active_syndrome_indices
-        self.circuit.append("R", active_syn_indices)
+        self.circuit.append("R", sorted(active_syn_indices))
         self.circuit.append("TICK", tag="SE_start")
 
         active_x_syn_indices = self.system.active_syndrome_indices_x
-        self.circuit.append("H", active_x_syn_indices)
+        self.circuit.append("H", sorted(active_x_syn_indices))
         self.circuit.append("TICK")
 
         canonical_tick_deltas = [
@@ -99,7 +99,7 @@ class ToricCodeExtractionBlock:
                 self.circuit.append("CNOT", cnot_targets)
             self.circuit.append("TICK")
 
-        self.circuit.append("H", active_x_syn_indices)
+        self.circuit.append("H", sorted(active_x_syn_indices))
         self.circuit.append("TICK")
 
-        self.circuit.append("M", active_syn_indices)
+        self.circuit.append("M", sorted(active_syn_indices))

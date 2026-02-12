@@ -1,35 +1,32 @@
 # experiments/CNOT_trans.py
 
 import stim
-from typing import Type, Literal, Optional, Any, Tuple, Union
+from typing import Type, Literal, Optional, Any, Tuple, Union, Dict
 
 from src.ir.experiment import QECExperiment
 from src.ir.qec_system import QECSystem
+from src.ir.qec_patch import QECPatch
 from src.noise.config import NoiseConfig
 from src.ir.operation import CSSLogicalOpSet
-from src.qec_code.surface_code.unrotated import (
-    UnrotatedSurfaceCode,
-    UnrotatedSurfaceCodeExtractionBlock,
-)
 
 
 class CNOTTransExperiment(QECExperiment):
     """
-    Orchestrates a Transversal CNOT Gate Experiment between two Surface Code patches.
+    Orchestrates a Transversal CNOT Gate Experiment between two CSS code patches.
     
-    This class implements a transversal CNOT gate between two unrotated surface code patches:
-    1. Creates and configures two Unrotated Surface Code patches.
-    2. Sets up their relative positions via offset.
-    3. Initializes data qubits in specified bases.
-    4. Applies syndrome extraction rounds before the CNOT.
-    5. Applies transversal CNOT gate via LogicalExecutor.
-    6. Applies syndrome extraction rounds after the CNOT.
-    7. Measures data qubits in specified bases.
-    8. Injects Noise using the configured strategy.
+    Unified interface for any CSS code:
+    1. User specifies code_patch_class, code_params, and extraction_block_class.
+    2. Creates patches internally and adds them to QECSystem.
+    3. Applies syndrome extraction, transversal CNOT, and readout.
+    
+    Works with UnrotatedSurfaceCode, RotatedSurfaceCode, ToricCode, etc.
     """
 
     def __init__(self,
-                 distance: Union[int, Tuple[int, int]] = 3,
+                 code_patch_class: Type[QECPatch],
+                 extraction_block_class: Type,
+                 code_params_control: Dict[str, Any],
+                 code_params_target: Optional[Dict[str, Any]] = None,
                  offset_target: Tuple[float, float] = (6, 0),
                  initial_basis_control: Literal["X", "Z"] = "Z",
                  initial_basis_target: Literal["X", "Z"] = "Z",
@@ -37,42 +34,34 @@ class CNOTTransExperiment(QECExperiment):
                  measure_basis_target: Literal["X", "Z"] = "Z",
                  rounds_before: int = 2,
                  rounds_after: int = 2,
-                 extraction_block_class: Type = UnrotatedSurfaceCodeExtractionBlock,
                  noise_params: Optional[NoiseConfig] = None,
                  noise_model: Optional[str] = 'circuit_level',
                  if_detector: bool = True):
         """
         Args:
-            distance: Distance for both patches (int) or (distance_control, distance_target) tuple.
+            code_patch_class: Patch class (e.g. UnrotatedSurfaceCode, RotatedSurfaceCode, ToricCode).
+            extraction_block_class: Syndrome extraction block class (takes system, has .circuit).
+            code_params_control: Dict of kwargs for control patch (e.g. {"distance": 3} or {"l_z": 3, "l_x": 3}).
+            code_params_target: Dict of kwargs for target patch. Defaults to same as control.
             offset_target: (dx, dy) offset for target patch relative to control patch.
-            initial_basis_control: Initial state basis for control patch data qubits ("X" or "Z").
-            initial_basis_target: Initial state basis for target patch data qubits ("X" or "Z").
-            measure_basis_control: Measurement basis for control patch data qubits ("X" or "Z").
-            measure_basis_target: Measurement basis for target patch data qubits ("X" or "Z").
-            rounds_before: Number of QEC rounds before transversal CNOT.
-            rounds_after: Number of QEC rounds after transversal CNOT.
-            extraction_block_class: Class for syndrome extraction block. Defaults to UnrotatedSurfaceCodeExtractionBlock.
+            initial_basis_control/target: Initial state basis for data qubits ("X" or "Z").
+            measure_basis_control/target: Measurement basis for data qubits ("X" or "Z").
+            rounds_before/after: Number of QEC rounds before/after transversal CNOT.
             noise_params: Parameters for noise injection.
             noise_model: Strategy string ('circuit_level', 'code_capacity', etc.).
             if_detector: Whether to generate detectors.
         """
         super().__init__(
             extraction_block_class=extraction_block_class,
-            rounds=rounds_before,  # Base class uses single 'rounds', but we use rounds_before/after separately
+            rounds=rounds_before,
             noise_params=noise_params,
             noise_model=noise_model,
             if_detector=if_detector
         )
         
-        # Handle distance parameter
-        if isinstance(distance, int):
-            self.distance_control = distance
-            self.distance_target = distance
-        elif isinstance(distance, tuple) and len(distance) == 2:
-            self.distance_control, self.distance_target = distance
-        else:
-            raise ValueError(f"distance must be int or (int, int) tuple, got {type(distance)}")
-        
+        self.code_patch_class = code_patch_class
+        self.code_params_control = dict(code_params_control)
+        self.code_params_target = dict(code_params_target) if code_params_target is not None else dict(code_params_control)
         self.offset_target = offset_target
         self.initial_basis_control = initial_basis_control.upper()
         self.initial_basis_target = initial_basis_target.upper()
@@ -81,7 +70,6 @@ class CNOTTransExperiment(QECExperiment):
         self.rounds_before = rounds_before
         self.rounds_after = rounds_after
         
-        # Internal state
         self.patch_control_name = "control"
         self.patch_target_name = "target"
 
@@ -89,26 +77,23 @@ class CNOTTransExperiment(QECExperiment):
         """
         Constructs the full, noisy Stim circuit for the transversal CNOT experiment.
         """
-        # 1. Create patches
+        # 1. Create patches from code_patch_class and code_params
         # ----------------------------------------------------------------------
         print("Creating patches...")
-        control_patch_local = UnrotatedSurfaceCode(distance=self.distance_control)
-        target_patch_local = UnrotatedSurfaceCode(distance=self.distance_target)
+        control_patch_local = self.code_patch_class(**self.code_params_control)
+        target_patch_local = self.code_patch_class(**self.code_params_target)
         
         # 2. Create system and add patches
         # ----------------------------------------------------------------------
         print("Setting up QEC system...")
         self.system = QECSystem()
-        # add_patch returns global patch view (with global indices)
         control_patch_global = self.system.add_patch(control_patch_local, name=self.patch_control_name)
         target_patch_global = self.system.add_patch(target_patch_local, name=self.patch_target_name, offset=self.offset_target)
         
-        # 3. Setup tracker, builder, and logical executor
+        # 3. Setup tracker, builder, logical executor
         # ----------------------------------------------------------------------
         self._setup_experiment()
-        
-        # Register LogicalOpSet for transversal CNOT
-        self.logical_executor.register_op_set(UnrotatedSurfaceCode, CSSLogicalOpSet())
+        self.logical_executor.register_op_set(self.code_patch_class, CSSLogicalOpSet())
         
         # 4. Write coordinates
         # ----------------------------------------------------------------------

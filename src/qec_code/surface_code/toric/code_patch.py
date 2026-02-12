@@ -19,30 +19,32 @@ class ToricCode(QECPatch):
     - Non-contractible loops in x and y directions
 
     Parameters (via **kwargs):
-        distance_z: Code distance along Z (horizontal).
-        distance_x: Code distance along X (vertical).
+        l_z: Code distance along Z (horizontal).
+        l_x: Code distance along X (vertical).
         distance: Optional shorthand for square codes (sets both).
         shift: Coordinate offset (dx, dy).
     """
 
     def _process_params(self):
-        self.distance_z = self.params.get("distance_z")
-        self.distance_x = self.params.get("distance_x")
-        if self.distance_z is None and "distance" in self.params:
-            self.distance_z = self.distance_x = self.params["distance"]
+        self.l_z = self.params.get("l_z")
+        self.l_x = self.params.get("l_x")
+        if self.l_z is None and "l_z" in self.params:
+            self.l_z = self.l_x = self.params["l_z"]
         self.shift = self.params.get("shift", (0, 0))
-        if self.distance_z is None or self.distance_x is None:
-            raise ValueError("Both 'distance_z' and 'distance_x' must be provided.")
-        if self.distance_z < 2 or self.distance_x < 2:
+        if self.l_z is None and "distance" in self.params:
+            self.l_z = self.l_x = self.params["distance"]
+        if self.l_z is None or self.l_x is None:
+            raise ValueError("Both 'l_z' and 'l_x' must be provided.")
+        if self.l_z < 2 or self.l_x < 2:
             raise ValueError("Toric code distance must be at least 2.")
 
     @property
     def Lx(self) -> int:
-        return 2 * self.distance_z
+        return 2 * self.l_z
 
     @property
     def Ly(self) -> int:
-        return 2 * self.distance_x
+        return 2 * self.l_x
 
     def _wrap(self, x: float, y: float) -> Tuple[float, float]:
         """Apply periodic boundary conditions."""
@@ -57,8 +59,8 @@ class ToricCode(QECPatch):
         return [self.qubit_coords[i] for i in sorted(self.syndrome_indices_z)]
 
     def build(self):
-        dz = self.distance_z
-        dx = self.distance_x
+        dz = self.l_z
+        dx = self.l_x
 
         # Phase 1: Geometry Registration (Periodic Lattice)
         for y in range(self.Ly):
@@ -117,8 +119,8 @@ class ToricCode(QECPatch):
     def get_info(self) -> Dict[str, Any]:
         info = super().get_info()
         info.update({
-            "distance_z": self.distance_z,
-            "distance_x": self.distance_x,
+            "l_z": self.l_z,
+            "l_x": self.l_x,
             "num_data_qubits": len(self.data_indices),
             "num_x_syndromes": len(self.syndrome_indices_x),
             "num_z_syndromes": len(self.syndrome_indices_z),

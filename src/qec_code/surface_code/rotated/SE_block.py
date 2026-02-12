@@ -32,13 +32,13 @@ class RotatedSurfaceCodeExtractionBlock:
         # --- Step 1: Reset Syndrome Qubits ---
         # Reset all syndrome qubits to |0> (Z basis)
         active_syn_indices = self.system.active_syndrome_indices
-        self.circuit.append("R", active_syn_indices)
+        self.circuit.append("R", sorted(active_syn_indices))
         self.circuit.append("TICK", tag="SE_start") # DEPOLARIZE1 will be injected here on data qubits
 
         # --- Step 2: Preparation (Hadamard on X-type syndromes) ---
         # Transform X-syndrome qubits to |+> state to measure X operators
         active_x_syn_indices = self.system.active_syndrome_indices_x
-        self.circuit.append("H", active_x_syn_indices)
+        self.circuit.append("H", sorted(active_x_syn_indices))
         self.circuit.append("TICK")
 
         # --- Step 3: Entangling Gates (CNOT Scheduling) ---
@@ -111,11 +111,11 @@ class RotatedSurfaceCodeExtractionBlock:
 
         # --- Step 4: Basis Change (Hadamard on X-type syndromes) ---
         # Transform X-syndrome qubits back to Z basis for measurement
-        self.circuit.append("H", active_x_syn_indices)
+        self.circuit.append("H", sorted(active_x_syn_indices))
         self.circuit.append("TICK")
 
         # --- Step 5: Measurement ---
         # Measure all syndrome qubits in Z basis
-        self.circuit.append("M", active_syn_indices)
+        self.circuit.append("M", sorted(active_syn_indices))
         
         # Note: No final TICK here. CircuitBuilder controls the flow.
