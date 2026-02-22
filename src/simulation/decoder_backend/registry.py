@@ -54,17 +54,28 @@ def get_decoder(
     except AttributeError:
         pass
 
+    # Show unique decoders: primary names only (aliases map to same backend)
+    available = _unique_decoder_names()
     raise ValueError(
-        f"Unknown decoder '{name}'. Available: {list(_decoder_registry.keys())}"
+        f"Unknown decoder '{name}'. Available: {available}"
     )
+
+
+def _unique_decoder_names() -> list[str]:
+    """Return primary decoder names only (aliases like mwpm, bp_osd excluded)."""
+    from . import decoders  # noqa: F401 - ensure decoders are loaded
+    cls_to_names: Dict = {}
+    for name, (cls,) in _decoder_registry.items():
+        cls_to_names.setdefault(cls, []).append(name)
+    # Prefer canonical name: pymatching > mwpm, bposd > bp_osd
+    canonical_order = ["pymatching", "bposd", "mwpf"]
+    result = []
+    for names in cls_to_names.values():
+        chosen = next((n for n in canonical_order if n in names), names[0])
+        result.append(chosen)
+    return sorted(result)
 
 
 def list_decoders() -> list[str]:
     """Return list of registered decoder names (without aliases)."""
-    seen = set()
-    result = []
-    for name, (cls,) in _decoder_registry.items():
-        if cls not in seen:
-            seen.add(cls)
-            result.append(name)
-    return result
+    return _unique_decoder_names()

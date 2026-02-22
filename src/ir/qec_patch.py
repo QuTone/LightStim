@@ -358,6 +358,7 @@ class QECPatch(ABC):
         }
     
     # --- Stim Helper Methods for Pauli Strings ---
+    # The input are coordinates, which are converted to indices
     def create_stim_stabilizer(self, target_dict: Dict[Tuple[int, int], str], syn_coord: Optional[Tuple[int, int]] = None, type: Optional[str] = None):
         """Helper to convert dictionary definition to stim.PauliString"""
         ps = {}

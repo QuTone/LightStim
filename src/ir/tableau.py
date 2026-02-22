@@ -63,6 +63,28 @@ class PauliTableau:
         self.matrix = np.delete(self.matrix, indices, axis=0)
         self.records = [self.records[i] for i in range(len(self.records)) if i not in indices]
 
+    def expand(self, delta: int):
+        """
+        Expand the tableau to include delta new qubits.
+        Layout is [X0..Xn-1 | Z0..Zn-1]. New qubits act as identity on existing rows.
+        Must shift old Z block right by delta columns and insert zeros for new qubits' X.
+        """
+        if delta <= 0:
+            return
+        n_old = self.num_qubits
+        n_new = n_old + delta
+        # Old: [X0..X(n_old-1) | Z0..Z(n_old-1)]  shape (M, 2*n_old)
+        # New: [X0..X(n_new-1) | Z0..Z(n_new-1)]  shape (M, 2*n_new)
+        # Mapping: new[:, 0:n_old] = old[:, 0:n_old] (X for q0..q(n_old-1))
+        #         new[:, n_old:n_new] = 0 (X for new qubits)
+        #         new[:, n_new:n_new+n_old] = old[:, n_old:2*n_old] (Z for q0..q(n_old-1))
+        #         new[:, n_new+n_old:2*n_new] = 0 (Z for new qubits)
+        new_matrix = np.zeros((self.matrix.shape[0], 2 * n_new), dtype=np.uint8)
+        new_matrix[:, :n_old] = self.matrix[:, :n_old]
+        new_matrix[:, n_new : n_new + n_old] = self.matrix[:, n_old : 2 * n_old]
+        self.matrix = new_matrix
+        self.num_qubits = n_new
+
     def get_record(self, idx: int) -> List[int]:
         return self.records[idx]
 

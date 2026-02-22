@@ -2,11 +2,15 @@ import stim
 import warnings
 import numpy as np
 from ..utils.linear_algebra import check_commutativity, solve_linear_decomposition
+from ..utils.tableau_utils import stabilizers_to_symplectic
 from .tableau import PauliTableau
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional, Set, Any
 
 # Tag for post-selection: detectors with this tag are used for post-selection filtering
 POST_SELECT_TAG = "post-select"
+
+# Sentinel for unmeasured stabilizer rows: treated as has_record (stays stabilizer), excluded from detector construction
+UNMEASURED_STAB_RECORD = -1
 
 
 def _append_detector(
@@ -54,6 +58,84 @@ class SyndromeTracker:
         (e.g. some logicals are fixed into stabilizers)
         """
         self.expected_num_logicals = k
+
+    def expand(self, delta: int):
+        """
+        Expand the tracker to include delta new qubits (define-by-run).
+        New qubits act as identity on existing stabilizers/logicals.
+        """
+        if delta <= 0:
+            return
+        self.stabilizers.expand(delta)
+        self.logicals.expand(delta)
+        self.num_qubits += delta
+
+    def stabilizer_canonicalization(
+        self,
+        system: Any,
+        stabilizer_uids: Optional[Set[int]] = None,
+    ) -> None:
+        """
+        Re-organize stabilizer tableau into stabilizers vs logicals BEFORE any SE measurement.
+        Basis = canonical stabilizer set (active_stabilizers or stabilizer_uids).
+        Uses new_basis_indices (Logical Basis) to extract minimal logical dimension, not is_dependent.
+        Aligned with process_mid_measurement Step 3.
+
+        Call after encoding, before SE. Raises if logical count does not match expected.
+        """
+        n = self.num_qubits
+        if stabilizer_uids is not None:
+            stab_dicts = [system.stabilizers[i] for i in range(len(system.stabilizers)) if i in stabilizer_uids]
+        else:
+            stab_dicts = [system.stabilizers[i] for i in sorted(system.active_stabilizer_indices)]
+        canonical_basis = stabilizers_to_symplectic(system, stab_dicts, n)
+
+        if canonical_basis.shape[0] == 0:
+            return
+
+        num_stabs = self.stabilizers.count
+        if num_stabs == 0:
+            return
+
+        # Full tableau = stabilizers + logicals (same structure as process_mid_measurement)
+        existing_log_matrix = self.logicals.matrix
+        existing_log_records = self.logicals.records
+        if existing_log_matrix.shape[0] > 0:
+            full_matrix = np.vstack([self.stabilizers.matrix, existing_log_matrix])
+            full_records = self.stabilizers.records + existing_log_records
+        else:
+            full_matrix = self.stabilizers.matrix
+            full_records = self.stabilizers.records
+
+        _, _, new_basis_indices = solve_linear_decomposition(
+            basis=canonical_basis,
+            targets=full_matrix,
+            reduce_weight=True,
+        )
+
+        # new_basis_indices = Logical Basis (pivot columns). Rows not in it -> stabilizers.
+        old_stab_indices = [i for i in range(num_stabs) if i not in new_basis_indices]
+        new_log_basis_indices = list(new_basis_indices)
+
+        new_stab_matrix = full_matrix[old_stab_indices]
+        new_stab_records = [
+            full_records[i] if full_records[i] else [UNMEASURED_STAB_RECORD]
+            for i in old_stab_indices
+        ]
+        new_log_matrix = full_matrix[new_log_basis_indices]
+        new_log_records = [full_records[i] for i in new_log_basis_indices]
+
+        self.stabilizers.matrix = new_stab_matrix
+        self.stabilizers.records = new_stab_records
+        self.logicals.matrix = new_log_matrix
+        self.logicals.records = new_log_records
+
+        if self.logicals.count != self.expected_num_logicals:
+            raise RuntimeError(
+                f"After stabilizer_canonicalization: logical count {self.logicals.count} "
+                f"!= expected {self.expected_num_logicals}. "
+                "Unitary encoding circuit may be incorrect."
+            )
     
     def process_initialization(self, init_tableau: np.ndarray):
         """
@@ -201,7 +283,6 @@ class SyndromeTracker:
             if len(anti_comm_indices) > 0:
                 # --- Case A: Anti-commutes (State Update) ---
                 pivot = anti_comm_indices[0]
-                
                 # Update other anti-commuting rows
                 for other in anti_comm_indices[1:]:
                     temp_full.update_row(other, pivot) # (target, source)
@@ -236,7 +317,8 @@ class SyndromeTracker:
                         row_idx = matching_rows[0]  # Take the first matching row
                         args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
                         for r in full_records[row_idx]:
-                            args.append(stim.target_rec(r - self.total_measurements))
+                            if r >= 0:
+                                args.append(stim.target_rec(r - self.total_measurements))
                         coords = list(syn_coords[i]) + [0]
                         _append_detector(
                             circuit, args, coords,
@@ -266,14 +348,15 @@ class SyndromeTracker:
                                 continue
                             # Otherwise, purely depends on stabilizers, construct a detector
                             for c_idx in comp_indices:
-                                # Map back to full records
+                                # Map back to full records (skip UNMEASURED_STAB_RECORD)
                                 for r in full_records[c_idx]:
-                                    # Clean the format: if there are the same target, remove the duplicates
+                                    if r < 0:
+                                        continue
                                     rec_to_append = stim.target_rec(r - self.total_measurements)
                                     if rec_to_append in args:
                                         args.remove(rec_to_append)
                                     else:
-                                        args.append(rec_to_append) # this logic is essentially the addition modulo 2
+                                        args.append(rec_to_append)  # addition modulo 2
             
                             coords = list(syn_coords[i]) + [0]
                             _append_detector(
@@ -313,27 +396,34 @@ class SyndromeTracker:
         if len(new_basis_indices) > 0:
             new_log_basis_indices = []
             old_stab_basis_indices = []
-            for new_idx in new_basis_indices:
-                if new_idx < num_stabs: 
-                    if full_records[new_idx] == []: # new logical operators, usually appear in the first round SE after initialization
-                        new_log_basis_indices.append(new_idx)
-                    else: # old stabilizers with measurement records that stay in the system, not being measured this round
-                        old_stab_basis_indices.append(new_idx)
-                else:
-                    new_log_basis_indices.append(new_idx) # Original logical operator rows stay in the logical tableau
+            # Split: stabilizer rows (indices < num_stabs) vs logical rows (>= num_stabs)
+            stab_new_indices = [i for i in new_basis_indices if i < num_stabs]
+            log_new_indices = [i for i in new_basis_indices if i >= num_stabs]
+            empty_record_indices = [i for i in stab_new_indices if full_records[i] == []]
+            has_record_indices = [i for i in stab_new_indices if full_records[i] != []]
+
+            # Rows with measurement records always stay as stabilizers
+            old_stab_basis_indices.extend(has_record_indices)
+
+            # Rows without records: independent of this round's measurements -> logicals
+            new_log_basis_indices.extend(empty_record_indices)
+
+            # Original logical rows (from previous logical tableau) stay logical
+            new_log_basis_indices.extend(log_new_indices)
 
             self.logicals.matrix = full_matrix[new_log_basis_indices]
             self.logicals.records = [full_records[i] for i in new_log_basis_indices]
         else:
-            self.logicals = PauliTableau(self.num_qubits) # empty logicals
+            self.logicals = PauliTableau(self.num_qubits)  # empty logicals
 
         # 2. Update Stabilizers
         # Reset stabilizer tableau to the canonical measurement basis.
-        # This keeps the tableau sparse and prevents "messy" linear combinations.
         new_stab_records = [[self.total_measurements - num_meas + i] for i in range(num_meas)]
 
+        # Build old_stab part: rows with records + empty-record rows kept as stabilizers
         old_stab_matrix = full_matrix[old_stab_basis_indices]
         old_stab_records = [full_records[i] for i in old_stab_basis_indices]
+
         self.stabilizers.matrix = np.vstack([back_propagated_paulis, old_stab_matrix])
         self.stabilizers.records = new_stab_records + old_stab_records
 
@@ -416,56 +506,68 @@ class SyndromeTracker:
         # ======================================================================
         # Basis: The Final Measurements we just performed.
         # Targets: The Updated System State (Stabilizers + Logicals).
-        
+        # reduce_weight=False: detector/observable construction only needs correct
+        #   linear combination, not minimal-weight; _greedy_reduce_weight is O(k^2)
+        #   and can dominate runtime for large codes (e.g. BB [[144,12,12]]).
         coeffs, is_dependent, _ = solve_linear_decomposition(
-            basis=final_paulis, 
-            targets=full_matrix
+            basis=final_paulis,
+            targets=full_matrix,
+            reduce_weight=False,
         )
-        
+
         num_rows = full_matrix.shape[0]
-        
         logical_observable_idx = 0
         for k in range(num_rows):
             # Condition 1: Must NOT be destroyed (anti-commuted).
             if k in destroyed_rows:
                 continue
-            
+
             # Condition 2: Must be fully determined by the measurements (Linear Dependent).
             if not is_dependent[k]:
                 continue
 
             # --- Construct Detector / Observable ---
             args = []
-            
+
             # 1. Measurement Components (The decomposition result)
-            # coeffs[k] tells us which Final Measurements (Basis) sum up to this Operator.
             basis_indices = np.where(coeffs[k])[0]
-            
             for b_idx in basis_indices:
-                # Map relative basis index to absolute record index
-                # The i-th final measurement has record target: (base + i) - total
-                # = i - num_new_meas
                 stim_rec_target = b_idx - num_new_meas
-                args.append(stim.target_rec(stim_rec_target)) # data qubit component
-            
+                args.append(stim.target_rec(stim_rec_target))
+
             # 2. Historical Record Components
-            for r in full_records[k]: # syndrome qubit record components
+            det_coord = None
+            for r in full_records[k]:
+                if r < 0:
+                    continue
                 rec_to_append = stim.target_rec(r - self.total_measurements)
                 if rec_to_append in args:
                     args.remove(rec_to_append)
                 else:
-                    args.append(rec_to_append) # this logic is essentially the addition modulo 2
-                det_coord = idx_to_coord_map[self.meas_rec_to_idx_map[r]] # Set the detector coordinate to be the last syndrome qubit coordinate involved
-            
+                    args.append(rec_to_append)
+                det_coord = idx_to_coord_map[self.meas_rec_to_idx_map[r]]
+
+            # Fallback when no syndrome records (e.g. X stabilizers with Z-only SE, final X measure)
+            if det_coord is None:
+                row = full_matrix[k]
+                n = self.num_qubits
+                first_support = next(
+                    (i for i in range(n) if row[i] or row[n + i]),
+                    None,
+                )
+                det_coord = (
+                    idx_to_coord_map[first_support]
+                    if first_support is not None and first_support in idx_to_coord_map
+                    else next(iter(idx_to_coord_map.values()), (0, 0))
+                )
+
             # 3. Output:
             if k < num_stabs and k not in self.stabilizer_with_logical_components:
-                # Stabilizer -> DETECTOR
                 coords = list(det_coord) + [1]
                 _append_detector(
                     circuit, args, coords,
                     post_select=tuple(coords) in self.post_select_detector_coords,
                 )
             else:
-                # Logical -> OBSERVABLE
                 circuit.append("OBSERVABLE_INCLUDE", args, [logical_observable_idx])
                 logical_observable_idx += 1

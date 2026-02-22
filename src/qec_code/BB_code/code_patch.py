@@ -2,102 +2,44 @@ from typing import Tuple, Dict, List, Optional, Set
 import numpy as np
 import stim
 from src.ir.qec_patch import QECPatch
-
+from src.utils.linear_algebra import row_echelon
 
 # ---------------------------------------------------------------------------
-# GF(2) Linear Algebra Helpers
+# Polynomial helpers for scalable logical construction
 # ---------------------------------------------------------------------------
 
-def _gf2_row_echelon(M: np.ndarray) -> Tuple[np.ndarray, List[int]]:
+def _transpose_exponents(monomials: List[List[int]], l: int, m: int) -> List[List[int]]:
+    """Invert monomial exponents: (i,j) -> (-i mod l, -j mod m)."""
+    return [[(-i) % l, (-j) % m] for i, j in monomials]
+
+
+def _multiply_monomial_by_polynomial(
+    monomial: List[int],
+    polynomial: List[List[int]],
+    l: int,
+    m: int,
+    qubit_type: str,
+) -> List[Tuple[int, int]]:
     """
-    Row reduce M over GF(2) to row echelon form.
-    Returns (reduced matrix, list of pivot column indices).
+    Map monomial * polynomial to 2D data qubit coordinates.
+    monomial: [a, b] as x^a * y^b
+    polynomial: list of [p, q] monomials
+    qubit_type: 'L' (left-type: even x, odd y) or 'R' (right-type: odd x, even y)
+    Returns list of (x, y) integer coordinates.
     """
-    M = M.copy() % 2
-    nrows, ncols = M.shape
-    pivots = []
-    row = 0
-    for col in range(ncols):
-        # Find pivot in this column
-        found = None
-        for r in range(row, nrows):
-            if M[r, col] == 1:
-                found = r
-                break
-        if found is None:
-            continue
-        # Swap rows
-        M[[row, found]] = M[[found, row]]
-        # Eliminate below
-        for r in range(nrows):
-            if r != row and M[r, col] == 1:
-                M[r] = (M[r] + M[row]) % 2
-        pivots.append(col)
-        row += 1
-    return M, pivots
-
-
-def _gf2_rank(M: np.ndarray) -> int:
-    """Compute rank of binary matrix over GF(2)."""
-    _, pivots = _gf2_row_echelon(M)
-    return len(pivots)
-
-
-def _gf2_kernel(M: np.ndarray) -> np.ndarray:
-    """
-    Compute kernel (null space) of M over GF(2).
-    Returns a matrix whose rows form a basis of ker(M).
-    """
-    M = M.copy() % 2
-    nrows, ncols = M.shape
-    # Augment with identity for tracking
-    aug = np.hstack([M.T, np.eye(ncols, dtype=int)])  # ncols x (nrows + ncols)
-    aug = aug % 2
-    reduced, pivots = _gf2_row_echelon(aug)
-
-    # Kernel vectors: rows of reduced where the left part (M.T columns) is all zero
-    kernel_rows = []
-    for r in range(ncols):
-        if np.all(reduced[r, :nrows] == 0):
-            kernel_rows.append(reduced[r, nrows:])
-
-    if len(kernel_rows) == 0:
-        return np.zeros((0, ncols), dtype=int)
-    return np.array(kernel_rows, dtype=int) % 2
-
-
-def _gf2_quotient_basis(kernel: np.ndarray, rowspace_generators: np.ndarray) -> np.ndarray:
-    """
-    Given kernel basis vectors and rowspace generators, find representatives
-    of kernel / rowspace. Returns vectors in kernel that are independent of
-    the rowspace generators.
-    """
-    if kernel.shape[0] == 0:
-        return np.zeros((0, kernel.shape[1]), dtype=int)
-    if rowspace_generators.shape[0] == 0:
-        return kernel.copy()
-
-    # Stack rowspace generators on top of kernel
-    combined = np.vstack([rowspace_generators, kernel]) % 2
-    # Row reduce
-    reduced, pivots = _gf2_row_echelon(combined)
-
-    n_rowspace = rowspace_generators.shape[0]
-    rank_rowspace = _gf2_rank(rowspace_generators)
-
-    # The new independent vectors from the kernel portion
-    # are the ones that survive after accounting for rowspace
-    result = []
-    for r in range(reduced.shape[0]):
-        if np.any(reduced[r] != 0):
-            result.append(reduced[r])
-
-    result = np.array(result, dtype=int) % 2 if result else np.zeros((0, kernel.shape[1]), dtype=int)
-
-    # The first rank_rowspace rows span the rowspace, the rest are the quotient
-    if result.shape[0] > rank_rowspace:
-        return result[rank_rowspace:]
-    return np.zeros((0, kernel.shape[1]), dtype=int)
+    a, b = monomial
+    if qubit_type == 'L':
+        return [
+            (2 * ((a + p) % l), 2 * ((b + q) % m) + 1)
+            for p, q in polynomial
+        ]
+    elif qubit_type == 'R':
+        return [
+            (2 * ((a + p) % l) + 1, 2 * ((b + q) % m))
+            for p, q in polynomial
+        ]
+    else:
+        raise ValueError("qubit_type must be 'L' or 'R'")
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +94,12 @@ class BBCode(QECPatch):
         self.B = self.params.get('B')
         self.shift = self.params.get('shift', (0, 0))
         self.code_distance = self.params.get('d', None)
+        # Optional: polynomial params for scalable logical construction
+        self.f = self.params.get('f')
+        self.g = self.params.get('g')
+        self.h = self.params.get('h')
+        self.alpha = self.params.get('alpha')
+        self.beta = self.params.get('beta')
 
         if self.l is None or self.m is None:
             raise ValueError("Both 'l' and 'm' must be provided.")
@@ -164,6 +112,10 @@ class BBCode(QECPatch):
                 raise ValueError("Each monomial must be [x_exponent, y_exponent].")
         if not isinstance(self.shift, tuple) or len(self.shift) != 2:
             raise ValueError("'shift' must be a tuple of two numbers.")
+        if (self.f is not None or self.g is not None or self.h is not None) and (
+            self.f is None or self.g is None or self.h is None or self.alpha is None or self.beta is None
+        ):
+            raise ValueError("If using polynomial logicals, all of f, g, h, alpha, beta must be provided.")
 
     @property
     def syndrome_coords_x(self) -> List[Tuple[float, float]]:
@@ -264,7 +216,75 @@ class BBCode(QECPatch):
         return result
 
     def _build_logical_operators(self):
-        """Compute logical X and Z operators from parity check matrices."""
+        """Dispatch to polynomial or numerical logical construction."""
+        # 1. Explicit polynomial params provided
+        if self.f is not None and self.g is not None and self.h is not None:
+            self._build_logical_operators_polynomial()
+            return
+
+        # 2. Check preset lookup
+        from .logical_presets import get_preset
+        preset = get_preset(self.l, self.m, self.A, self.B)
+        if preset is not None:
+            self.f, self.g, self.h = preset['f'], preset['g'], preset['h']
+            self.alpha, self.beta = preset['alpha'], preset['beta']
+            self._build_logical_operators_polynomial()
+            return
+
+        # 3. Fallback to numerical for small codes
+        NUMERICAL_THRESHOLD = 72
+        if self.l * self.m <= NUMERICAL_THRESHOLD:
+            self._build_logical_operators_numerical()
+            return
+
+        # 4. Too large, need preset or explicit params
+        raise ValueError(
+            f"Logical operators for BB code with l={self.l}, m={self.m} require precomputed "
+            "(f,g,h,alpha,beta). Either provide them as params, use a smaller code "
+            "(l*m <= 72 for numerical fallback), or add this (l,m,A,B) to logical_presets."
+        )
+
+    def _build_logical_operators_polynomial(self):
+        """Build logical X and Z from polynomial params (f,g,h,alpha,beta). O(k) in code size."""
+        l, m = self.l, self.m
+        f, g, h = self.f, self.g, self.h
+        alpha, beta = self.alpha, self.beta
+
+        self.num_logicals = 2 * len(alpha)  # k/2 pairs, each contributes 2 logical qubits
+
+        for i in range(len(alpha)):
+            # logical_X[2i]: alpha[i] * f on L-type only
+            coords_x0 = _multiply_monomial_by_polynomial(alpha[i], f, l, m, 'L')
+            targets = {coord: 'X' for coord in coords_x0}
+            if targets:
+                self.create_stim_logical(targets, 'X')
+
+            # logical_Z[2i]: beta[i] * h^T on L + beta[i] * g^T on R
+            hT = _transpose_exponents(h, l, m)
+            gT = _transpose_exponents(g, l, m)
+            coords_z0 = _multiply_monomial_by_polynomial(beta[i], hT, l, m, 'L')
+            coords_z0 += _multiply_monomial_by_polynomial(beta[i], gT, l, m, 'R')
+            targets = {coord: 'Z' for coord in coords_z0}
+            if targets:
+                self.create_stim_logical(targets, 'Z')
+
+            # logical_Z[2i+1]: beta[i] * f^T on R-type only
+            fT = _transpose_exponents(f, l, m)
+            coords_z1 = _multiply_monomial_by_polynomial(beta[i], fT, l, m, 'R')
+            targets = {coord: 'Z' for coord in coords_z1}
+            if targets:
+                self.create_stim_logical(targets, 'Z')
+
+            # logical_X[2i+1]: alpha[i] * g on L + alpha[i] * h on R
+            coords_x1 = _multiply_monomial_by_polynomial(alpha[i], g, l, m, 'L')
+            coords_x1 += _multiply_monomial_by_polynomial(alpha[i], h, l, m, 'R')
+            targets = {coord: 'X' for coord in coords_x1}
+            if targets:
+                self.create_stim_logical(targets, 'X')
+
+    def _build_logical_operators_numerical(self):
+        """Compute logical X and Z operators from parity check matrices.
+        Uses SlidingWindowDecoder-style kernel via M.T (faster than RREF+backsub)."""
         l, m = self.l, self.m
         n2 = l * m  # half the data qubits
         n = 2 * n2  # total data qubits
@@ -276,25 +296,35 @@ class BBCode(QECPatch):
         Hx = np.hstack([A_mat, B_mat]) % 2  # shape: n2 x n
         Hz = np.hstack([B_mat.T, A_mat.T]) % 2  # shape: n2 x n
 
-        # Compute k = n - 2 * rank(Hx) (for CSS codes with equal X/Z check counts)
-        rank_Hx = _gf2_rank(Hx)
-        k = n - 2 * rank_Hx
+        # Kernel via M.T (codes_q style): row_echelon(M.T), ker = transform[rank:, :]
+        def _kernel_and_basis(M):
+            Mt = M.T.astype(bool)
+            _, rank, transform, pivot_cols = row_echelon(Mt)
+            ker = transform[rank:, :].astype(np.uint8)
+            basis = M[np.array(pivot_cols)].astype(np.uint8)
+            return ker, basis
+
+        # compute_lz(ker, im_basis): quotient ker / rowspace(im_basis)
+        def _quotient_logicals(ker_rows, im_basis):
+            log_stack = np.vstack([im_basis, ker_rows]) % 2
+            _, _, _, pivots = row_echelon(log_stack.T)
+            n_im = im_basis.shape[0]
+            log_op_indices = [i for i in range(n_im, log_stack.shape[0]) if i in pivots]
+            return log_stack[log_op_indices] if log_op_indices else np.zeros((0, ker_rows.shape[1]), dtype=np.uint8)
+
+        hx_perp, hx_basis = _kernel_and_basis(Hx)
+        hz_perp, hz_basis = _kernel_and_basis(Hz)
+
+        k = n - hx_basis.shape[0] - hz_basis.shape[0]
         self.num_logicals = k
 
-        # Find logical Z: ker(Hx) / rowspace(Hz)
-        ker_Hx = _gf2_kernel(Hx)
-        lz_basis = _gf2_quotient_basis(ker_Hx, Hz)
-
-        # Find logical X: ker(Hz) / rowspace(Hx)
-        ker_Hz = _gf2_kernel(Hz)
-        lx_basis = _gf2_quotient_basis(ker_Hz, Hx)
+        # lz in ker(Hx) / rowspace(Hz),  lx in ker(Hz) / rowspace(Hx)
+        lz_basis = _quotient_logicals(hx_perp, hz_basis)
+        lx_basis = _quotient_logicals(hz_perp, hx_basis)
 
         # Build the data qubit index mapping: column index in H -> qubit index in patch
-        # Columns 0..n2-1 correspond to "left-type" data qubits (even x, odd y)
-        # Columns n2..n-1 correspond to "right-type" data qubits (odd x, even y)
-        data_coords_sorted = sorted(self.data_indices)
-        left_type_data = []  # (even x, odd y) data qubits
-        right_type_data = []  # (odd x, even y) data qubits
+        left_type_data = []
+        right_type_data = []
 
         for idx in sorted(self.data_indices):
             coord = self.qubit_coords[idx]
@@ -304,7 +334,6 @@ class BBCode(QECPatch):
             elif int(round(x)) % 2 == 1 and int(round(y)) % 2 == 0:
                 right_type_data.append(idx)
 
-        # Sort to match the matrix column ordering (by (i,j) = (y//2, x//2))
         left_type_data.sort(key=lambda idx: (
             int(round(self.qubit_coords[idx][1])) // 2,
             int(round(self.qubit_coords[idx][0])) // 2
@@ -316,7 +345,6 @@ class BBCode(QECPatch):
 
         col_to_qubit_idx = left_type_data + right_type_data
 
-        # Register logical Z operators
         for row in lz_basis:
             targets = {}
             for col in range(n):
@@ -326,7 +354,6 @@ class BBCode(QECPatch):
             if targets:
                 self.create_stim_logical(targets, 'Z')
 
-        # Register logical X operators
         for row in lx_basis:
             targets = {}
             for col in range(n):

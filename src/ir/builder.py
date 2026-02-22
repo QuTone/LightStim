@@ -35,21 +35,42 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # A. Setup & Initialization
     # --------------------------------------------------------------------------
-    def write_coordinates(self):
+    def write_coordinates(self, start_index: int = 0):
         """
         Generates QUBIT_COORDS instructions based on the system's layout.
         Essential for visualization.
+        When start_index > 0, only writes coords for qubit indices >= start_index (for define-by-run).
         """
-        # Handle both dict and list formats for coords
         coords_iterable = None
         if isinstance(self.system.qubit_coords, dict):
             coords_iterable = self.system.qubit_coords.items()
         elif isinstance(self.system.qubit_coords, list):
             coords_iterable = enumerate(self.system.qubit_coords)
-        
+
         if coords_iterable:
             for q_index, coords in coords_iterable:
-                self.circuit.append("QUBIT_COORDS", [q_index], list(coords))
+                if q_index >= start_index:
+                    self.circuit.append("QUBIT_COORDS", [q_index], list(coords))
+
+    def append_coordinates_for_new_qubits(self, start_index: int):
+        """
+        Insert QUBIT_COORDS for qubits with index >= start_index right after existing
+        coords at the front of the circuit (instead of appending at the end).
+        Used automatically by add_patch when builder is registered (define-by-run).
+        """
+        # Build circuit containing only the new QUBIT_COORDS
+        new_coords_circuit = stim.Circuit()
+        coords_iterable = None
+        if isinstance(self.system.qubit_coords, dict):
+            coords_iterable = self.system.qubit_coords.items()
+        elif isinstance(self.system.qubit_coords, list):
+            coords_iterable = enumerate(self.system.qubit_coords)
+        if coords_iterable:
+            for q_index, coords in coords_iterable:
+                if q_index >= start_index:
+                    new_coords_circuit.append("QUBIT_COORDS", [q_index], list(coords))
+        # Insert at position start_index (first n_old instructions are existing coords)
+        self.circuit = self.circuit[:start_index] + new_coords_circuit + self.circuit[start_index:]
 
     def initialize(self, init_dict: Dict[int, str], n: int):
         """
@@ -70,6 +91,13 @@ class CircuitBuilder:
         init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
 
         self.tracker.process_initialization(init_tableau)
+
+    def stabilizer_canonicalization(self, stabilizer_uids: Optional[Set[int]] = None) -> None:
+        """
+        Re-organize stabilizer tableau into stabilizers vs logicals using
+        code-defined canonical basis. Call after encoding, before SE.
+        """
+        self.tracker.stabilizer_canonicalization(self.system, stabilizer_uids)
 
     # --------------------------------------------------------------------------
     # B. Syndrome Extraction
@@ -94,7 +122,7 @@ class CircuitBuilder:
         # Analyze Ideal Basis for the Tracker
         back_propagated_paulis, syn_qubit_indices = self._get_back_propagated_pauli(circuit_chunk, self.tracker.num_qubits)
         syn_coords = [self.system.qubit_coords[i] for i in syn_qubit_indices] # extract from circuit_chunk, more robust
-        
+
         # Append clean chunk to actual circuit
         self.circuit += circuit_chunk
         
@@ -108,8 +136,7 @@ class CircuitBuilder:
                 back_propagated_paulis=back_propagated_paulis,
                 syn_coords=syn_coords
             )
-        
-        
+
         # ======================================================================
         # Phase 2: Repeat Rounds (Stim Loop)
         # ======================================================================
@@ -141,7 +168,6 @@ class CircuitBuilder:
                     ) 
             
             self.circuit.append(stim.CircuitRepeatBlock(rounds - 1, loop_body))
-            self.circuit.append("TICK")
             
             # Update the meas_rec_to_idx_map for the repeated rounds
             total_measurements = self.tracker.total_measurements
@@ -155,8 +181,8 @@ class CircuitBuilder:
                 records = self.tracker.stabilizers.records[i]
                 shift_records = [rec + meas_record_offset for rec in records]
                 self.tracker.stabilizers.records[i] = shift_records
-            
-            
+
+
     # --------------------------------------------------------------------------
     # C. Unitary Block (Logical Gates, Unitary Encoding, etc.)
     # --------------------------------------------------------------------------
@@ -171,8 +197,9 @@ class CircuitBuilder:
             unitary_block: A Stim circuit containing only unitary operations (no measurements/resets).
         """
         # Append the unitary block to the circuit
+        if self.circuit[-1].name != "TICK":
+            self.circuit.append("TICK")
         self.circuit += unitary_block
-        self.circuit.append("TICK")
         
         # Update the tracker's tableau to reflect the unitary transformation
         self.tracker.process_unitary_block(unitary_block)
@@ -221,22 +248,29 @@ class CircuitBuilder:
         if final_measurements is None:
             final_measurements = {q: 'Z' for q in self.system.data_indices}
             
-        zs = [q for q, b in final_measurements.items() if b == 'Z']
         xs = [q for q, b in final_measurements.items() if b == 'X']
-        
+        ys = [q for q, b in final_measurements.items() if b == 'Y']
+        zs = [q for q, b in final_measurements.items() if b == 'Z']
+
         # Append gates (No manual noise here)
         if xs: self.circuit.append("MX", xs)
+        if ys: self.circuit.append("MY", ys)
         if zs: self.circuit.append("M", zs)
-        
-        # Prepare Basis for Tracker
-        sorted_indices = xs + zs
+
+        # Prepare Basis for Tracker (order matches circuit: X then Y then Z)
+        sorted_indices = xs + ys + zs
         n = self.tracker.num_qubits
         final_paulis = np.zeros((len(sorted_indices), 2 * n), dtype=np.uint8)
-        
+
         for i, q in enumerate(sorted_indices):
             basis = final_measurements[q]
-            if basis == 'X': final_paulis[i, q] = 1
-            else: final_paulis[i, n + q] = 1
+            if basis == 'X':
+                final_paulis[i, q] = 1
+            elif basis == 'Y':
+                final_paulis[i, q] = 1
+                final_paulis[i, n + q] = 1
+            else:
+                final_paulis[i, n + q] = 1
 
         # Call Tracker
         if self.if_detector:

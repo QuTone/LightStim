@@ -72,6 +72,8 @@ class QECExperiment(ABC):
             system_config=self.system,
             if_detector=self.if_detector
         )
+        self.system.register_tracker(self.tracker)
+        self.system.register_builder(self.builder)
         self.logical_executor = LogicalExecutor(builder=self.builder)
     
     def _inject_noise(self, circuit: stim.Circuit) -> stim.Circuit:

@@ -1,5 +1,5 @@
 import stim
-from typing import Dict, List, Tuple, Set, Any
+from typing import Dict, List, Tuple, Set, Any, Optional
 from dataclasses import dataclass
 from src.ir.qec_patch import QECPatch
 import copy
@@ -57,6 +57,18 @@ class QECSystem:
         self.index_to_owner_map: Dict[int, str] = {}
         # Local to Global Map: patch_name -> local_index -> global_index
         self.local_to_global_map: Dict[str, Dict[int, int]] = {}
+
+        # Define-by-run: optional tracker and builder to auto-sync when add_patch adds new qubits
+        self._tracker: Optional[Any] = None
+        self._builder: Optional[Any] = None
+
+    def register_tracker(self, tracker: Any):
+        """Register a SyndromeTracker for define-by-run. When add_patch adds qubits, tracker.expand() is called automatically."""
+        self._tracker = tracker
+
+    def register_builder(self, builder: Any):
+        """Register a CircuitBuilder for define-by-run. When add_patch adds qubits, QUBIT_COORDS for new qubits are appended automatically."""
+        self._builder = builder
 
     @property
     def num_qubits(self) -> int:
@@ -156,6 +168,8 @@ class QECSystem:
         
         if name is None:
             name = f"patch_{len(self.patches)+ len(self.coupler_patches)}"
+
+        n_old = self.next_index  # for define-by-run: new qubits will be n_old, n_old+1, ...
         
         # 1. Store reference
         patch = copy.deepcopy(patch)
@@ -291,6 +305,15 @@ class QECSystem:
                 if coord in self.index_map:
                     stabilizer['syn_idx'] = self.index_map[coord]
 
+        # Define-by-run: auto-expand tracker, sync expected_num_logicals, append QUBIT_COORDS for new qubits
+        if self._tracker is not None:
+            n_new = self.num_qubits
+            if n_new > self._tracker.num_qubits:
+                self._tracker.expand(n_new - self._tracker.num_qubits)
+            self._tracker.expected_num_logicals = self.num_logicals
+        if self._builder is not None and n_old < self.num_qubits:
+            self._builder.append_coordinates_for_new_qubits(n_old)
+
         return global_patch
 
     # ======================================================================
@@ -371,9 +394,13 @@ class QECSystem:
             new_record['data_indices'] = sorted(list(global_pauli.keys()))
         
         # --- 3. Process Syndrome Index ---
-        if 'syn_idx' in record: 
+        if 'syn_idx' in record:
             # Case A: Standard Code Patch (Local Index)
-            new_record['syn_idx'] = local_to_global_map[record['syn_idx']]
+            # Allow syn_idx=None for stabilizers without syndrome ancilla (e.g. PQRM X stabs)
+            if record['syn_idx'] is not None:
+                new_record['syn_idx'] = local_to_global_map[record['syn_idx']]
+            else:
+                new_record['syn_idx'] = None
         elif 'syn_coord' in record:
             # Case B: Coupler Patch (Coord -> Global Index)
             # Since Coupler format lacks syn_idx, we must look it up via coord

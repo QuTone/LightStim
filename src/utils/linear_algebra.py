@@ -118,6 +118,58 @@ def check_commutativity(mat_a: np.ndarray, mat_b: np.ndarray) -> np.ndarray:
     # A @ L @ B.T
     return (mat_a @ L @ mat_b.T) % 2
 
+def kernel_gf2(M: np.ndarray) -> np.ndarray:
+    """
+    Right null space of M over GF(2) as rows.
+    Returns (k, n) matrix whose rows span ker(M) = {x : M @ x = 0}.
+    """
+    null_cols = _null_space_gf2(M)  # (n, k) columns
+    return null_cols.T.astype(np.uint8)  # (k, n) rows
+
+
+def kernel_rows_via_transpose_gf2(M: np.ndarray) -> np.ndarray:
+    """
+    Right null space of M over GF(2) as rows.
+    Uses row_echelon(M.T) trick (faster for fat matrices m < n).
+    Same interface as kernel_gf2.
+    """
+    m, n = M.shape
+    if m >= n:
+        return kernel_gf2(M)  # use standard path when M is tall
+    Mt = M.T.astype(bool)
+    _, rank, transform, _ = row_echelon(Mt)
+    ker = transform[rank:, :].astype(np.uint8)
+    return ker
+
+
+def row_basis_gf2(A: np.ndarray) -> np.ndarray:
+    """
+    Row basis of A over GF(2).
+    Returns linearly independent rows of A.
+    """
+    _, _, _, pivot_cols = row_echelon(A.T)
+    return A[np.array(pivot_cols)].astype(np.uint8)
+
+
+def quotient_basis_gf2(kernel_rows: np.ndarray, rowspace_basis: np.ndarray) -> np.ndarray:
+    """
+    Vectors in kernel that are not in rowspace (kernel / rowspace).
+    Used for CSS logical operators: lz in ker(Hx) but not in im(Hz.T).
+    """
+    if kernel_rows.shape[0] == 0:
+        return np.zeros((0, kernel_rows.shape[1]), dtype=np.uint8)
+    if rowspace_basis.shape[0] == 0:
+        return kernel_rows.astype(np.uint8)
+
+    log_stack = np.vstack([rowspace_basis, kernel_rows]) % 2
+    _, _, _, pivots = row_echelon(log_stack.T)
+    n_rowspace = rowspace_basis.shape[0]
+    log_op_indices = [i for i in range(n_rowspace, log_stack.shape[0]) if i in pivots]
+    if not log_op_indices:
+        return np.zeros((0, kernel_rows.shape[1]), dtype=np.uint8)
+    return log_stack[log_op_indices].astype(np.uint8)
+
+
 def _null_space_gf2(A: np.ndarray) -> np.ndarray:
     """
     Computes the right null space of A over GF(2).
