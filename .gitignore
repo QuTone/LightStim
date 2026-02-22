@@ -53,6 +53,8 @@ archive/
 # Processing (temporary processing files)
 processing/
 external/
+MagicCross/
+scripts/
 
 # Simulation outputs
 *.csv

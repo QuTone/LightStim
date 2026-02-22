@@ -92,6 +92,12 @@ six==1.17.0
 soupsieve==2.8.1
 stack-data==0.6.3
 stim==1.15.0
+sinter>=1.15.0
+# Optional decoders. Install individually: pip install stimbposd  OR  pip install mwpf frozendict frozenlist
+stimbposd
+mwpf
+frozendict
+frozenlist
 terminado==0.18.1
 tinycss2==1.4.0
 tomli==2.3.0
