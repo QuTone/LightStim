@@ -16,8 +16,9 @@ def get_post_select_detector_indices(
     """
     Extract detector indices that have the post-select tag.
 
-    Iterates over circuit instructions, finds DETECTOR instructions with
-    the given tag, and returns their indices (in order of appearance).
+    Recursively walks the circuit (including REPEAT blocks) and returns the
+    absolute detector indices of every DETECTOR instruction carrying the given
+    tag, in order of appearance.
 
     Args:
         circuit: Stim circuit with DETECTOR instructions.
@@ -27,14 +28,21 @@ def get_post_select_detector_indices(
         List of detector indices to use for post-selection.
     """
     indices = []
-    det_count = 0
-    for instruction in circuit:
-        if instruction.name == "DETECTOR":
-            # Check if instruction has the tag (stim may use .tag or similar)
-            inst_tag = getattr(instruction, "tag", None)
-            if inst_tag == tag or (isinstance(inst_tag, (list, tuple)) and tag in inst_tag):
-                indices.append(det_count)
-            det_count += 1
+    det_count = [0]
+
+    def _scan(circ: stim.Circuit) -> None:
+        for instruction in circ:
+            if isinstance(instruction, stim.CircuitRepeatBlock):
+                body = instruction.body_copy()
+                for _ in range(instruction.repeat_count):
+                    _scan(body)
+            elif instruction.name == "DETECTOR":
+                inst_tag = getattr(instruction, "tag", None)
+                if inst_tag == tag or (isinstance(inst_tag, (list, tuple)) and tag in inst_tag):
+                    indices.append(det_count[0])
+                det_count[0] += 1
+
+    _scan(circuit)
     return indices
 
 

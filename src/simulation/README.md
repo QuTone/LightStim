@@ -6,7 +6,7 @@
 
 **Pipeline (4 steps)**:
 
-1. **Sampling** - `circuit.compile_detector_sampler().sample(batch_size)`
+1. **Sampling** - `dem.compile_sampler().sample(batch_size)`
 2. **Post-selection** - Discard samples where any detector tagged `["post-select"]` flips; record keep/discard counts and post-selection rate
 3. **Decoding** - Pass surviving samples to Decoder; compare predictions with logical observables to compute LER
 4. **Parallel execution** - Batch tasks across multiple workers (CPU/GPU) to maximize throughput
@@ -15,67 +15,78 @@
 
 ## 2. Post-Select Detector Identification
 
-Use **detector tags** consistent with the existing framework (e.g. `TaggedIdling` with `"SE_start"` on TICK instructions in `src/noise/rules.py`).
-
 | Mechanism | Implementation |
 |-----------|----------------|
-| **Tag on DETECTOR** | Add `tag="post-select"` when appending DETECTOR instructions. Stim circuit instructions support tags. |
-| **Avoid 4th coord** | Do not use 4th coord for post-select: outdated in sinter, interferes with stim's 3D match graph visualization. |
-| **Fallback** | `PipelineConfig.post_select_detector_indices` for experiments that cannot add tags (e.g. external circuits). |
+| **Tag on DETECTOR** | Add `tag="post-select"` when appending DETECTOR instructions |
+| **Fallback** | `PipelineConfig.post_select_detector_indices` for experiments that cannot add tags |
 
-**Implementation**: Extend `src/ir/tracker.py` to accept optional `post_select=True` when constructing DETECTOR. Utility `get_post_select_detector_indices(circuit)` iterates the circuit and returns detector indices with the post-select tag.
+**Implementation**: `get_post_select_detector_indices(circuit)` iterates the circuit and returns detector indices with the post-select tag.
 
 ---
 
 ## 3. Decoder Abstraction
 
-- **Decoder**: Implements `sinter.Decoder` (compile_decoder_for_dem, decode_shots_bit_packed)
-- **DecoderConfig**: (name, backend, **decoder_params) - e.g. `'pymatching'`, `'bposd'`, `'nv-qldpc-decoder'`
-- **DecoderRegistry**: name -> Decoder class/factory
+- **Decoder**: Implements `sinter.Decoder` (`compile_decoder_for_dem`, `decode_shots_bit_packed`)
+- **DecoderConfig**: `(name, backend, params)` — e.g. `DecoderConfig("bposd", backend="gpu")`
+- **Registry**: `name → { backend → decoder_class }` (backend-keyed)
 
-**Initial decoder support**: pymatching (CPU), bposd (CPU), nv-qldpc-decoder (GPU)
+**Decoder support**:
+
+| Name | Backend | Package | Notes |
+|------|---------|---------|-------|
+| `"pymatching"` | `"cpu"` | `pymatching` | MWPM; alias `"mwpm"` |
+| `"bposd"` | `"cpu"` | `stimbposd` | BP+OSD; alias `"bp_osd"` |
+| `"bposd"` / `"nv-qldpc-decoder"` | `"gpu"` | `cudaq_qec` | GPU BP+OSD via NVIDIA cudaq_qec |
+| `"mwpf"` | `"cpu"` | `mwpf` | — |
+
+Requesting a backend with no registration raises `ImportError` immediately (e.g. `backend="gpu"` without `cudaq_qec`).
 
 ---
 
-## 4. Simulation Pipeline Architecture
+## 4. Unified BP+OSD Parameters
+
+Both CPU and GPU bposd backends accept the same parameter names:
+
+| Unified param | CPU (`stimbposd`) | GPU (`cudaq_qec`) | Default |
+|---|---|---|---|
+| `max_iterations` | `max_bp_iters` | `max_iterations` | `1000` |
+| `bp_method` | `'minimum_sum'`/`'product_sum'` | `1`/`0` (int) | `'min_sum'` |
+| `ms_scaling_factor` | `ms_scaling_factor` | `scale_factor` | `0` |
+| `osd_order` | `osd_order` | `osd_order` | `10` |
+| `osd_method` | `'osd_cs'` etc | `3` (int) | `'osd_cs'` |
+| `use_osd` | *(ignored; always on)* | `use_osd` | `True` |
+
+---
+
+## 5. Simulation Pipeline Architecture
 
 **PipelineConfig** (dataclass):
-- `max_shots`, `max_errors` - stopping conditions
-- `batch_size` - shots per sampling batch (e.g. 10000)
-- `num_workers` - parallel processes
+- `max_shots`, `max_errors` — stopping conditions
+- `batch_size` — shots per sampling batch (default 10 000)
+- `num_workers` — parallel processes
 - `decoder`: DecoderConfig
-- `post_select_detector_indices`: Optional[List[int]] - if None, infer from circuit (DETECTOR with tag="post-select")
-- `output_dir`: Optional[str] - e.g. `"./data/results"`
-- `output_filename`: Optional[str] - e.g. `"ler_{timestamp}.csv"`
-- `output_format`: Literal["csv", "json", "parquet"] - default "csv"
+- `post_select_detector_indices`: Optional[List[int]] — if None, infer from circuit tags
+- `output_dir`, `output_filename`, `output_format` — optional CSV/JSON/Parquet output
 
 **Output stats** (per task):
 - `shots`, `post_selected_shots`, `post_selection_rate`, `errors`, `logical_error_rate`, `seconds`, `json_metadata`
 
 ---
 
-## 5. Output Format
-
-When `output_dir` is set, results are saved to:
-- **Path**: `{output_dir}/{output_filename}` (supports `{timestamp}` placeholder)
-- **Formats**: CSV (default, pandas-compatible), JSON, Parquet
-- **Columns**: stats fields + flattened json_metadata keys (d, p, rounds, etc.)
-
----
-
 ## 6. Worker Model
 
-- **CPU**: multiprocessing workers; each: sample batch -> post-select -> decode
-- **GPU**: Same loop, workers pinned to GPU via `rank % num_gpus`; `CUDA_VISIBLE_DEVICES` set per worker
-- **No post-selection**: Delegate to `sinter.collect` for full compatibility
+- **CPU, no post-selection**: delegates to `sinter.collect` for maximum throughput
+- **CPU, with post-selection**: custom multiprocessing loop; each worker: sample → post-select → decode
+- **GPU (any)**: always uses custom loop — sinter's adaptive batching (starts at 1 shot) is too slow for GPU kernel launch overhead; custom loop starts at `batch_size` immediately
+- Progress is printed every 10 seconds (time-based) for both single- and multi-worker modes when `print_progress=True`
 
 ---
 
 ## 7. Relation to sinter
 
-- **No post-selection**: Delegate to `sinter.collect`
-- **With post-selection**: Custom pipeline; decoders still implement `sinter.Decoder` interface
-- **sinter**: CPU multiprocessing only; GPU requires manual `CUDA_VISIBLE_DEVICES` per worker
+- **CPU, no post-selection**: Delegate to `sinter.collect`
+- **CPU, with post-selection / GPU**: Custom pipeline; decoders still implement `sinter.Decoder` interface
+- **Bit packing convention**: pipeline uses `np.packbits` default (big-endian); `decode_shots_bit_packed` must match this convention on both input unpack and output pack
 
 ---
 
@@ -85,41 +96,60 @@ When `output_dir` is set, results are saved to:
 simulation/
 ├── decoder_backend/
 │   ├── __init__.py
-│   ├── config.py          # DecoderConfig, PipelineConfig
-│   ├── registry.py        # DecoderRegistry
+│   ├── config.py          # DecoderConfig, PipelineConfig, SimulationStats
+│   ├── registry.py        # backend-keyed decoder registry
 │   ├── decoders/
-│   │   ├── pymatching.py
-│   │   └── ...
+│   │   ├── __init__.py    # soft-imports all decoders; safe if package missing
+│   │   ├── pymatching.py  # PyMatchingDecoder (CPU)
+│   │   ├── bposd.py       # BpOsdCpuDecoder + unified param translation (CPU)
+│   │   ├── cudaqx.py      # CudaQxDecoder + CudaQxCompiledDecoder (GPU)
+│   │   └── mwpf.py        # MWPF decoder (CPU)
 │   ├── pipeline.py        # SimulationPipeline
 │   ├── post_select.py     # apply_post_selection, get_post_select_detector_indices
-│   └── worker.py          # CPU/GPU worker functions
-├── decoder.py             # BaseDecoder (legacy, migrate to registry)
-├── simulator.py           # QECSimulator uses SimulationPipeline
-└── gpu_worker.py
+│   └── worker.py          # _decode_worker_cpu (multiprocessing)
 ```
 
 ---
 
 ## 9. Dependencies
 
-- `stim` - circuit representation and sampling
-- `sinter` - sampling/decoding (bundled with stim or install separately)
-- `pymatching` - for pymatching decoder (install for LER simulations: `pip install pymatching`)
+- `stim` — circuit representation and sampling
+- `sinter` — CPU collect path and Decoder interface
+- `pymatching` — MWPM decoder: `pip install pymatching`
+- `stimbposd` — CPU BP+OSD: `pip install stimbposd`
+- `mwpf` — MWPF decoder: `pip install mwpf frozendict frozenlist`
+- `cudaq_qec` — GPU BP+OSD: `pip install cudaq_qec` (NVIDIA GPU required)
+
+---
 
 ## 10. Usage
 
 ```python
-circuit = MemoryExperiment(...).build()
+from src.simulation.decoder_backend import SimulationPipeline, ExperimentTask, DecoderConfig
+
+# CPU PyMatching (delegates to sinter when no post-selection)
 pipeline = SimulationPipeline(
-    decoder_config=DecoderConfig("pymatching", backend="cpu"),
+    decoder_config=DecoderConfig("pymatching"),
     max_shots=1_000_000,
     max_errors=100,
     num_workers=4,
-    output_dir="data/results",
 )
 stats = pipeline.run(circuit, json_metadata={"d": 3, "p": 0.001})
 
+# GPU BP+OSD (cudaq_qec nv-qldpc-decoder)
+pipeline = SimulationPipeline(
+    decoder_config=DecoderConfig("bposd", backend="gpu", params={
+        "max_iterations": 1000,
+        "osd_order": 10,
+        "osd_method": "osd_cs",
+    }),
+    max_shots=1_000_000,
+    max_errors=100,
+    num_workers=1,
+    print_progress=True,
+)
+
 # Batch mode
-tasks = [ExperimentTask(circuit=exp.build(), json_metadata=meta) for ...]
+tasks = [ExperimentTask(circuit, json_metadata={"p": p}) for p in p_list]
 df = pipeline.run_batch(tasks)
 ```

@@ -69,7 +69,13 @@ class SimulationPipeline:
         return get_post_select_detector_indices(circuit)
 
     def _use_sinter_directly(self, circuit: stim.Circuit) -> bool:
-        """True if we can delegate to sinter (no post-selection)."""
+        """True if we can delegate to sinter (no post-selection, CPU backend only).
+
+        GPU backends need large, fixed batches for efficiency; sinter's adaptive
+        batching starts at 1 shot and ramps up too slowly to amortise GPU overhead.
+        """
+        if self.config.decoder.backend != "cpu":
+            return False
         return len(self._resolve_post_select_indices(circuit)) == 0
 
     def run(
@@ -161,6 +167,7 @@ class SimulationPipeline:
                     circuit,
                     decoder_name,
                     self.config.decoder.params,
+                    self.config.decoder.backend,
                     self.config.batch_size,
                     self.config.max_shots,
                     self.config.max_errors,
@@ -215,11 +222,12 @@ class SimulationPipeline:
         post_selected_shots = 0
         errors = 0
         batch_size = self.config.batch_size
+        print_interval = 10.0
+        next_print = time.perf_counter() + print_interval
 
         while total_shots < self.config.max_shots and errors < self.config.max_errors:
-            det_data, obs_data = sampler.sample(
+            det_data, obs_data, _ = sampler.sample(
                 shots=batch_size,
-                separate_observables=True,
                 bit_packed=False,
             )
             total_shots += det_data.shape[0]
@@ -239,13 +247,16 @@ class SimulationPipeline:
             )
             errors += int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
 
-            if self.config.print_progress and total_shots % (10 * batch_size) < batch_size:
-                elapsed = time.perf_counter() - start
-                ler = errors / post_selected_shots if post_selected_shots else 0
-                print(
-                    f"shots={total_shots:,} kept={post_selected_shots:,} "
-                    f"errors={errors} LER={ler:.2e} {elapsed:.1f}s"
-                )
+            if self.config.print_progress:
+                now = time.perf_counter()
+                if now >= next_print:
+                    elapsed = now - start
+                    ler = errors / post_selected_shots if post_selected_shots else 0.0
+                    print(
+                        f"shots={total_shots:,} kept={post_selected_shots:,} "
+                        f"errors={errors} LER={ler:.2e} {elapsed:.1f}s"
+                    )
+                    next_print = now + print_interval
 
         elapsed = time.perf_counter() - start
         return SimulationStats(

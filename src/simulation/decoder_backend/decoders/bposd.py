@@ -1,7 +1,10 @@
 """BP+OSD decoder (CPU) for quantum LDPC codes.
 
 Prefers stimbposd; falls back to ldpc package if stimbposd not installed.
+Accepts unified parameter names shared with the GPU backend (see cudaqx.py).
 """
+
+import sinter
 
 from ..registry import register_decoder
 
@@ -27,14 +30,73 @@ if not _BPOSD_AVAILABLE:
         SinterDecoder_BPOSD = None  # type: ignore
 
 
-def _create_bposd_decoder(**kwargs):
-    """Factory for BP+OSD decoder. Params: max_bp_iters, bp_method, osd_order, osd_method, etc."""
-    if not _BPOSD_AVAILABLE:
-        raise ImportError(
-            "BP+OSD decoder requires stimbposd or ldpc. Install with: pip install stimbposd"
-        )
-    return SinterDecoder_BPOSD(**kwargs)
+# ---------------------------------------------------------------------------
+# Unified → stimbposd/ldpc param translation
+# ---------------------------------------------------------------------------
+
+_BP_METHOD_TO_CPU = {
+    "min_sum":     "minimum_sum",
+    "minimum_sum": "minimum_sum",
+    "product_sum": "product_sum",
+    "sum_product": "product_sum",
+}
+
+_OSD_METHOD_NORM = {
+    "osd_0": "osd_0", "OSD_0": "osd_0", "osd0": "osd_0",
+    "osd_e": "osd_e", "OSD_E": "osd_e",
+    "osd_cs": "osd_cs", "OSD_CS": "osd_cs",
+}
+
+
+def _unified_to_cpu(params: dict) -> dict:
+    """Translate unified parameter names to stimbposd/ldpc parameter names.
+
+    Unified → CPU mappings:
+      max_iterations    → max_bp_iters
+      bp_method         → bp_method  ('min_sum' → 'minimum_sum', etc.)
+      ms_scaling_factor → ms_scaling_factor  (unchanged)
+      osd_order         → osd_order  (unchanged)
+      osd_method        → osd_method  (case-normalised to lowercase)
+      use_osd           → (dropped; BpOsdDecoder always performs OSD)
+    """
+    out = {}
+    for k, v in params.items():
+        if k == "max_iterations":
+            out["max_bp_iters"] = v
+        elif k == "bp_method":
+            out["bp_method"] = _BP_METHOD_TO_CPU.get(v, v)
+        elif k == "osd_method":
+            out["osd_method"] = _OSD_METHOD_NORM.get(v, v)
+        elif k == "use_osd":
+            pass  # BpOsdDecoder always performs OSD; this param is a no-op on CPU
+        else:
+            out[k] = v  # ms_scaling_factor, osd_order, etc. pass through unchanged
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Wrapper decoder
+# ---------------------------------------------------------------------------
+
+_DEFAULTS = {
+    "max_iterations":    1000,
+    "osd_order":         10,
+    "bp_method":         "min_sum",
+    "osd_method":        "osd_cs",
+    "ms_scaling_factor": 0,
+}
+
+
+class BpOsdCpuDecoder(sinter.Decoder):
+    """Thin wrapper around SinterDecoder_BPOSD that accepts unified parameter names."""
+
+    def __init__(self, **params):
+        translated = _unified_to_cpu({**_DEFAULTS, **params})
+        self._inner = SinterDecoder_BPOSD(**translated)
+
+    def compile_decoder_for_dem(self, *, dem):
+        return self._inner.compile_decoder_for_dem(dem=dem)
 
 
 if _BPOSD_AVAILABLE:
-    register_decoder("bposd", SinterDecoder_BPOSD, aliases=["bp_osd"])
+    register_decoder("bposd", BpOsdCpuDecoder, aliases=["bp_osd"], backend="cpu")
