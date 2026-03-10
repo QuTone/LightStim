@@ -102,12 +102,12 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # B. Syndrome Extraction
     # --------------------------------------------------------------------------
-    def apply_syndrome_extraction(self, 
-                                  circuit_chunk: stim.Circuit, 
+    def apply_syndrome_extraction(self,
+                                  circuit_chunk: stim.Circuit,
                                   rounds: int = 1):
         """
         Applies syndrome extraction with automated Tracker integration.
-        
+
         Args:
             circuit_chunk: A Stim circuit representing ONE round of stabilizer measurement.
                            Only includes circuit operations. The last instruction has to be syndrome qubit measurement.
@@ -142,6 +142,7 @@ class CircuitBuilder:
         # ======================================================================
         if rounds > 1:
             print("Applying rest rounds of syndrome extraction...")
+
             loop_body = stim.Circuit()
             num_syn = len(syn_coords)
             
@@ -168,7 +169,7 @@ class CircuitBuilder:
                     ) 
             
             self.circuit.append(stim.CircuitRepeatBlock(rounds - 1, loop_body))
-            
+
             # Update the meas_rec_to_idx_map for the repeated rounds
             total_measurements = self.tracker.total_measurements
             for r in range(rounds - 1):

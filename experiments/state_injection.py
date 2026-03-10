@@ -102,6 +102,7 @@ def _get_middle_injection_init(
     return init_dict
 
 
+
 class StateInjectionExperiment:
     """
     Orchestrates a State Injection Experiment for Rotated Surface Code.
@@ -157,16 +158,35 @@ class StateInjectionExperiment:
 
     def build(self) -> stim.Circuit:
         """Constructs the full Stim circuit for the state injection experiment."""
-        # 1. Create patch and add to QECSystem (SE block expects QECSystem with active_syndrome_indices)
+        # 1. Create patch and register in QECSystem
         patch = RotatedSurfaceCode(distance=self.distance)
         self.system = QECSystem()
         self.system.add_patch(patch, name="surface_code")
 
-        # 2. Setup tracker and builder
         num_qubits = self.system.num_qubits
         num_logicals = self.system.num_logicals
+
+        # 2. Build init_dict
+        if self.injection_protocol == "corner":
+            init_dict = _get_corner_injection_init(self.system, self.inject_state)
+        else:
+            init_dict = _get_middle_injection_init(self.system, self.inject_state)
+
+        # 3. Tag all syndrome qubit coordinates for post-selection.
+        # The tracker will mark every DETECTOR it generates whose (x, y, 0)
+        # coordinate matches an entry here with the "post-select" tag.
+        # This covers all syndrome-round detectors (round 1 and repeat rounds),
+        # but not final-readout detectors (produced by apply_data_readout).
+        post_select_coords = {
+            tuple(self.system.qubit_coords[s['syn_idx']]) + (0,)
+            for s in self.system.stabilizers
+        }
+
+        # 4. Setup tracker (with post-select coords) and builder
         self.tracker = SyndromeTracker(
-            num_qubits=num_qubits, expected_num_logicals=num_logicals
+            num_qubits=num_qubits,
+            expected_num_logicals=num_logicals,
+            post_select_detector_coords=post_select_coords,
         )
         self.builder = CircuitBuilder(
             tracker=self.tracker,
@@ -174,34 +194,25 @@ class StateInjectionExperiment:
             if_detector=self.if_detector,
         )
 
-        # 3. Write coordinates
+        # 5. Write coordinates
         self.builder.write_coordinates()
 
-        # 4. Injection-specific initialization (system has global indices after add_patch)
-        if self.injection_protocol == "corner":
-            init_dict = _get_corner_injection_init(
-                self.system, self.inject_state
-            )
-        else:
-            init_dict = _get_middle_injection_init(
-                self.system, self.inject_state
-            )
-
+        # 6. Initialize data qubits
         self.builder.initialize(init_dict=init_dict, n=num_qubits)
 
-        # 5. Syndrome extraction rounds
+        # 7. Syndrome extraction
         se_block = self.block_class(self.system)
         self.builder.apply_syndrome_extraction(
             circuit_chunk=se_block.circuit,
             rounds=self.rounds,
         )
 
-        # 6. Final readout: measure in X basis if inject_state X, else Z
+        # 8. Final readout: measure in X basis if inject_state X, else Z
         data_indices = [self.system.index_map[c] for c in self.system.data_coords]
         final_measurements = {q: self.inject_state for q in data_indices}
         self.builder.apply_data_readout(final_measurements=final_measurements)
 
-        # 7. Optional noise
+        # 9. Optional noise
         if self.noise_params is not None:
             return self.builder.build_noisy_circuit(
                 noise_params=self.noise_params,

@@ -15,4 +15,9 @@ try:
 except Exception:
     pass
 
+try:
+    from . import cudaqx  # noqa: F401 - registers nv-qldpc-decoder + bposd gpu
+except Exception:
+    pass
+
 __all__ = ["PyMatchingDecoder"]

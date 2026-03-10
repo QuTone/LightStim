@@ -16,6 +16,7 @@ def _decode_worker_cpu(
     circuit: stim.Circuit,
     decoder_name: str,
     decoder_params: Dict[str, Any],
+    decoder_backend: str,
     batch_size: int,
     max_shots: int,
     max_errors: int,
@@ -37,7 +38,7 @@ def _decode_worker_cpu(
     if gpu_id is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
-    decoder = get_decoder(decoder_name, **decoder_params)
+    decoder = get_decoder(decoder_name, backend=decoder_backend, **decoder_params)
     dem = circuit.detector_error_model(
         decompose_errors=getattr(decoder, "decompose_errors", False),
         approximate_disjoint_errors=True,
@@ -50,9 +51,8 @@ def _decode_worker_cpu(
             if shots_counter.value >= max_shots or errors_counter.value >= max_errors:
                 break
 
-        det_data, obs_data = sampler.sample(
+        det_data, obs_data, _ = sampler.sample(
             shots=batch_size,
-            separate_observables=True,
             bit_packed=False,
         )
 

@@ -88,8 +88,9 @@ python -m ipykernel install --user --name=qec-simulator --display-name="QEC Simu
 
 ```bash
 pip install pymatching       # MWPM decoder (recommended)
-pip install stimbposd        # BP+OSD decoder (for LDPC codes)
+pip install stimbposd        # BP+OSD decoder, CPU (for LDPC codes)
 pip install mwpf frozendict frozenlist  # MWPF decoder
+pip install cudaq_qec        # BP+OSD decoder, GPU (NVIDIA only; nv-qldpc-decoder)
 ```
 
 ---
@@ -704,24 +705,51 @@ print(df[["d", "p", "logical_error_rate", "shots", "errors"]])
 
 #### Available decoders
 
-| Decoder | Config name | Install | Best for |
-|---------|------------|---------|----------|
-| **PyMatching** | `"pymatching"` | `pip install pymatching` | Surface codes (MWPM) |
-| **BP+OSD** | `"bposd"` | `pip install stimbposd` | LDPC / BB codes |
-| **MWPF** | `"mwpf"` | `pip install mwpf frozendict frozenlist` | General codes |
+| Decoder | Config name | Backend | Install | Best for |
+|---------|------------|---------|---------|----------|
+| **PyMatching** | `"pymatching"` | `"cpu"` | `pip install pymatching` | Surface codes (MWPM) |
+| **BP+OSD** | `"bposd"` | `"cpu"` | `pip install stimbposd` | LDPC / BB codes (CPU) |
+| **BP+OSD GPU** | `"bposd"` or `"nv-qldpc-decoder"` | `"gpu"` | `pip install cudaq_qec` | LDPC / BB codes (GPU) |
+| **MWPF** | `"mwpf"` | `"cpu"` | `pip install mwpf frozendict frozenlist` | General codes |
 
 Aliases: `"mwpm"` -> `"pymatching"`, `"bp_osd"` -> `"bposd"`.
+
+Requesting `backend="gpu"` when `cudaq_qec` is not installed raises `ImportError` immediately.
 
 ```python
 # PyMatching (default)
 decoder = DecoderConfig("pymatching")
 
-# BP+OSD with custom parameters
-decoder = DecoderConfig("bposd", params={"max_bp_iters": 20, "osd_order": 10})
+# BP+OSD CPU with unified parameters
+decoder = DecoderConfig("bposd", backend="cpu", params={
+    "max_iterations": 1000,
+    "osd_order": 10,
+    "osd_method": "osd_cs",
+    "bp_method": "min_sum",
+    "ms_scaling_factor": 0,
+})
+
+# BP+OSD GPU (requires cudaq_qec + NVIDIA GPU)
+decoder = DecoderConfig("bposd", backend="gpu", params={
+    "max_iterations": 1000,   # same unified names work on GPU
+    "osd_order": 10,
+    "osd_method": "osd_cs",
+})
 
 # MWPF
 decoder = DecoderConfig("mwpf")
 ```
+
+Both CPU and GPU bposd backends accept the same unified parameter names:
+
+| Unified param | CPU maps to | GPU maps to | Default |
+|---|---|---|---|
+| `max_iterations` | `max_bp_iters` | `max_iterations` | `1000` |
+| `bp_method` | `bp_method` (`'minimum_sum'`) | `bp_method` (`1`) | `'min_sum'` |
+| `ms_scaling_factor` | `ms_scaling_factor` | `scale_factor` | `0` |
+| `osd_order` | `osd_order` | `osd_order` | `10` |
+| `osd_method` | `osd_method` (`'osd_cs'`) | `osd_method` (`3`) | `'osd_cs'` |
+| `use_osd` | *(ignored; always on)* | `use_osd` | `True` |
 
 #### SimulationPipeline constructor parameters
 
@@ -1340,14 +1368,14 @@ class SimulationPipeline:
 | `run()` | `(circuit, json_metadata=None) -> SimulationStats` | Run single circuit |
 | `run_batch()` | `(tasks: list) -> pd.DataFrame` | Run multiple tasks; return DataFrame |
 
-When no post-selection is needed, `run()` delegates to `sinter.collect` for maximum performance.
+When no post-selection is needed and `backend="cpu"`, `run()` delegates to `sinter.collect` for maximum performance. GPU backends always use the custom sampling loop (sinter's adaptive batching is too slow for GPU kernel launch overhead).
 
 #### Registry functions (`src/simulation/decoder_backend/registry.py`)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `register_decoder()` | `(name, cls, aliases=[])` | Register a decoder class |
-| `get_decoder()` | `(name, **params)` | Get a decoder instance by name |
+| `register_decoder()` | `(name, cls, aliases=[], backend="cpu")` | Register a decoder class under a name and backend |
+| `get_decoder()` | `(name, backend="cpu", **params)` | Get a decoder instance; raises `ImportError` if the requested backend has no registration |
 | `list_decoders()` | `() -> list[str]` | List registered decoder names |
 
 ---
