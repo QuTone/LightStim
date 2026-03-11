@@ -29,9 +29,11 @@ class CSSLogicalOpSet(LogicalOpSet):
         # --- 1. Validation (Protocol Rules) ---
         if type(control_patch) != type(target_patch):
             raise ValueError(f"Type mismatch: {type(control_patch)} vs {type(target_patch)}")
-        
-        c_qubits = sorted(control_patch.data_indices)  # Sort for consistent pairing
-        t_qubits = sorted(target_patch.data_indices)   # Sort for consistent pairing
+
+        # system.add_patch() remaps data_indices to global indices in the returned patch,
+        # so we can use them directly here for any multi-patch configuration.
+        c_qubits = sorted(control_patch.data_indices)
+        t_qubits = sorted(target_patch.data_indices)
 
         if len(c_qubits) != len(t_qubits):
             raise ValueError(f"Size mismatch: {len(c_qubits)} vs {len(t_qubits)} data qubits.")
