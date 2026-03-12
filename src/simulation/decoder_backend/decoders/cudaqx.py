@@ -102,9 +102,9 @@ class CudaQxCompiledDecoder(sinter.CompiledDecoder):
         shots = bit_packed_detection_event_data.shape[0]
 
         # Unpack to (shots, n_dets) float64 for cudaq_qec.
-        # Pipeline packs with np.packbits default (big-endian), so unpack with big.
+        # Pipeline packs with little-endian to match sinter.Decoder convention.
         syndromes_bits = np.unpackbits(
-            bit_packed_detection_event_data, axis=1, bitorder="big"
+            bit_packed_detection_event_data, axis=1, bitorder="little"
         )[:, : self._n_detectors]
         syndromes = syndromes_bits.astype(np.float64)
 
@@ -119,9 +119,9 @@ class CudaQxCompiledDecoder(sinter.CompiledDecoder):
         # Logical flips: (shots, n_obs) uint8
         obs_preds = (corrections @ self._obs_matrix.T) % 2
 
-        # Pack to big-endian to match np.packbits default used in the pipeline.
+        # Pack to little-endian to match sinter.Decoder convention.
         n_obs_bytes = math.ceil(self._n_observables / 8)
-        packed = np.packbits(obs_preds, axis=1, bitorder="big")
+        packed = np.packbits(obs_preds, axis=1, bitorder="little")
         # packbits may produce more bytes than needed; trim to exact size
         return packed[:, :n_obs_bytes]
 

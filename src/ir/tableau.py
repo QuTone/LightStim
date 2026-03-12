@@ -35,23 +35,29 @@ class PauliTableau:
     def update_row(self, target_idx: int, source_idx: int):
         """
         Gottesman-Knill Update: Row[target] ^= Row[source] (XOR)
-        Records[target] += Records[source] (Concatenation)
+        Records: symmetric difference (GF(2) addition — duplicates cancel).
         """
         self.matrix[target_idx] ^= self.matrix[source_idx]
-        self.records[target_idx].extend(self.records[source_idx])
+        # GF(2) record merge: symmetric difference cancels duplicate entries
+        target_set = set(self.records[target_idx])
+        source_set = set(self.records[source_idx])
+        self.records[target_idx] = list(target_set.symmetric_difference(source_set))
 
     def update_row_from_external(self, target_idx: int, external_pauli: np.ndarray, external_record: List[int]):
         """
         Updates a row using a Pauli string and record from an external source
         (e.g., updating a Logical Operator using a Stabilizer).
-            
+
         Args:
             target_idx: Index of the row in THIS tableau to update.
             external_pauli: The Pauli string (1D array) to add onto the target (XOR).
             external_record: The measurement record list to add to the target.
         """
         self.matrix[target_idx] ^= external_pauli
-        self.records[target_idx].extend(external_record)
+        # GF(2) record merge: symmetric difference cancels duplicate entries
+        target_set = set(self.records[target_idx])
+        ext_set = set(external_record)
+        self.records[target_idx] = list(target_set.symmetric_difference(ext_set))
         
     def replace_row(self, idx: int, new_pauli: np.ndarray, new_record: List[int]):
         """Replaces a stabilizer (e.g. after anti-commutation)."""

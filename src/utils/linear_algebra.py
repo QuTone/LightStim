@@ -94,29 +94,29 @@ def create_lambda_matrix(n: int) -> np.ndarray:
 def check_commutativity(mat_a: np.ndarray, mat_b: np.ndarray) -> np.ndarray:
     """
     Vectorized check of commutation between two sets of Pauli strings.
-    Commutation(P, Q) = P @ Lambda @ Q.T (mod 2)
-    
+    Uses the symplectic inner product: (P, Q) anti-commute iff X_P·Z_Q + Z_P·X_Q = 1 (mod 2).
+    Avoids allocating a full (2N, 2N) Lambda matrix.
+
     Args:
         mat_a: (N_a, 2*num_qubits) matrix.
         mat_b: (N_b, 2*num_qubits) matrix.
-        
+
     Returns:
         (N_a, N_b) binary matrix. [i, j] = 1 if mat_a[i] anti-commutes with mat_b[j].
     """
-    # Sanity checks
-    
     if mat_a.shape[1] != mat_b.shape[1]:
         raise ValueError(f"Matrices must have the same number of columns. "
                         f"mat_a has {mat_a.shape[1]} columns, mat_b has {mat_b.shape[1]} columns")
-    
+
     if mat_a.shape[1] % 2 != 0:
         raise ValueError(f"Number of columns must be even (2*num_qubits). Got {mat_a.shape[1]} columns")
-        
+
     n = mat_a.shape[1] // 2
-    L = create_lambda_matrix(n)
-    
-    # A @ L @ B.T
-    return (mat_a @ L @ mat_b.T) % 2
+    # Symplectic inner product without allocating (2N, 2N) Lambda matrix:
+    #   result = A_x @ B_z.T + A_z @ B_x.T  (mod 2)
+    a_x, a_z = mat_a[:, :n], mat_a[:, n:]
+    b_x, b_z = mat_b[:, :n], mat_b[:, n:]
+    return (a_x @ b_z.T + a_z @ b_x.T) % 2
 
 def kernel_gf2(M: np.ndarray) -> np.ndarray:
     """

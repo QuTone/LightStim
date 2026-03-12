@@ -10,7 +10,7 @@ injection site (corner or center) receiving the target state.
 """
 
 import stim
-from typing import Type, Literal, Optional, Any, Tuple, List
+from typing import Type, Literal, Optional, Any, Tuple, List, Set
 
 from src.ir.builder import CircuitBuilder
 from src.ir.tracker import SyndromeTracker
@@ -121,6 +121,8 @@ class StateInjectionExperiment:
         distance: int = 3,
         rounds: int = 2,
         injection_protocol: Literal["corner", "middle"] = "corner",
+        post_select_mode: Literal["full_postselection", "full_qec", "hybrid"] = "full_postselection",
+        post_select_coords: Optional[Set[Tuple[int, ...]]] = None,
         inject_state: Literal["Z", "X"] = "Z",
         extraction_block_class: Type = RotatedSurfaceCodeExtractionBlock,
         noise_params: Optional[NoiseConfig] = None,
@@ -132,6 +134,14 @@ class StateInjectionExperiment:
             distance: Code distance (odd integer).
             rounds: Number of syndrome extraction rounds.
             injection_protocol: 'corner' (inject at (1,1)) or 'middle' (inject at center).
+            post_select_mode:
+                - 'full_postselection': tag all syndrome-round detectors.
+                - 'full_qec': do not tag post-select detectors.
+                - 'hybrid': tag a subset (default protocol-specific neighborhood).
+            post_select_coords:
+                Optional explicit post-select detector coordinates.
+                Accepts 2D (x, y) or 3D (x, y, t) tuples. In both cases only the
+                syndrome-round detector layer (t=0) is tagged.
             inject_state: Target logical state ('Z' -> |0⟩, 'X' -> |+⟩).
             extraction_block_class: SE block class (default RotatedSurfaceCodeExtractionBlock).
             noise_params: Optional noise configuration.
@@ -141,6 +151,8 @@ class StateInjectionExperiment:
         self.distance = distance
         self.rounds = rounds
         self.injection_protocol = injection_protocol.lower()
+        self.post_select_mode = post_select_mode.lower()
+        self.post_select_coords = post_select_coords
         self.inject_state = inject_state.upper()
         self.block_class = extraction_block_class
         self.noise_params = noise_params
@@ -149,12 +161,70 @@ class StateInjectionExperiment:
 
         if self.injection_protocol not in ("corner", "middle"):
             raise ValueError("injection_protocol must be 'corner' or 'middle'")
+        if self.post_select_mode not in ("full_postselection", "full_qec", "hybrid"):
+            raise ValueError("post_select_mode must be 'full_postselection', 'full_qec', or 'hybrid'")
         if self.inject_state not in ("Z", "X"):
             raise ValueError("inject_state must be 'Z' or 'X'")
 
         self.system: Optional[Any] = None
         self.builder: Optional[CircuitBuilder] = None
         self.tracker: Optional[SyndromeTracker] = None
+
+    @staticmethod
+    def _normalize_post_select_coords(coords: Set[Tuple[int, ...]]) -> Set[Tuple[int, int]]:
+        """Normalize user-provided post-select coords to 2D detector-plane coords."""
+        normalized = set()
+        for c in coords:
+            if len(c) == 2:
+                normalized.add((int(c[0]), int(c[1])))
+            elif len(c) == 3:
+                normalized.add((int(c[0]), int(c[1])))
+            else:
+                raise ValueError(
+                    "post_select_coords entries must be 2D (x, y) or 3D (x, y, t) tuples"
+                )
+        return normalized
+
+    def _default_hybrid_post_select_coords(self) -> Set[Tuple[int, int]]:
+        """Protocol defaults for hybrid mode."""
+        if self.injection_protocol == "corner":
+            # Adjacent syndrome checks next to the corner-injected data qubit.
+            return {(2, 0), (2, 2)}
+
+        # middle: choose the four syndrome checks around center data qubit (x, y).
+        mid = self.distance // 2 + 1
+        x = 2 * (mid - 1) + 1
+        y = 2 * (mid - 1) + 1
+        return {
+            (x - 1, y - 1),
+            (x + 1, y - 1),
+            (x - 1, y + 1),
+            (x + 1, y + 1),
+        }
+
+    def _resolve_post_select_coords(self) -> Set[Tuple[float, ...]]:
+        """Resolve detector coordinates to be post-selected for this experiment."""
+        assert self.system is not None
+        all_syndrome_coords_2d = {
+            (
+                int(self.system.qubit_coords[s["syn_idx"]][0]),
+                int(self.system.qubit_coords[s["syn_idx"]][1]),
+            )
+            for s in self.system.stabilizers
+        }
+        if self.post_select_mode == "full_qec":
+            selected_2d = set()
+        elif self.post_select_mode == "full_postselection":
+            selected_2d = all_syndrome_coords_2d
+        else:
+            if self.post_select_coords is not None:
+                selected_2d = self._normalize_post_select_coords(self.post_select_coords)
+            else:
+                selected_2d = self._default_hybrid_post_select_coords()
+
+        # Guard against invalid coordinates and keep tagging scoped to syndrome checks.
+        selected_2d = selected_2d & all_syndrome_coords_2d
+        return {(float(x), float(y), 0.0) for x, y in selected_2d}
 
     def build(self) -> stim.Circuit:
         """Constructs the full Stim circuit for the state injection experiment."""
@@ -172,15 +242,8 @@ class StateInjectionExperiment:
         else:
             init_dict = _get_middle_injection_init(self.system, self.inject_state)
 
-        # 3. Tag all syndrome qubit coordinates for post-selection.
-        # The tracker will mark every DETECTOR it generates whose (x, y, 0)
-        # coordinate matches an entry here with the "post-select" tag.
-        # This covers all syndrome-round detectors (round 1 and repeat rounds),
-        # but not final-readout detectors (produced by apply_data_readout).
-        post_select_coords = {
-            tuple(self.system.qubit_coords[s['syn_idx']]) + (0,)
-            for s in self.system.stabilizers
-        }
+        # 3. Resolve which syndrome-round detector coordinates should be tagged.
+        post_select_coords = self._resolve_post_select_coords()
 
         # 4. Setup tracker (with post-select coords) and builder
         self.tracker = SyndromeTracker(

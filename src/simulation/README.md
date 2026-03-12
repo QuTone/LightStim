@@ -67,6 +67,8 @@ Both CPU and GPU bposd backends accept the same parameter names:
 - `decoder`: DecoderConfig
 - `post_select_detector_indices`: Optional[List[int]] — if None, infer from circuit tags
 - `output_dir`, `output_filename`, `output_format` — optional CSV/JSON/Parquet output
+- `progress_enabled`, `progress_output`, `progress_interval_sec`, `progress_min_delta_shots` — unified progress controls
+- `progress_file_path` (+ rotating options) — optional file logging sink
 
 **Output stats** (per task):
 - `shots`, `post_selected_shots`, `post_selection_rate`, `errors`, `logical_error_rate`, `seconds`, `json_metadata`
@@ -75,18 +77,18 @@ Both CPU and GPU bposd backends accept the same parameter names:
 
 ## 6. Worker Model
 
-- **CPU, no post-selection**: delegates to `sinter.collect` for maximum throughput
-- **CPU, with post-selection**: custom multiprocessing loop; each worker: sample → post-select → decode
-- **GPU (any)**: always uses custom loop — sinter's adaptive batching (starts at 1 shot) is too slow for GPU kernel launch overhead; custom loop starts at `batch_size` immediately
-- Progress is printed every 10 seconds (time-based) for both single- and multi-worker modes when `print_progress=True`
+- **CPU/GPU, with or without post-selection**: unified custom loop; each worker performs sample → post-select → decode
+- **Single-process**: one process executes the full loop
+- **Multi-process**: worker processes only update shared counters; main process aggregates and emits progress
+- Progress output is unified across all paths (`shots kept errors LER elapsed ETA`) with dual-threshold throttling (time + shot delta)
 
 ---
 
 ## 7. Relation to sinter
 
-- **CPU, no post-selection**: Delegate to `sinter.collect`
-- **CPU, with post-selection / GPU**: Custom pipeline; decoders still implement `sinter.Decoder` interface
-- **Bit packing convention**: pipeline uses `np.packbits` default (big-endian); `decode_shots_bit_packed` must match this convention on both input unpack and output pack
+- The backend no longer depends on `sinter.collect` for progress/runtime flow control
+- Decoders still implement the `sinter.Decoder` interface (`compile_decoder_for_dem`, `decode_shots_bit_packed`)
+- **Bit packing convention**: pipeline uses little-endian (`np.packbits(..., bitorder=\"little\")`)
 
 ---
 
@@ -114,7 +116,7 @@ simulation/
 ## 9. Dependencies
 
 - `stim` — circuit representation and sampling
-- `sinter` — CPU collect path and Decoder interface
+- `sinter` — Decoder interface
 - `pymatching` — MWPM decoder: `pip install pymatching`
 - `stimbposd` — CPU BP+OSD: `pip install stimbposd`
 - `mwpf` — MWPF decoder: `pip install mwpf frozendict frozenlist`
@@ -127,12 +129,14 @@ simulation/
 ```python
 from src.simulation.decoder_backend import SimulationPipeline, ExperimentTask, DecoderConfig
 
-# CPU PyMatching (delegates to sinter when no post-selection)
+# CPU PyMatching
 pipeline = SimulationPipeline(
     decoder_config=DecoderConfig("pymatching"),
     max_shots=1_000_000,
     max_errors=100,
     num_workers=4,
+    progress_output="print",
+    progress_interval_sec=10.0,
 )
 stats = pipeline.run(circuit, json_metadata={"d": 3, "p": 0.001})
 

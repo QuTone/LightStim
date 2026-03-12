@@ -50,6 +50,9 @@ htmlcov/
 # Archive (local development files, not needed for sharing)
 archive/
 
+# Local planning docs
+plan/
+
 # Processing (temporary processing files)
 processing/
 external/

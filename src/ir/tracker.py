@@ -275,30 +275,30 @@ class SyndromeTracker:
             meas_pauli = back_propagated_paulis[i]
             meas_row = meas_pauli.reshape(1, -1)
             meas_abs_idx = current_base_idx + i
-            
+
             # Check commutativity against existing stabilizers and logicals
             comm_check = check_commutativity(meas_row, full_matrix)
             anti_comm_indices = np.where(comm_check[0])[0]
-            
+
             if len(anti_comm_indices) > 0:
                 # --- Case A: Anti-commutes (State Update) ---
                 pivot = anti_comm_indices[0]
                 # Update other anti-commuting rows
                 for other in anti_comm_indices[1:]:
                     temp_full.update_row(other, pivot) # (target, source)
-                
+
                 # Replace the pivot with the back_propagated_paulis
                 temp_full.replace_row(pivot, meas_pauli, [meas_abs_idx])
 
                 if pivot >= num_stabs:
                     # If the pivot is a logical operator and is replaced by a measurement, decreases one degree of freedom
                     self.expected_num_logicals -= 1
-                
+
             else:
                 # --- Case B: Commutes (Detector) ---
                 # Detector is formed by decomposing Back-propagated Pauli Measurements into existing STABILIZERS only (rows in the stabilizer tableau).
                 # (Logicals do not contribute to the decomposition)
-            
+
                 if num_stabs > 0:
                     # First check if meas_row is exactly one row in curr_stab_matrix
                     # Directly compare meas_row against current stabilizer rows
@@ -330,13 +330,13 @@ class SyndromeTracker:
                             basis=full_matrix,
                             targets=meas_row
                         )
-                        # Note: Here we use the full matrix as the basis, not just the stabilizer tableau. 
+                        # Note: Here we use the full matrix as the basis, not just the stabilizer tableau.
                         # The back-propagated Pauli may contain present logical operator components. e.g., Logical ZZ over two |0> states, then
                         # the last Z gauge operator consisting ZZ measurements can be written as the linear combination of previous Z gauges and two logical Z operators of two patches.
                         # If we don't use the full matrix as the basis, these measurements will be identified as independent basis and treated as logicals, which is incorrect.
                         # However, these measurements, although they can be decomposed, cannot be detectors, because their logical operator components cannot be measured in the middle of the circuit
                         # and cannot give syndrome information. This will be identified when we construct detectors.
-                        
+
                         # Construct a detector
                         if is_dependent[0]:
                             args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
@@ -347,17 +347,20 @@ class SyndromeTracker:
                                 self.stabilizer_with_logical_components.add(i)
                                 continue
                             # Otherwise, purely depends on stabilizers, construct a detector
+                            # Use set-based XOR for O(1) toggle instead of O(n) list scan
+                            args_set = set(args)
                             for c_idx in comp_indices:
                                 # Map back to full records (skip UNMEASURED_STAB_RECORD)
                                 for r in full_records[c_idx]:
                                     if r < 0:
                                         continue
                                     rec_to_append = stim.target_rec(r - self.total_measurements)
-                                    if rec_to_append in args:
-                                        args.remove(rec_to_append)
+                                    if rec_to_append in args_set:
+                                        args_set.remove(rec_to_append)
                                     else:
-                                        args.append(rec_to_append)  # addition modulo 2
-            
+                                        args_set.add(rec_to_append)  # addition modulo 2
+                            args = list(args_set)
+
                             coords = list(syn_coords[i]) + [0]
                             _append_detector(
                                 circuit, args, coords,
@@ -384,7 +387,7 @@ class SyndromeTracker:
         # Targets: The updated Full Tableau (System State)
         # new_basis_indices: Indices in full_matrix that form the Logical Basis.
         _, _, new_basis_indices = solve_linear_decomposition(
-            basis=back_propagated_paulis, 
+            basis=back_propagated_paulis,
             targets=full_matrix
         )
         
@@ -487,10 +490,10 @@ class SyndromeTracker:
             meas_pauli = final_paulis[i]
             meas_row = meas_pauli.reshape(1, -1)
             meas_abs_idx = base_meas_idx + i
-            
+
             comm_check = check_commutativity(meas_row, full_matrix)
             anti_comm_indices = np.where(comm_check[0])[0]
-            
+
             if len(anti_comm_indices) > 0:
                 pivot = anti_comm_indices[0]
                 destroyed_rows.add(pivot) # Mark pivot as destroyed
@@ -535,17 +538,19 @@ class SyndromeTracker:
                 stim_rec_target = b_idx - num_new_meas
                 args.append(stim.target_rec(stim_rec_target))
 
-            # 2. Historical Record Components
+            # 2. Historical Record Components — use set-based XOR for O(1) toggle
             det_coord = None
+            args_set = set(args)
             for r in full_records[k]:
                 if r < 0:
                     continue
                 rec_to_append = stim.target_rec(r - self.total_measurements)
-                if rec_to_append in args:
-                    args.remove(rec_to_append)
+                if rec_to_append in args_set:
+                    args_set.remove(rec_to_append)
                 else:
-                    args.append(rec_to_append)
+                    args_set.add(rec_to_append)
                 det_coord = idx_to_coord_map[self.meas_rec_to_idx_map[r]]
+            args = list(args_set)
 
             # Fallback when no syndrome records (e.g. X stabilizers with Z-only SE, final X measure)
             if det_coord is None:

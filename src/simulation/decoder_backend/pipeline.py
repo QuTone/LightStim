@@ -8,11 +8,11 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
-import sinter
 import stim
 
 from .config import DecoderConfig, PipelineConfig, SimulationStats
 from .post_select import apply_post_selection, get_post_select_detector_indices
+from .progress import ProgressReporter, ProgressSnapshot, get_progress_logger
 from .registry import get_decoder
 from .worker import _decode_worker_cpu
 
@@ -29,9 +29,8 @@ class SimulationPipeline:
     """
     Unified pipeline: sampling, post-selection, decoding, with optional parallel execution.
 
-    When post_select_detector_indices is empty/None and no tagged detectors exist,
-    delegates to sinter.collect for full compatibility. Otherwise runs a custom
-    sampling loop with post-selection.
+    Uses a unified custom loop for all paths so progress reporting is consistent
+    across CPU/GPU, post-selection on/off, and single/multi-process modes.
     """
 
     def __init__(
@@ -47,6 +46,15 @@ class SimulationPipeline:
         output_format: str = "csv",
         save_resume_filepath: Optional[str] = None,
         print_progress: bool = True,
+        progress_enabled: Optional[bool] = None,
+        progress_interval_sec: float = 10.0,
+        progress_min_delta_shots: Optional[int] = None,
+        progress_poll_interval_sec: float = 0.5,
+        progress_output: str = "print",
+        progress_logger_name: str = "lightstim.simulation.progress",
+        progress_file_path: Optional[str] = None,
+        progress_file_max_bytes: int = 10_000_000,
+        progress_file_backup_count: int = 5,
     ):
         self.config = PipelineConfig(
             max_shots=max_shots,
@@ -59,8 +67,25 @@ class SimulationPipeline:
             output_filename=output_filename,
             output_format=output_format,
             save_resume_filepath=save_resume_filepath,
+            progress_enabled=print_progress if progress_enabled is None else progress_enabled,
+            progress_interval_sec=progress_interval_sec,
+            progress_min_delta_shots=progress_min_delta_shots,
+            progress_poll_interval_sec=progress_poll_interval_sec,
+            progress_output=progress_output,
+            progress_logger_name=progress_logger_name,
+            progress_file_path=progress_file_path,
+            progress_file_max_bytes=progress_file_max_bytes,
+            progress_file_backup_count=progress_file_backup_count,
             print_progress=print_progress,
         )
+        self._status_logger = None
+        if self.config.progress_output in ("logging", "both"):
+            self._status_logger = get_progress_logger(
+                logger_name=self.config.progress_logger_name,
+                file_path=self.config.progress_file_path,
+                file_max_bytes=self.config.progress_file_max_bytes,
+                file_backup_count=self.config.progress_file_backup_count,
+            )
 
     def _resolve_post_select_indices(self, circuit: stim.Circuit) -> List[int]:
         """Get post-select detector indices from config or circuit tags."""
@@ -68,74 +93,17 @@ class SimulationPipeline:
             return self.config.post_select_detector_indices
         return get_post_select_detector_indices(circuit)
 
-    def _use_sinter_directly(self, circuit: stim.Circuit) -> bool:
-        """True if we can delegate to sinter (no post-selection, CPU backend only).
-
-        GPU backends need large, fixed batches for efficiency; sinter's adaptive
-        batching starts at 1 shot and ramps up too slowly to amortise GPU overhead.
-        """
-        if self.config.decoder.backend != "cpu":
-            return False
-        return len(self._resolve_post_select_indices(circuit)) == 0
-
     def run(
         self,
         circuit: stim.Circuit,
         json_metadata: Optional[Dict[str, Any]] = None,
     ) -> SimulationStats:
         """
-        Run simulation on a single circuit. Uses sinter when no post-selection;
-        otherwise runs custom pipeline.
+        Run simulation on a single circuit via the unified custom pipeline.
         """
         meta = json_metadata or {}
         post_indices = self._resolve_post_select_indices(circuit)
-
-        if self._use_sinter_directly(circuit):
-            return self._run_sinter(circuit, meta)
         return self._run_custom(circuit, meta, post_indices)
-
-    def _run_sinter(
-        self,
-        circuit: stim.Circuit,
-        json_metadata: Dict[str, Any],
-    ) -> SimulationStats:
-        """Delegate to sinter.collect (no post-selection)."""
-        decoder_name = self.config.decoder.name
-        decoder_instance = get_decoder(
-            decoder_name,
-            backend=self.config.decoder.backend,
-            **self.config.decoder.params,
-        )
-
-        task = sinter.Task(
-            circuit=circuit,
-            decoder=decoder_name,
-            json_metadata=json_metadata,
-        )
-        tasks = [task]
-        dem = circuit.detector_error_model(
-            decompose_errors=getattr(decoder_instance, "decompose_errors", False),
-            approximate_disjoint_errors=True,
-        )
-        # Use custom_decoders so we pass our decoder instance
-        results = sinter.collect(
-            num_workers=self.config.num_workers,
-            tasks=tasks,
-            max_shots=self.config.max_shots,
-            max_errors=self.config.max_errors,
-            custom_decoders={decoder_name: decoder_instance},
-            save_resume_filepath=self.config.save_resume_filepath,
-            print_progress=self.config.print_progress,
-        )
-        r = results[0]
-        return SimulationStats(
-            shots=r.shots,
-            post_selected_shots=r.shots,  # no post-selection
-            errors=r.errors,
-            seconds=r.seconds,
-            decoder=r.decoder,
-            json_metadata={**r.json_metadata} if hasattr(r, "json_metadata") else json_metadata,
-        )
 
     def _run_custom(
         self,
@@ -146,18 +114,27 @@ class SimulationPipeline:
         """Custom sampling loop with post-selection (single or multi-process)."""
         decoder_name = self.config.decoder.name
         start = time.perf_counter()
+        reporter = self._make_progress_reporter()
+        has_post_selection = len(post_select_indices) > 0
 
         if self.config.num_workers <= 1:
             return self._run_custom_single(
-                circuit, json_metadata, post_select_indices, decoder_name, start
+                circuit,
+                json_metadata,
+                post_select_indices,
+                decoder_name,
+                start,
+                reporter,
+                has_post_selection,
             )
 
         # Multi-process
-        manager = mp.Manager()
-        shots_counter = manager.Value("i", 0)
-        post_counter = manager.Value("i", 0)
-        errors_counter = manager.Value("i", 0)
-        lock = manager.Lock()
+        # Use shared-memory synchronized primitives directly.
+        # This avoids Manager proxy IPC overhead under high worker counts.
+        shots_counter = mp.Value("q", 0)
+        post_counter = mp.Value("q", 0)
+        errors_counter = mp.Value("q", 0)
+        lock = mp.Lock()
 
         procs = []
         for wid in range(self.config.num_workers):
@@ -177,16 +154,35 @@ class SimulationPipeline:
                     errors_counter,
                     lock,
                     wid,
-                    None,
+                    wid if self.config.decoder.backend != "cpu" else None,
                 ),
             )
             p.start()
             procs.append(p)
 
+        while any(p.is_alive() for p in procs):
+            snapshot = self._build_snapshot(
+                shots=shots_counter.value,
+                kept=post_counter.value,
+                errors=errors_counter.value,
+                start=start,
+                has_post_selection=has_post_selection,
+            )
+            reporter.emit(snapshot)
+            time.sleep(self.config.progress_poll_interval_sec)
+
         for p in procs:
             p.join()
 
         elapsed = time.perf_counter() - start
+        final_snapshot = self._build_snapshot(
+            shots=shots_counter.value,
+            kept=post_counter.value,
+            errors=errors_counter.value,
+            start=start,
+            has_post_selection=has_post_selection,
+        )
+        reporter.emit(final_snapshot, final=True)
         return SimulationStats(
             shots=shots_counter.value,
             post_selected_shots=post_counter.value,
@@ -203,6 +199,8 @@ class SimulationPipeline:
         post_select_indices: List[int],
         decoder_name: str,
         start: float,
+        reporter: ProgressReporter,
+        has_post_selection: bool,
     ) -> SimulationStats:
         """Single-threaded custom loop."""
         decoder_instance = get_decoder(
@@ -222,8 +220,6 @@ class SimulationPipeline:
         post_selected_shots = 0
         errors = 0
         batch_size = self.config.batch_size
-        print_interval = 10.0
-        next_print = time.perf_counter() + print_interval
 
         while total_shots < self.config.max_shots and errors < self.config.max_errors:
             det_data, obs_data, _ = sampler.sample(
@@ -238,27 +234,45 @@ class SimulationPipeline:
             kept = det_filtered.shape[0]
             post_selected_shots += kept
             if kept == 0:
+                reporter.emit(
+                    self._build_snapshot(
+                        shots=total_shots,
+                        kept=post_selected_shots,
+                        errors=errors,
+                        start=start,
+                        has_post_selection=has_post_selection,
+                    )
+                )
                 continue
 
-            det_packed = np.packbits(det_filtered, axis=1)
-            obs_packed = np.packbits(obs_filtered, axis=1)
+            # sinter.Decoder expects little-endian bit packing.
+            det_packed = np.packbits(det_filtered, axis=1, bitorder="little")
+            obs_packed = np.packbits(obs_filtered, axis=1, bitorder="little")
             pred_packed = compiled.decode_shots_bit_packed(
                 bit_packed_detection_event_data=det_packed,
             )
             errors += int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
-
-            if self.config.print_progress:
-                now = time.perf_counter()
-                if now >= next_print:
-                    elapsed = now - start
-                    ler = errors / post_selected_shots if post_selected_shots else 0.0
-                    print(
-                        f"shots={total_shots:,} kept={post_selected_shots:,} "
-                        f"errors={errors} LER={ler:.2e} {elapsed:.1f}s"
-                    )
-                    next_print = now + print_interval
+            reporter.emit(
+                self._build_snapshot(
+                    shots=total_shots,
+                    kept=post_selected_shots,
+                    errors=errors,
+                    start=start,
+                    has_post_selection=has_post_selection,
+                )
+            )
 
         elapsed = time.perf_counter() - start
+        reporter.emit(
+            self._build_snapshot(
+                shots=total_shots,
+                kept=post_selected_shots,
+                errors=errors,
+                start=start,
+                has_post_selection=has_post_selection,
+            ),
+            final=True,
+        )
         return SimulationStats(
             shots=total_shots,
             post_selected_shots=post_selected_shots,
@@ -287,8 +301,7 @@ class SimulationPipeline:
 
         records = []
         for i, task in enumerate(normalized):
-            if self.config.print_progress:
-                print(f"Task {i + 1}/{len(normalized)}: {task.json_metadata}")
+            self._emit_status(f"Task {i + 1}/{len(normalized)}: {task.json_metadata}")
             stats = self.run(task.circuit, task.json_metadata)
             row = {
                 "shots": stats.shots,
@@ -328,6 +341,45 @@ class SimulationPipeline:
         else:
             df.to_csv(path, index=False)
 
-        if self.config.print_progress:
-            print(f"Saved results to {path}")
+        self._emit_status(f"Saved results to {path}")
         return str(path)
+
+    def _make_progress_reporter(self) -> ProgressReporter:
+        return ProgressReporter(
+            enabled=self.config.progress_enabled,
+            interval_sec=self.config.progress_interval_sec,
+            min_delta_shots=self.config.progress_min_delta_shots or max(self.config.batch_size, 1),
+            output=self.config.progress_output,
+            logger_name=self.config.progress_logger_name,
+            file_path=self.config.progress_file_path,
+            file_max_bytes=self.config.progress_file_max_bytes,
+            file_backup_count=self.config.progress_file_backup_count,
+        )
+
+    def _build_snapshot(
+        self,
+        *,
+        shots: int,
+        kept: int,
+        errors: int,
+        start: float,
+        has_post_selection: bool,
+    ) -> ProgressSnapshot:
+        elapsed = max(0.0, time.perf_counter() - start)
+        effective_kept = kept if has_post_selection else shots
+        return ProgressSnapshot(
+            shots_total=shots,
+            shots_kept=effective_kept,
+            errors_total=errors,
+            elapsed_sec=elapsed,
+            max_shots=self.config.max_shots,
+            max_errors=self.config.max_errors,
+        )
+
+    def _emit_status(self, message: str) -> None:
+        if not self.config.progress_enabled:
+            return
+        if self.config.progress_output in ("print", "both"):
+            print(message)
+        if self.config.progress_output in ("logging", "both") and self._status_logger is not None:
+            self._status_logger.info(message)

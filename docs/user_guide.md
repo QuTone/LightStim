@@ -84,13 +84,15 @@ pip install -r requirements.txt
 python -m ipykernel install --user --name=qec-simulator --display-name="QEC Simulator"
 ```
 
-### Optional decoder packages
+### Decoder packages
+
+`requirements.txt` already includes CPU decoder dependencies (`stimbposd`, `mwpf`, `frozendict`, `frozenlist`).
+
+Install extra decoder packages only when needed:
 
 ```bash
-pip install pymatching       # MWPM decoder (recommended)
-pip install stimbposd        # BP+OSD decoder, CPU (for LDPC codes)
-pip install mwpf frozendict frozenlist  # MWPF decoder
-pip install cudaq_qec        # BP+OSD decoder, GPU (NVIDIA only; nv-qldpc-decoder)
+pip install pymatching  # MWPM decoder (recommended if not already installed)
+pip install cudaq_qec   # BP+OSD decoder, GPU (NVIDIA only; nv-qldpc-decoder)
 ```
 
 ---
@@ -550,7 +552,7 @@ patch.transpose_coords()
 patch.reset_transposition()
 
 # Shift coordinates
-patch.shift_coords((5, 5))
+patch.shift_coords(5, 5)
 ```
 
 #### Coupler registration (lattice surgery)
@@ -789,7 +791,7 @@ The plot module provides preset and configurable plotting functions. Input is a 
 ```python
 from src.plot import plot_ler_vs_p
 
-plot_ler_vs_p(df, hue="d", x_col="p")
+plot_ler_vs_p(df, hue="d", x_col="p1")  # falls back to "p" if "p1" is absent
 ```
 
 #### LER vs. code distance
@@ -951,11 +953,11 @@ class QECPatch(ABC):
 |--------|-----------|-------------|
 | `get_info()` | `-> dict` | Returns comprehensive patch information |
 | `get_grid_key()` | `(coord) -> tuple` | Quantize coordinate to grid key |
-| `create_stim_stabilizer()` | `(targets, stab_type)` | Register a stabilizer |
-| `create_stim_logical()` | `(targets, log_type)` | Register a logical operator |
+| `create_stim_stabilizer()` | `(target_dict, syn_coord=None, type=None)` | Register a stabilizer |
+| `create_stim_logical()` | `(target_dict, op_type)` | Register a logical operator |
 | `rotate_coords()` | `(angle: float)` | Rotate all coordinates by angle (radians) |
 | `transpose_coords()` | `()` | Swap x and y coordinates |
-| `shift_coords()` | `(offset: tuple)` | Translate all coordinates |
+| `shift_coords()` | `(dx: float, dy: float)` | Translate all coordinates |
 | `reset_rotation_angle()` | `()` | Clear rotation tracking |
 | `reset_transposition()` | `()` | Clear transposition tracking |
 | `snap_coord()` | `(coord) -> tuple` | Snap coordinate to nearest grid point |
@@ -1016,9 +1018,9 @@ class SyndromeTracker:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `process_initialization()` | `(init_tableau, init_logicals)` | Register initial stabilizers and logicals |
-| `process_syndrome_extraction()` | `(se_chunk, round_idx)` | Process one SE round; emit detectors |
-| `process_final_measurement()` | `(final_meas_tableau)` | Process data qubit readout; emit final detectors and observables |
+| `process_initialization()` | `(init_tableau)` | Register initial stabilizers |
+| `process_mid_measurement()` | `(circuit, back_propagated_paulis, syn_coords)` | Process one syndrome round and emit detectors |
+| `process_final_measurement()` | `(circuit, final_paulis, idx_to_coord_map)` | Process final readout and emit detectors/observables |
 | `process_unitary_block()` | `(unitary_block)` | Update tableau through a unitary circuit block |
 
 **Key attributes**:

@@ -1,6 +1,6 @@
 # Next Steps
 
-1. **Fix BB code memory experiment [[144,12,12]] 卡住问题**
+1. **Fix BB code memory experiment [[144,12,12]] 卡住问题 (Done)**
   已诊断：不是 Logical operator 计算的问题（非 bottleneck）。问题在 `tracker.py` 的 `process_final_measurement` 的 Step 3 最后。
 2. **DETECTOR 的 "postselect" tag 功能** [done]
   实现并封装，考虑如何方便控制。

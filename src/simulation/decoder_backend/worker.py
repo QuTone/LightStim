@@ -29,8 +29,10 @@ def _decode_worker_cpu(
     gpu_id: Optional[int] = None,
 ) -> None:
     """
-    Single worker process: sample -> post-select -> decode.
+    Single worker process: reserve shots -> sample -> post-select -> decode.
     Updates shared counters (shots_counter, post_counter, errors_counter) under lock.
+    shots_counter tracks reserved/completed work units, preventing large overshoot
+    when many workers race near max_shots.
     """
     from .registry import get_decoder
     from .post_select import apply_post_selection
@@ -50,9 +52,12 @@ def _decode_worker_cpu(
         with lock:
             if shots_counter.value >= max_shots or errors_counter.value >= max_errors:
                 break
+            remaining = max_shots - shots_counter.value
+            shots_to_take = min(batch_size, remaining)
+            shots_counter.value += shots_to_take
 
         det_data, obs_data, _ = sampler.sample(
-            shots=batch_size,
+            shots=shots_to_take,
             bit_packed=False,
         )
 
@@ -61,18 +66,16 @@ def _decode_worker_cpu(
         )
         kept = det_filtered.shape[0]
         if kept == 0:
-            with lock:
-                shots_counter.value += det_data.shape[0]
             continue
 
-        det_packed = np.packbits(det_filtered, axis=1)
-        obs_packed = np.packbits(obs_filtered, axis=1)
+        # sinter.Decoder expects little-endian bit packing.
+        det_packed = np.packbits(det_filtered, axis=1, bitorder="little")
+        obs_packed = np.packbits(obs_filtered, axis=1, bitorder="little")
         pred_packed = compiled.decode_shots_bit_packed(
             bit_packed_detection_event_data=det_packed,
         )
         batch_errors = int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
 
         with lock:
-            shots_counter.value += det_data.shape[0]
             post_counter.value += kept
             errors_counter.value += batch_errors

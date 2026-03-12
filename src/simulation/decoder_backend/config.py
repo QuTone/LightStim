@@ -32,6 +32,15 @@ class PipelineConfig:
     output_filename: Optional[str] = None
     output_format: Literal["csv", "json", "parquet"] = "csv"
     save_resume_filepath: Optional[str] = None
+    progress_enabled: bool = True
+    progress_interval_sec: float = 10.0
+    progress_min_delta_shots: Optional[int] = None
+    progress_poll_interval_sec: float = 0.5
+    progress_output: Literal["print", "logging", "both"] = "print"
+    progress_logger_name: str = "lightstim.simulation.progress"
+    progress_file_path: Optional[str] = None
+    progress_file_max_bytes: int = 10_000_000
+    progress_file_backup_count: int = 5
     print_progress: bool = True
 
     def __post_init__(self):
@@ -39,6 +48,20 @@ class PipelineConfig:
             self.decoder = DecoderConfig("pymatching", backend="cpu")
         if self.output_filename is None and self.output_dir is not None:
             self.output_filename = "sim_{timestamp}.csv"
+        if not self.print_progress:
+            # Backward compatibility: existing callers use print_progress as master switch.
+            self.progress_enabled = False
+        if self.progress_min_delta_shots is None:
+            self.progress_min_delta_shots = max(self.batch_size, 10_000)
+        if self.progress_output not in ("print", "logging", "both"):
+            raise ValueError(
+                "progress_output must be 'print', 'logging', or 'both', "
+                f"got {self.progress_output!r}"
+            )
+        if self.progress_interval_sec <= 0:
+            raise ValueError("progress_interval_sec must be > 0")
+        if self.progress_poll_interval_sec <= 0:
+            raise ValueError("progress_poll_interval_sec must be > 0")
 
 
 @dataclass
