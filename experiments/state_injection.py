@@ -122,6 +122,7 @@ class StateInjectionExperiment:
         rounds: int = 2,
         injection_protocol: Literal["corner", "middle"] = "corner",
         post_select_mode: Literal["full_postselection", "full_qec", "hybrid"] = "full_postselection",
+        hybrid_post_select_scheme: Literal["local_neighbors", "logical_strips"] = "local_neighbors",
         post_select_coords: Optional[Set[Tuple[int, ...]]] = None,
         inject_state: Literal["Z", "X"] = "Z",
         extraction_block_class: Type = RotatedSurfaceCodeExtractionBlock,
@@ -138,6 +139,9 @@ class StateInjectionExperiment:
                 - 'full_postselection': tag all syndrome-round detectors.
                 - 'full_qec': do not tag post-select detectors.
                 - 'hybrid': tag a subset (default protocol-specific neighborhood).
+            hybrid_post_select_scheme:
+                - 'local_neighbors': local checks near injection point (previous default).
+                - 'logical_strips': checks aligned with logical operator strips.
             post_select_coords:
                 Optional explicit post-select detector coordinates.
                 Accepts 2D (x, y) or 3D (x, y, t) tuples. In both cases only the
@@ -152,6 +156,7 @@ class StateInjectionExperiment:
         self.rounds = rounds
         self.injection_protocol = injection_protocol.lower()
         self.post_select_mode = post_select_mode.lower()
+        self.hybrid_post_select_scheme = hybrid_post_select_scheme.lower()
         self.post_select_coords = post_select_coords
         self.inject_state = inject_state.upper()
         self.block_class = extraction_block_class
@@ -163,6 +168,10 @@ class StateInjectionExperiment:
             raise ValueError("injection_protocol must be 'corner' or 'middle'")
         if self.post_select_mode not in ("full_postselection", "full_qec", "hybrid"):
             raise ValueError("post_select_mode must be 'full_postselection', 'full_qec', or 'hybrid'")
+        if self.hybrid_post_select_scheme not in ("local_neighbors", "logical_strips"):
+            raise ValueError(
+                "hybrid_post_select_scheme must be 'local_neighbors' or 'logical_strips'"
+            )
         if self.inject_state not in ("Z", "X"):
             raise ValueError("inject_state must be 'Z' or 'X'")
 
@@ -185,8 +194,8 @@ class StateInjectionExperiment:
                 )
         return normalized
 
-    def _default_hybrid_post_select_coords(self) -> Set[Tuple[int, int]]:
-        """Protocol defaults for hybrid mode."""
+    def _local_neighbor_hybrid_post_select_coords(self) -> Set[Tuple[int, int]]:
+        """Local-neighbor defaults for hybrid mode."""
         if self.injection_protocol == "corner":
             # Adjacent syndrome checks next to the corner-injected data qubit.
             return {(2, 0), (2, 2)}
@@ -201,6 +210,32 @@ class StateInjectionExperiment:
             (x - 1, y + 1),
             (x + 1, y + 1),
         }
+
+    def _logical_strip_hybrid_post_select_coords(
+        self,
+        all_syndrome_coords_2d: Set[Tuple[int, int]],
+    ) -> Set[Tuple[int, int]]:
+        """
+        Logical-strip defaults requested for hybrid mode:
+        - corner, Z: y in {0, 2}
+        - corner, X: x in {0, 2}
+        - middle, Z: y in {center_y-1, center_y+1}
+        - middle, X: x in {center_x-1, center_x+1}
+        """
+        if self.injection_protocol == "corner":
+            if self.inject_state == "Z":
+                return {(x, y) for (x, y) in all_syndrome_coords_2d if y in (0, 2)}
+            return {(x, y) for (x, y) in all_syndrome_coords_2d if x in (0, 2)}
+
+        mid = self.distance // 2 + 1
+        center_x = 2 * (mid - 1) + 1
+        center_y = 2 * (mid - 1) + 1
+
+        if self.inject_state == "Z":
+            target_rows = (center_y - 1, center_y + 1)
+            return {(x, y) for (x, y) in all_syndrome_coords_2d if y in target_rows}
+        target_cols = (center_x - 1, center_x + 1)
+        return {(x, y) for (x, y) in all_syndrome_coords_2d if x in target_cols}
 
     def _resolve_post_select_coords(self) -> Set[Tuple[float, ...]]:
         """Resolve detector coordinates to be post-selected for this experiment."""
@@ -220,7 +255,12 @@ class StateInjectionExperiment:
             if self.post_select_coords is not None:
                 selected_2d = self._normalize_post_select_coords(self.post_select_coords)
             else:
-                selected_2d = self._default_hybrid_post_select_coords()
+                if self.hybrid_post_select_scheme == "logical_strips":
+                    selected_2d = self._logical_strip_hybrid_post_select_coords(
+                        all_syndrome_coords_2d
+                    )
+                else:
+                    selected_2d = self._local_neighbor_hybrid_post_select_coords()
 
         # Guard against invalid coordinates and keep tagging scoped to syndrome checks.
         selected_2d = selected_2d & all_syndrome_coords_2d

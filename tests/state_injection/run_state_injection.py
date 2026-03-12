@@ -191,6 +191,48 @@ def plot_results(df):
             print(f"Saved plot: {fig_path}")
 
 
+def plot_post_selection_rates(df):
+    for protocol in INJECTION_PROTOCOLS:
+        for rounds in ROUNDS_LIST:
+            fig, axes = plt.subplots(
+                1, len(DISTANCES), figsize=(5 * len(DISTANCES), 4), sharey=True
+            )
+            if len(DISTANCES) == 1:
+                axes = [axes]
+
+            for ax, d in zip(axes, DISTANCES):
+                sub = df[
+                    (df["injection_protocol"] == protocol)
+                    & (df["rounds"] == rounds)
+                    & (df["d"] == d)
+                ]
+                for mode in POST_SELECT_MODES:
+                    mode_df = sub[sub["post_select_mode"] == mode].sort_values("p")
+                    ax.plot(
+                        mode_df["p"],
+                        mode_df["post_selection_rate"],
+                        marker="o",
+                        label=mode,
+                    )
+                ax.set_xscale("log")
+                ax.set_title(f"{protocol}, rounds={rounds}, d={d}")
+                ax.set_xlabel("Physical Error Rate (p)")
+                ax.set_ylim(0.0, 1.02)
+                ax.grid(True, which="both", alpha=0.3)
+
+            axes[0].set_ylabel("Post-selection Rate")
+            axes[-1].legend(loc="best")
+            fig.suptitle(
+                "State Injection (inject_state=Z): post-selection rate by scheme"
+            )
+            fig.tight_layout()
+
+            fig_path = OUT_DIR / f"state_injection_{protocol}_r{rounds}_ps_rate.png"
+            fig.savefig(fig_path, dpi=180, bbox_inches="tight")
+            plt.close(fig)
+            print(f"Saved plot: {fig_path}")
+
+
 def main():
     print("Building tasks...")
     tasks = build_tasks()
@@ -204,6 +246,7 @@ def main():
 
     print("Plotting...")
     plot_results(df)
+    plot_post_selection_rates(df)
 
     print("Done!")
 
