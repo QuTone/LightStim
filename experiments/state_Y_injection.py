@@ -42,6 +42,7 @@ class StateInjectionExperiment:
         rounds: int = 2,
         injection_protocol: Literal["corner", "middle"] = "corner",
         inject_state: Literal["Z", "X", "Y"] = "Z",
+        y_readout_mode: Literal["auto", "unencode", "shrink_single"] = "auto",
         extraction_block_class: Type = RotatedSurfaceCodeExtractionBlock,
         noise_params: Optional[NoiseConfig] = None,
         noise_model: Optional[str] = "circuit_level",
@@ -53,6 +54,12 @@ class StateInjectionExperiment:
             rounds: Number of syndrome extraction rounds.
             injection_protocol: 'corner' (inject at (1,1)) or 'middle' (inject at center).
             inject_state: Target logical state ('Z' -> |0>, 'X' -> |+>, 'Y' -> |+i>).
+            y_readout_mode:
+                - 'auto': use shrink+single-qubit Y readout for corner Y injection,
+                          otherwise fall back to logical_unencode.
+                - 'unencode': always use logical_unencode final readout.
+                - 'shrink_single': force corner-shrink then single-qubit Y readout
+                                   (requires inject_state='Y' and corner protocol).
             extraction_block_class: SE block class (default RotatedSurfaceCodeExtractionBlock).
             noise_params: Optional noise configuration.
             noise_model: Noise model string.
@@ -62,15 +69,19 @@ class StateInjectionExperiment:
         self.rounds = rounds
         self.injection_protocol = injection_protocol.lower()
         self.inject_state = inject_state.upper()
+        self.y_readout_mode = y_readout_mode
         self.block_class = extraction_block_class
         self.noise_params = noise_params
         self.noise_model = noise_model
         self.if_detector = if_detector
+        self.corner_qubit_index: Optional[int] = None
 
         if self.injection_protocol not in ("corner", "middle"):
             raise ValueError("injection_protocol must be 'corner' or 'middle'")
         if self.inject_state not in ("Z", "X", "Y"):
             raise ValueError("inject_state must be 'Z', 'X', or 'Y'")
+        if self.y_readout_mode not in ("auto", "unencode", "shrink_single"):
+            raise ValueError("y_readout_mode must be 'auto', 'unencode', or 'shrink_single'")
 
         self.system: Optional[Any] = None
         self.builder: Optional[CircuitBuilder] = None
@@ -116,8 +127,19 @@ class StateInjectionExperiment:
             rounds=self.rounds,
         )
 
-        # 6. Final readout: measure all data qubits in injection basis
-        op_set.logical_unencode(self.builder, patch, inject_state=self.inject_state)
+        # 6. Final readout
+        # For Y state injection, we optionally use:
+        #   logical_shrink (measure all-but-corner) + single-qubit MY on corner.
+        if self._should_use_shrink_single_readout():
+            corner_q = op_set.logical_shrink(self.builder, patch, inject_state=self.inject_state)
+            self.corner_qubit_index = corner_q
+            # For shrink readout, the logical support has been reduced to the corner
+            # qubit. Measure it in Y basis and directly expose it as observable 0.
+            self.builder.circuit.append("MY", [corner_q])
+            self.builder.circuit.append("OBSERVABLE_INCLUDE", [stim.target_rec(-1)], [0])
+            self.builder.tracker.total_measurements += 1
+        else:
+            op_set.logical_unencode(self.builder, patch, inject_state=self.inject_state)
 
         # 7. Optional noise
         if self.noise_params is not None:
@@ -126,3 +148,20 @@ class StateInjectionExperiment:
                 noise_model=self.noise_model,
             )
         return self.builder.circuit
+
+    def _should_use_shrink_single_readout(self) -> bool:
+        """Decide whether to use Y-specific shrink + single-qubit readout."""
+        if self.y_readout_mode == "unencode":
+            return False
+        if self.y_readout_mode == "shrink_single":
+            if self.inject_state != "Y":
+                raise ValueError(
+                    "y_readout_mode='shrink_single' requires inject_state='Y'."
+                )
+            if self.injection_protocol != "corner":
+                raise ValueError(
+                    "y_readout_mode='shrink_single' requires injection_protocol='corner'."
+                )
+            return True
+        # auto mode
+        return self.inject_state == "Y" and self.injection_protocol == "corner"
