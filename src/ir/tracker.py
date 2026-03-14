@@ -50,6 +50,7 @@ class SyndromeTracker:
         self.stabilizers = PauliTableau(num_qubits)
         self.logicals = PauliTableau(num_qubits)
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
+        self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
         self.post_select_detector_coords = post_select_detector_coords or set()
 
     def set_expected_logicals(self, k: int):
@@ -247,6 +248,10 @@ class SyndromeTracker:
         num_meas = back_propagated_paulis.shape[0]
         current_base_idx = self.total_measurements
         self.total_measurements += num_meas
+
+        # Reset per-round tracking (these are only meaningful within a single PMM call)
+        self.stabilizer_with_logical_components = set()
+        self._gauge_logical_vectors = []
         
         # ======================================================================
         # Step 1: Combine Stabilizers and Logicals into Full Tableau
@@ -345,6 +350,12 @@ class SyndromeTracker:
                                 # The measurement contains a logical component, and cannot be a detector
                                 # Flag this row for further logical observable construction
                                 self.stabilizer_with_logical_components.add(i)
+                                # Track which logical indices this measurement involves (for rank computation)
+                                log_vec = np.zeros(num_logs, dtype=np.uint8)
+                                for c in comp_indices:
+                                    if c >= num_stabs:
+                                        log_vec[c - num_stabs] = 1
+                                self._gauge_logical_vectors.append(log_vec)
                                 continue
                             # Otherwise, purely depends on stabilizers, construct a detector
                             # Use set-based XOR for O(1) toggle instead of O(n) list scan
@@ -431,15 +442,23 @@ class SyndromeTracker:
         self.stabilizers.records = new_stab_records + old_stab_records
 
         # 3. Final Sanity Check (The Guardrail)
-        # stabilizer_with_logical_components: original logical operators that are replaced by measurements in the middle of the circuit.
-        # logicals.count: logical operators that are still alive in the system
-        # They should add up to the expected number of logicals, the total degree of freedom of the system.
-        if (len(self.stabilizer_with_logical_components) + self.logicals.count) != self.expected_num_logicals:
+        # Count the number of independent logical degrees of freedom absorbed by gauge measurements.
+        # Multiple measurements may share the same logical component (e.g., in ZZ lattice surgery),
+        # and a single measurement may involve multiple logicals (e.g., XX coupler with both patches
+        # initialized in X). The GF(2) rank of the logical component vectors gives the true count.
+        if self._gauge_logical_vectors:
+            gauge_matrix = np.array(self._gauge_logical_vectors, dtype=np.uint8)
+            num_absorbed = int(np.linalg.matrix_rank(gauge_matrix.astype(float)))
+        else:
+            num_absorbed = 0
+
+        if (num_absorbed + self.logicals.count) != self.expected_num_logicals:
             raise RuntimeError(
                  f"[Error] Logical Count Mismatch!\n"
                  f"Expected: {self.expected_num_logicals}, \n"
                  f"Found: (1) Logicals {self.logicals.count}, \n"
-                 f"(2) Stabilizers with Logical Components {len(self.stabilizer_with_logical_components)}\n"
+                 f"(2) Absorbed Logical DOF (rank) {num_absorbed}\n"
+                 f"(3) Measurements with Logical Components {len(self.stabilizer_with_logical_components)}\n"
              )
 
 
