@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lightstim"
+version = "0.1.0"
+description = "QEC simulation framework built on Stim"
+requires-python = ">=3.8"
+authors = [
+    {name = "Xiang Fang"}
+]
+
+dependencies = [
+    "numpy>=1.20.0",
+    "stim>=1.15.0",
+    "sinter>=1.15.0",
+    "PyMatching>=2.0.0",
+    "pandas",
+    "matplotlib",
+    "seaborn",
+]
+
+[project.optional-dependencies]
+decoders = [
+    "stimbposd",
+    "mwpf",
+    "frozendict",
+    "frozenlist",
+]
+gpu = [
+    "cudaq-qec",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
