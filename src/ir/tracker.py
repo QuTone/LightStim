@@ -568,7 +568,9 @@ class SyndromeTracker:
                     args_set.remove(rec_to_append)
                 else:
                     args_set.add(rec_to_append)
-                det_coord = idx_to_coord_map[self.meas_rec_to_idx_map[r]]
+                qubit_idx = self.meas_rec_to_idx_map.get(r)
+                if qubit_idx is not None and qubit_idx in idx_to_coord_map:
+                    det_coord = idx_to_coord_map[qubit_idx]
             args = list(args_set)
 
             # Fallback when no syndrome records (e.g. X stabilizers with Z-only SE, final X measure)
@@ -595,3 +597,66 @@ class SyndromeTracker:
             else:
                 circuit.append("OBSERVABLE_INCLUDE", args, [logical_observable_idx])
                 logical_observable_idx += 1
+
+        # ======================================================================
+        # Step 4: Partial reduction of remaining rows (incremental support)
+        # ======================================================================
+        # Rows that commute with measurements but share support on measured
+        # qubits (e.g. Z_L = Z1*Z2*Z3 when Z2,Z3 are measured in Z basis)
+        # must be reduced by XOR-ing out the measurement Paulis. This ensures
+        # remaining rows only depend on unmeasured qubits, enabling correct
+        # decomposition in subsequent process_final_measurement calls.
+        emitted_rows = {k for k in range(num_rows)
+                        if k not in destroyed_rows and is_dependent[k]}
+        rows_to_remove = destroyed_rows | emitted_rows
+
+        # Build pivot map: for each single-qubit measurement, identify its
+        # pivot column (the nonzero column in the 2n symplectic vector).
+        # MZ(q) -> pivot at n+q; MX(q) -> pivot at q; MY(q) -> pivot at q.
+        n = self.num_qubits
+        meas_pivot_map = {}  # pivot_col -> (measurement index i, meas Pauli vector)
+        for i in range(num_new_meas):
+            meas = final_paulis[i]
+            nonzero_cols = np.where(meas)[0]
+            if len(nonzero_cols) == 0:
+                continue
+            # Use the first nonzero column as pivot
+            pivot_col = int(nonzero_cols[0])
+            meas_pivot_map[pivot_col] = (i, meas)
+
+        for k in range(num_rows):
+            if k in rows_to_remove:
+                continue
+            row = full_matrix[k]
+            for pivot_col, (i, meas) in meas_pivot_map.items():
+                if row[pivot_col]:
+                    # XOR measurement Pauli out of this row
+                    full_matrix[k] = row = row ^ meas
+                    # Update records: symmetric difference with measurement index
+                    meas_abs_idx = base_meas_idx + i
+                    rec_set = set(full_records[k])
+                    rec_set.symmetric_difference_update({meas_abs_idx})
+                    full_records[k] = list(rec_set)
+
+        # ======================================================================
+        # Step 5: Persist updated tableau state
+        # ======================================================================
+        remaining_stab_rows = [k for k in range(num_stabs) if k not in rows_to_remove]
+        remaining_log_rows = [k for k in range(num_stabs, num_rows) if k not in rows_to_remove]
+
+        if remaining_stab_rows:
+            self.stabilizers.matrix = full_matrix[remaining_stab_rows]
+            self.stabilizers.records = [full_records[k] for k in remaining_stab_rows]
+        else:
+            self.stabilizers.matrix = np.zeros((0, 2 * self.num_qubits), dtype=np.uint8)
+            self.stabilizers.records = []
+
+        if remaining_log_rows:
+            self.logicals.matrix = full_matrix[remaining_log_rows]
+            self.logicals.records = [full_records[k] for k in remaining_log_rows]
+        else:
+            self.logicals.matrix = np.zeros((0, 2 * self.num_qubits), dtype=np.uint8)
+            self.logicals.records = []
+
+        # Reset per-call tracking that uses row indices (now invalidated)
+        self.stabilizer_with_logical_components = set()

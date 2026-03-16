@@ -38,17 +38,21 @@ class DepolarizeAfterGate(NoiseRule):
         self.noise_op = noise_op
 
     def apply(self, instruction: stim.CircuitInstruction, config: NoiseConfig, active_qubits: Set[int]) -> Tuple[List[stim.CircuitInstruction], List[stim.CircuitInstruction]]:
+        # Skip noiseless-tagged instructions
+        if instruction.tag == "noiseless":
+            return [], []
+
         # Check if the current instruction is one of the targets
         if instruction.name in self.target_gates:
             # Retrieve the specific error rate for this group from the config
             p = config.get(self.param_name)
-            
+
             if p > 0:
                 # Construct the noise instruction
                 # We apply the noise to the same targets as the gate
                 noise = stim.CircuitInstruction(self.noise_op, instruction.targets_copy(), [p])
                 return [], [noise]  # Return as post-noise
-        
+
         return [], []
 
 class GeneralPauliAfterGate(NoiseRule):
@@ -144,22 +148,26 @@ class FlipBeforeMeasurement(NoiseRule):
         self.y_meas = {"MY", "MRY"}
 
     def apply(self, instruction: stim.CircuitInstruction, config: NoiseConfig, active_qubits: Set[int]) -> Tuple[List[stim.CircuitInstruction], List[stim.CircuitInstruction]]:
+        # Skip noiseless-tagged instructions (e.g. final physical measurement after unencode)
+        if instruction.tag == "noiseless":
+            return [], []
+
         noise_op = None
-        
+
         if instruction.name in self.z_meas:
             noise_op = "X_ERROR"
         elif instruction.name in self.x_meas:
             noise_op = "Z_ERROR"
         elif instruction.name in self.y_meas:
             noise_op = "Z_ERROR"
-        
+
         if noise_op:
             p = config.get(self.param_name)
             if p > 0:
                 # Pre-noise: Flip the state BEFORE measurement
                 noise = stim.CircuitInstruction(noise_op, instruction.targets_copy(), [p])
                 return [noise], []
-                
+
         return [], []
 
 
@@ -167,7 +175,7 @@ class FlipAfterReset(NoiseRule):
     """
     Applies the appropriate Pauli flip error AFTER a reset to simulate state preparation error.
     Handles standard resets (R) and composite Measure-Reset (MR).
-    
+
     Logic:
     - Z-basis (R, RZ, MR, MRZ) -> X_ERROR (flips |0> to |1> and vice versa)
     - X-basis (RX, MRX)        -> Z_ERROR (flips |+> to |-> and vice versa)
@@ -185,8 +193,12 @@ class FlipAfterReset(NoiseRule):
         self.y_reset = {"RY", "MRY"}
 
     def apply(self, instruction: stim.CircuitInstruction, config: NoiseConfig, active_qubits: Set[int]) -> Tuple[List[stim.CircuitInstruction], List[stim.CircuitInstruction]]:
+        # Skip noiseless-tagged instructions
+        if instruction.tag == "noiseless":
+            return [], []
+
         noise_op = None
-        
+
         if instruction.name in self.z_reset:
             noise_op = "X_ERROR"
         elif instruction.name in self.x_reset:

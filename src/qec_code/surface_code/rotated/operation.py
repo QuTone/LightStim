@@ -7,104 +7,123 @@ Provides state_injection and logical_unencode as LogicalOpSet methods,
 callable via LogicalExecutor.apply_logical_operation().
 """
 
-from typing import Literal, List, Tuple, Dict, Any, Optional
+from typing import Literal, Tuple, Dict, Any, Type
 
 from src.ir.operation import LogicalOpSet
 from src.ir.builder import CircuitBuilder
 from src.ir.qec_patch import QECPatch
+from src.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
 import stim
 
 
 # ------------------------------------------------------------------------------
-# Module-level helpers (moved from experiments/state_injection.py)
+# Module-level helpers
 # ------------------------------------------------------------------------------
 
-def _logical_to_physical(coord: Tuple[int, int]) -> Tuple[int, int]:
-    """Map logical coords (1..d) to physical coords used by RotatedSurfaceCode."""
-    x, y = coord
-    return (2 * (x - 1) + 1, 2 * (y - 1) + 1)
-
-
-def _get_corner_injection_init(
+def _get_injection_site(
+    patch: QECPatch,
     system: Any,
-    inject_state: Literal["Z", "X", "Y"],
-) -> Dict[int, str]:
+    protocol: Literal["corner", "middle"],
+) -> Tuple[Tuple[float, float], int]:
     """
-    Build init_dict for corner injection.
+    Return the (coord, global_index) of the injection site for the given protocol.
 
-    Corner at (1,1). Lower diagonal (y>=x, excluding corner) -> |+>, upper (y<x) -> |0>.
-    Injection site gets inject_state (Z->|0>, X->|+>, Y->|+i>).
-
-    For Y injection the surrounding split mirrors X injection (lower -> X, upper -> Z),
-    since |+i> = S|+> and the post-selection round handles stochastic stabilizer outcomes.
+    Args:
+        patch: Global patch (data_indices are global).
+        system: QECSystem for coord lookup.
+        protocol: 'corner' or 'middle'.
 
     Returns:
-        Dict mapping global qubit index -> basis string ('Z', 'X', or 'Y').
+        (injection_coord, injection_global_index)
     """
-    data_coords = system.data_coords
-    index_map = system.index_map
-    corner = (1, 1)
+    data_global_indices = sorted(patch.data_indices)
+    coords = [(system.qubit_coords[gidx], gidx) for gidx in data_global_indices]
 
-    init_dict = {}
-    for coord in data_coords:
-        c = (int(coord[0]), int(coord[1]))
-        if c == corner:
-            init_dict[index_map[c]] = inject_state
-        elif c[1] >= c[0]:
-            init_dict[index_map[c]] = "X"  # lower diagonal -> |+>
-        else:
-            init_dict[index_map[c]] = "Z"  # upper diagonal -> |0>
-    return init_dict
-
-
-def _get_middle_injection_init(
-    system: Any,
-    inject_state: Literal["Z", "X", "Y"],
-) -> Dict[int, str]:
-    """
-    Build init_dict for middle (center) injection.
-
-    Injection at center (mid, mid) in logical coords.
-    Split: zero_coords get |0>, plus_coords get |+> per the middle-injection diagonal rule.
-
-    Returns:
-        Dict mapping global qubit index -> basis string ('Z' or 'X').
-    """
-    patch = list(system.patches.values())[0][0]
-    d = patch.distance_z  # assume square
-    mid = d // 2 + 1
-    injection_logical = (mid, mid)
-    index_map = system.index_map
-
-    zero_coords_logical: List[Tuple[int, int]] = []
-    plus_coords_logical: List[Tuple[int, int]] = []
-
-    for x in range(1, d + 1):
-        for y in range(1, d + 1):
-            if (x, y) == injection_logical:
-                continue
-            if (x < y and x + y <= d + 1) or (x > y and x + y >= d + 1):
-                zero_coords_logical.append((x, y))
-            else:
-                plus_coords_logical.append((x, y))
-
-    zero_physical = [_logical_to_physical(c) for c in zero_coords_logical if _logical_to_physical(c) in index_map]
-    plus_physical = [_logical_to_physical(c) for c in plus_coords_logical if _logical_to_physical(c) in index_map]
-    injection_physical = _logical_to_physical(injection_logical)
-
-    if injection_physical not in index_map:
+    if protocol == "corner":
+        # Corner = qubit with smallest (x, y)
+        corner_coord, corner_gidx = min(coords, key=lambda t: (t[0][0], t[0][1]))
+        return corner_coord, corner_gidx
+    else:
+        # Middle = center qubit in logical grid
+        d = patch.distance_z
+        mid = d // 2 + 1
+        # Find the corner to compute relative offsets
+        corner_coord = min(c for c, _ in coords)
+        # In rotated surface code, data qubits are at odd coords with spacing 2
+        # Logical (mid, mid) maps to corner + (2*(mid-1), 2*(mid-1))
+        mid_coord = (corner_coord[0] + 2 * (mid - 1), corner_coord[1] + 2 * (mid - 1))
+        for c, gidx in coords:
+            if abs(c[0] - mid_coord[0]) < 0.5 and abs(c[1] - mid_coord[1]) < 0.5:
+                return c, gidx
         raise ValueError(
-            f"Injection coordinate {injection_physical} not in layout. "
+            f"Middle injection coordinate {mid_coord} not found in patch layout. "
             f"Middle injection may require odd distance."
         )
 
-    init_dict = {}
-    for c in zero_physical:
-        init_dict[index_map[c]] = "Z"
-    for c in plus_physical:
-        init_dict[index_map[c]] = "X"
-    init_dict[index_map[injection_physical]] = inject_state
-    return init_dict
+
+def _get_injection_init(
+    patch: QECPatch,
+    system: Any,
+    inject_state: Literal["Z", "X", "Y"],
+    protocol: Literal["corner", "middle"],
+) -> Tuple[Dict[int, str], int]:
+    """
+    Build init_dict for state injection.
+
+    For corner protocol:
+        Corner qubit gets inject_state. Lower diagonal (rel_y >= rel_x) -> X, upper -> Z.
+    For middle protocol:
+        Center qubit gets inject_state. Diagonal split per middle-injection rule.
+
+    Args:
+        patch: Global patch (data_indices are global).
+        system: QECSystem for coord lookup.
+        inject_state: Target state ('Z', 'X', or 'Y').
+        protocol: 'corner' or 'middle'.
+
+    Returns:
+        (init_dict, injection_global_index)
+    """
+    injection_coord, injection_gidx = _get_injection_site(patch, system, protocol)
+    data_global_indices = sorted(patch.data_indices)
+
+    init_dict: Dict[int, str] = {}
+
+    if protocol == "corner":
+        # Use injection site as origin for relative coordinates
+        ox, oy = injection_coord
+        for gidx in data_global_indices:
+            cx, cy = system.qubit_coords[gidx]
+            rel_x, rel_y = cx - ox, cy - oy
+            if gidx == injection_gidx:
+                init_dict[gidx] = inject_state
+            elif rel_y >= rel_x:
+                init_dict[gidx] = "X"   # lower diagonal -> |+>
+            else:
+                init_dict[gidx] = "Z"   # upper diagonal -> |0>
+    else:
+        # Middle injection: diagonal split based on relative position
+        d = patch.distance_z
+        corner_coord = min(
+            (system.qubit_coords[gidx] for gidx in data_global_indices),
+            key=lambda c: (c[0], c[1]),
+        )
+        ox, oy = corner_coord
+
+        for gidx in data_global_indices:
+            cx, cy = system.qubit_coords[gidx]
+            # Convert to logical coords (1..d)
+            lx = int(round((cx - ox) / 2)) + 1
+            ly = int(round((cy - oy) / 2)) + 1
+
+            if gidx == injection_gidx:
+                init_dict[gidx] = inject_state
+            elif (lx < ly and lx + ly <= d + 1) or (lx > ly and lx + ly >= d + 1):
+                init_dict[gidx] = "Z"
+            else:
+                init_dict[gidx] = "X"
+
+    return init_dict, injection_gidx
 
 
 # ------------------------------------------------------------------------------
@@ -119,8 +138,14 @@ class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
     gates as composable operations for use with LogicalExecutor.
     """
 
-    def __init__(self):
+    def __init__(self, extraction_block_class: Type):
+        """
+        Args:
+            extraction_block_class: SE block class for this code
+                (e.g. RotatedSurfaceCodeExtractionBlock). Takes system, has .circuit.
+        """
         super().__init__("RotatedSurfaceCode")
+        self.extraction_block_class = extraction_block_class
 
     # ------------------------------------------------------------------
     # State preparation / teardown
@@ -132,169 +157,120 @@ class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
         patch: QECPatch,
         inject_state: Literal["Z", "X", "Y"] = "Z",
         protocol: Literal["corner", "middle"] = "corner",
+        rounds: int = 0,
+        post_select_coords=None,
     ):
         """
-        Initialize data qubits for state injection and tag syndrome detectors
-        for post-selection.
+        State injection: initialize data qubits and optionally run SE rounds.
 
-        Must be called before apply_syndrome_extraction so that
-        tracker.post_select_detector_coords is set in time.
+        The injection site receives the target state; surrounding qubits are initialized
+        in a diagonal pattern (X/Z split). Syndrome detectors are tagged for post-selection.
+
+        When rounds > 0, syndrome extraction is performed immediately (convenient for
+        single-patch experiments). For multi-patch experiments where all patches must be
+        initialized before SE, call with rounds=0 and run SE at the experiment level.
 
         Args:
             builder: CircuitBuilder driving the experiment.
-            patch: The QECPatch (used for type dispatch by LogicalExecutor).
+            patch: Global QECPatch (returned by system.add_patch).
             inject_state: Target logical state ('Z' -> |0>, 'X' -> |+>, 'Y' -> |+i>).
-            protocol: Injection site — 'corner' (1,1) or 'middle' (center qubit).
+            protocol: Injection site — 'corner' or 'middle'.
+            rounds: Number of SE rounds to run after init (0 = init only).
+            post_select_coords: Set of (x, y, t) detector coords to tag for post-selection.
+                If None (default), tag ALL syndrome coords (full post-selection).
+                Pass empty set() for no post-selection (full QEC).
         """
+        if not isinstance(patch, RotatedSurfaceCode):
+            raise TypeError(
+                f"Expected RotatedSurfaceCode patch, got {type(patch).__name__}"
+            )
+
         system = builder.system
 
         # Build qubit-initialization dict (global indices)
-        if protocol == "corner":
-            init_dict = _get_corner_injection_init(system, inject_state)
-        else:
-            init_dict = _get_middle_injection_init(system, inject_state)
+        init_dict, _ = _get_injection_init(patch, system, inject_state, protocol)
 
-        # Tag all syndrome qubit coords for post-selection in the tracker.
-        # Must be set before apply_syndrome_extraction is called.
-        post_select_coords = {
-            tuple(system.qubit_coords[s["syn_idx"]]) + (0.0,)
-            for s in system.stabilizers
-        }
-        builder.tracker.post_select_detector_coords = post_select_coords
+        # Tag syndrome coords for post-selection
+        if post_select_coords is None:
+            # Default: tag all syndrome coords (full post-selection)
+            post_select_coords = set()
+            for stab in patch.stabilizers:
+                syn_idx = stab.get("syn_idx")
+                if syn_idx is not None and syn_idx in system.qubit_coords:
+                    coord = system.qubit_coords[syn_idx]
+                    post_select_coords.add(tuple(coord) + (0.0,))
+        builder.tracker.post_select_detector_coords |= post_select_coords
 
         # Emit reset instructions and update the tracker tableau
         builder.initialize(init_dict=init_dict, n=system.num_qubits)
+
+        # Optional syndrome extraction rounds
+        if rounds > 0:
+            se_block = self.extraction_block_class(system)
+            builder.apply_syndrome_extraction(
+                circuit_chunk=se_block.circuit,
+                rounds=rounds,
+            )
 
     def logical_unencode(
         self,
         builder: CircuitBuilder,
         patch: QECPatch,
         inject_state: Literal["Z", "X", "Y"] = "Z",
-    ):
-        """
-        Measure all data qubits of the patch in the injection basis
-        (corner-shrink unencode / final readout).
-
-        Args:
-            builder: CircuitBuilder driving the experiment.
-            patch: The QECPatch (used for type dispatch by LogicalExecutor).
-            inject_state: Basis in which to measure ('Z', 'X', or 'Y').
-        """
-        system = builder.system
-
-        data_indices = [system.index_map[c] for c in system.data_coords]
-        final_measurements = {q: inject_state for q in data_indices}
-        builder.apply_data_readout(final_measurements=final_measurements)
-
-    def logical_shrink(
-        self,
-        builder: CircuitBuilder,
-        patch: QECPatch,
-        inject_state: Literal["Z", "X", "Y"] = "Z",
+        protocol: Literal["corner", "middle"] = "corner",
     ) -> int:
         """
-        Corner-shrink: measure all data qubits except the corner (1,1) in their
-        initialization basis (MX for lower diagonal, M for upper diagonal),
-        and emit data-only DETECTOR instructions for pure-region stabilizers.
+        Unencode the logical state back to a single physical qubit (inverse of injection).
 
-        Lower diagonal (y >= x, excluding corner): measured with MX.
-        Upper diagonal (y < x): measured with M.
-        Corner qubit (1,1): NOT measured — carries the logical state forward.
-
-        Detectors are data-only (no ancilla history needed):
-        - Z-stabs with ancilla ax > ay (pure upper-diagonal support)
-        - X-stabs with ancilla ax < ay (pure lower-diagonal support)
+        Measures all data qubits of the patch EXCEPT the injection site in their
+        initialization basis. The tracker automatically generates final-round detectors.
+        The injection site qubit is left unmeasured, carrying the logical state.
 
         Args:
             builder: CircuitBuilder driving the experiment.
-            patch: The QECPatch (for LogicalExecutor dispatch).
-            inject_state: Reserved for API consistency; measurement pattern is
-                          invariant for corner injection.
+            patch: Global QECPatch (returned by system.add_patch).
+            inject_state: The state that was injected ('Z', 'X', or 'Y').
+            protocol: Must match the protocol used in state_injection.
 
         Returns:
-            Global qubit index of the corner qubit (1,1).
+            Global qubit index of the unmeasured injection-site qubit.
         """
-        system = builder.system
-        corner_physical = (1, 1)
-
-        lower_qs: List[int] = []   # y >= x, not corner -> MX
-        upper_qs: List[int] = []   # y < x             -> M
-        corner_q: Optional[int] = None
-
-        for coord in system.data_coords:
-            c = (int(coord[0]), int(coord[1]))
-            gidx = system.index_map[coord]
-            if c == corner_physical:
-                corner_q = gidx
-            elif c[1] >= c[0]:
-                lower_qs.append(gidx)
-            else:
-                upper_qs.append(gidx)
-
-        if corner_q is None:
-            raise ValueError(
-                "Corner qubit (1,1) not found in data layout. "
-                "logical_shrink requires a corner-injection rotated surface code."
+        if not isinstance(patch, RotatedSurfaceCode):
+            raise TypeError(
+                f"Expected RotatedSurfaceCode patch, got {type(patch).__name__}"
             )
 
-        n_lower = len(lower_qs)
-        n_upper = len(upper_qs)
-        total_shrunk = n_lower + n_upper
+        system = builder.system
 
-        # Build: qubit global index -> relative stim record offset
-        # After appending MX(lower_qs) then M(upper_qs), records are:
-        #   lower_qs[i] -> rec(i - total_shrunk)
-        #   upper_qs[j] -> rec(n_lower + j - total_shrunk)
-        q_to_rec: Dict[int, int] = {}
-        for i, q in enumerate(lower_qs):
-            q_to_rec[q] = i - total_shrunk
-        for j, q in enumerate(upper_qs):
-            q_to_rec[q] = n_lower + j - total_shrunk
+        # Reconstruct the init dict to know each qubit's basis
+        init_dict, injection_gidx = _get_injection_init(
+            patch, system, inject_state, protocol
+        )
 
-        # Emit measurement instructions
-        if lower_qs:
-            builder.circuit.append("MX", lower_qs)
-        if upper_qs:
-            builder.circuit.append("M", upper_qs)
+        # Measure all data qubits except the injection site, in their init basis
+        unencode_measurements = {
+            gidx: basis for gidx, basis in init_dict.items()
+            if gidx != injection_gidx
+        }
 
-        # Emit data-only DETECTOR instructions for pure-region stabilizers
-        if builder.if_detector:
-            for stab in system.stabilizers:
-                syn_idx = stab.get("syn_idx")
-                if syn_idx is None:
-                    continue
-                ax, ay = system.qubit_coords[syn_idx]
-                stab_type = stab.get("type")
+        # Use apply_data_readout for automatic detector/observable generation.
+        # Noiseless: unencode measurements are deterministic given the stabilizer
+        # state — noise here would corrupt the injection fidelity measurement.
+        builder.apply_data_readout(final_measurements=unencode_measurements, noiseless=True)
 
-                # Pure-region: Z-stab fully in upper diagonal, X-stab fully in lower
-                is_pure = (stab_type == "Z" and ax > ay) or (stab_type == "X" and ax < ay)
-                if not is_pure:
-                    continue
-
-                data_indices = stab.get("data_indices", [])
-                # Skip if any data qubit is not in the shrunk set (e.g. corner)
-                if any(q not in q_to_rec for q in data_indices):
-                    continue
-
-                args = [stim.target_rec(q_to_rec[q]) for q in data_indices]
-                builder.circuit.append("DETECTOR", args, [ax, ay, 0.0])
-
-        # Sync tracker measurement count (no tableau update needed for final measurements)
-        builder.tracker.total_measurements += total_shrunk
-
-        return corner_q
+        return injection_gidx
 
     # ------------------------------------------------------------------
     # Gate operations (stubs for future implementation)
     # ------------------------------------------------------------------
 
-    def transversal_Hadamard(self, patch: QECPatch) -> stim.Circuit:
+    def transversal_Hadamard(self, builder: CircuitBuilder, patch: QECPatch) -> stim.Circuit:
         """
         Applies a fold-transversal Hadamard gate using H-SWAP gates.
         """
         pass
 
-    def LS_Hadamard(self, patch: QECPatch) -> stim.Circuit:
+    def LS_Hadamard(self, builder: CircuitBuilder, patch: QECPatch) -> stim.Circuit:
         """
         Applies a Hadamard gate using transversal H with patch rotation.
         """

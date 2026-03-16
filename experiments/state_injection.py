@@ -1,324 +1,221 @@
 # experiments/state_injection.py
 
 """
-State Injection Experiment for Rotated Surface Code.
+State Injection Experiment for Surface Codes.
 
-Implements corner and middle injection protocols to prepare logical |0⟩ or |+⟩
-into a rotated surface code patch. The circuit construction follows the protocol
-where data qubits are split by a diagonal pattern for initialization, with the
-injection site (corner or center) receiving the target state.
+Generic single-patch injection workflow via LogicalExecutor:
+1. state_injection — initialize + SE rounds (self-contained)
+2. logical_unencode — measure all but injection site (auto detectors)
+3. Noiseless physical measurement (auto logical observable)
+
+Supports any surface code (rotated, unrotated) by parameterizing the code
+patch class, extraction block class, and logical operation set class.
+
+Post-selection modes: full_postselection, full_qec, hybrid (rotated SC only).
 """
 
 import stim
-from typing import Type, Literal, Optional, Any, Tuple, List, Set
+from typing import Type, Literal, Optional, Set, Tuple, Dict, Any
 
-from src.ir.builder import CircuitBuilder
-from src.ir.tracker import SyndromeTracker
+from src.ir.experiment import QECExperiment
 from src.ir.qec_system import QECSystem
+from src.ir.qec_patch import QECPatch
+from src.ir.operation import LogicalOpSet
 from src.noise.config import NoiseConfig
-from src.qec_code.surface_code.rotated import RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock
+from src.qec_code.surface_code.rotated import (
+    RotatedSurfaceCode,
+    RotatedSurfaceCodeExtractionBlock,
+    RotatedSurfaceCodeLogicalOpSet,
+)
 
 
-def _logical_to_physical(coord: Tuple[int, int]) -> Tuple[int, int]:
-    """Map logical coords (1..d) to physical coords used by RotatedSurfaceCode."""
-    x, y = coord
-    return (2 * (x - 1) + 1, 2 * (y - 1) + 1)
-
-
-def _get_corner_injection_init(
-    system: Any,
-    inject_state: Literal["Z", "X"],
-) -> dict:
+class StateInjectionExperiment(QECExperiment):
     """
-    Build init_dict for corner injection.
-    Corner at (1,1). Lower diagonal (y>=x, excluding corner) -> |+⟩, upper (y<x) -> |0⟩.
-    Injection site gets inject_state (Z->|0⟩, X->|+⟩).
-    """
-    data_coords = system.data_coords
-    index_map = system.index_map
-    corner = (1, 1)
+    Single-patch state injection experiment with configurable post-selection.
 
-    init_dict = {}
-    for coord in data_coords:
-        c = (int(coord[0]), int(coord[1]))
-        if c == corner:
-            init_dict[index_map[c]] = inject_state
-        elif c[1] >= c[0]:
-            init_dict[index_map[c]] = "X"  # lower diagonal -> |+⟩
-        else:
-            init_dict[index_map[c]] = "Z"  # upper diagonal -> |0⟩
-    return init_dict
-
-
-def _get_middle_injection_init(
-    system: Any,
-    inject_state: Literal["Z", "X"],
-) -> dict:
-    """
-    Build init_dict for middle (center) injection.
-    Injection at center (mid, mid) in logical coords.
-    Split: zero_coords get |0⟩, plus_coords get |+⟩ per the middle-injection diagonal rule.
-    """
-    # Get distance from the patch (system may be QECSystem - get from first patch)
-    patch = list(system.patches.values())[0][0]
-    d = patch.distance_z  # assume square
-    mid = d // 2 + 1
-    injection_logical = (mid, mid)
-    index_map = system.index_map
-
-    # Map logical 1..d to physical. Our patch uses (2x-1, 2y-1) for logical (x,y)
-    def phys(coord):
-        x, y = coord
-        return (2 * (x - 1) + 1, 2 * (y - 1) + 1)
-
-    zero_coords_logical: List[Tuple[int, int]] = []
-    plus_coords_logical: List[Tuple[int, int]] = []
-
-    for x in range(1, d + 1):
-        for y in range(1, d + 1):
-            if (x, y) == injection_logical:
-                continue
-            if (x < y and x + y <= d + 1) or (x > y and x + y >= d + 1):
-                zero_coords_logical.append((x, y))
-            else:
-                plus_coords_logical.append((x, y))
-
-    zero_physical = [phys(c) for c in zero_coords_logical if phys(c) in index_map]
-    plus_physical = [phys(c) for c in plus_coords_logical if phys(c) in index_map]
-    injection_physical = phys(injection_logical)
-
-    if injection_physical not in index_map:
-        raise ValueError(
-            f"Injection coordinate {injection_physical} not in layout. "
-            f"Middle injection may require odd distance."
-        )
-
-    init_dict = {}
-    for c in zero_physical:
-        init_dict[index_map[c]] = "Z"
-    for c in plus_physical:
-        init_dict[index_map[c]] = "X"
-    init_dict[index_map[injection_physical]] = inject_state
-    return init_dict
-
-
-
-class StateInjectionExperiment:
-    """
-    Orchestrates a State Injection Experiment for Rotated Surface Code.
-
-    Prepares logical |0⟩ or |+⟩ via corner or middle injection protocol:
-    1. Diagonal-split initialization of data qubits (|0⟩ and |+⟩ regions).
-    2. Injection site receives the target state.
-    3. Syndrome extraction rounds.
-    4. Data qubit measurement (X or Z basis depending on inject_state).
-
-    Circuit only - no noise, detectors, or observables are required for basic validation.
+    Works with any surface code by specifying code_patch_class, extraction_block_class,
+    and op_set_class. Defaults to rotated surface code for backward compatibility.
     """
 
     def __init__(
         self,
+        code_patch_class: Type[QECPatch] = RotatedSurfaceCode,
+        extraction_block_class: Type = RotatedSurfaceCodeExtractionBlock,
+        op_set_class: Type[LogicalOpSet] = RotatedSurfaceCodeLogicalOpSet,
+        code_params: Optional[Dict[str, Any]] = None,
         distance: int = 3,
         rounds: int = 2,
-        injection_protocol: Literal["corner", "middle"] = "corner",
+        inject_state: Literal["Z", "X", "Y"] = "Z",
+        protocol: Literal["corner", "middle"] = "corner",
         post_select_mode: Literal["full_postselection", "full_qec", "hybrid"] = "full_postselection",
-        hybrid_post_select_scheme: Literal["local_neighbors", "logical_strips"] = "local_neighbors",
-        post_select_coords: Optional[Set[Tuple[int, ...]]] = None,
-        inject_state: Literal["Z", "X"] = "Z",
-        extraction_block_class: Type = RotatedSurfaceCodeExtractionBlock,
         noise_params: Optional[NoiseConfig] = None,
         noise_model: Optional[str] = "circuit_level",
         if_detector: bool = True,
     ):
         """
         Args:
-            distance: Code distance (odd integer).
-            rounds: Number of syndrome extraction rounds.
-            injection_protocol: 'corner' (inject at (1,1)) or 'middle' (inject at center).
-            post_select_mode:
-                - 'full_postselection': tag all syndrome-round detectors.
-                - 'full_qec': do not tag post-select detectors.
-                - 'hybrid': tag a subset (default protocol-specific neighborhood).
-            hybrid_post_select_scheme:
-                - 'local_neighbors': local checks near injection point (previous default).
-                - 'logical_strips': checks aligned with logical operator strips.
-            post_select_coords:
-                Optional explicit post-select detector coordinates.
-                Accepts 2D (x, y) or 3D (x, y, t) tuples. In both cases only the
-                syndrome-round detector layer (t=0) is tagged.
-            inject_state: Target logical state ('Z' -> |0⟩, 'X' -> |+⟩).
-            extraction_block_class: SE block class (default RotatedSurfaceCodeExtractionBlock).
+            code_patch_class: Patch class (e.g. RotatedSurfaceCode, UnrotatedSurfaceCode).
+            extraction_block_class: SE block class for this code.
+            op_set_class: LogicalOpSet class with state_injection/logical_unencode methods.
+            code_params: Dict of kwargs for patch constructor. If None, uses {"distance": distance}.
+            distance: Code distance (convenience shortcut, used when code_params is None).
+            rounds: Number of SE rounds.
+            inject_state: Target logical state ('Z', 'X', or 'Y').
+            protocol: Injection protocol ('corner' or 'middle').
+            post_select_mode: 'full_postselection', 'full_qec', or 'hybrid'.
             noise_params: Optional noise configuration.
             noise_model: Noise model string.
             if_detector: Whether to generate detectors.
         """
+        super().__init__(
+            extraction_block_class=extraction_block_class,
+            rounds=rounds,
+            noise_params=noise_params,
+            noise_model=noise_model,
+            if_detector=if_detector,
+        )
+        self.code_patch_class = code_patch_class
+        self.extraction_block_class = extraction_block_class
+        self.op_set_class = op_set_class
+        self.code_params = code_params or {"distance": distance}
         self.distance = distance
-        self.rounds = rounds
-        self.injection_protocol = injection_protocol.lower()
-        self.post_select_mode = post_select_mode.lower()
-        self.hybrid_post_select_scheme = hybrid_post_select_scheme.lower()
-        self.post_select_coords = post_select_coords
         self.inject_state = inject_state.upper()
-        self.block_class = extraction_block_class
-        self.noise_params = noise_params
-        self.noise_model = noise_model
-        self.if_detector = if_detector
+        self.protocol = protocol.lower()
+        self.post_select_mode = post_select_mode.lower()
 
-        if self.injection_protocol not in ("corner", "middle"):
-            raise ValueError("injection_protocol must be 'corner' or 'middle'")
-        if self.post_select_mode not in ("full_postselection", "full_qec", "hybrid"):
-            raise ValueError("post_select_mode must be 'full_postselection', 'full_qec', or 'hybrid'")
-        if self.hybrid_post_select_scheme not in ("local_neighbors", "logical_strips"):
-            raise ValueError(
-                "hybrid_post_select_scheme must be 'local_neighbors' or 'logical_strips'"
-            )
-        if self.inject_state not in ("Z", "X"):
-            raise ValueError("inject_state must be 'Z' or 'X'")
+    def _compute_post_select_coords(self, patch, system) -> Set[Tuple[float, ...]]:
+        """Compute post-selection detector coords based on mode."""
+        all_syn_coords_2d = set()
+        for stab in patch.stabilizers:
+            syn_idx = stab.get("syn_idx")
+            if syn_idx is not None and syn_idx in system.qubit_coords:
+                coord = system.qubit_coords[syn_idx]
+                all_syn_coords_2d.add((int(coord[0]), int(coord[1])))
 
-        self.system: Optional[Any] = None
-        self.builder: Optional[CircuitBuilder] = None
-        self.tracker: Optional[SyndromeTracker] = None
-
-    @staticmethod
-    def _normalize_post_select_coords(coords: Set[Tuple[int, ...]]) -> Set[Tuple[int, int]]:
-        """Normalize user-provided post-select coords to 2D detector-plane coords."""
-        normalized = set()
-        for c in coords:
-            if len(c) == 2:
-                normalized.add((int(c[0]), int(c[1])))
-            elif len(c) == 3:
-                normalized.add((int(c[0]), int(c[1])))
-            else:
-                raise ValueError(
-                    "post_select_coords entries must be 2D (x, y) or 3D (x, y, t) tuples"
-                )
-        return normalized
-
-    def _local_neighbor_hybrid_post_select_coords(self) -> Set[Tuple[int, int]]:
-        """Local-neighbor defaults for hybrid mode."""
-        if self.injection_protocol == "corner":
-            # Adjacent syndrome checks next to the corner-injected data qubit.
-            return {(2, 0), (2, 2)}
-
-        # middle: choose the four syndrome checks around center data qubit (x, y).
-        mid = self.distance // 2 + 1
-        x = 2 * (mid - 1) + 1
-        y = 2 * (mid - 1) + 1
-        return {
-            (x - 1, y - 1),
-            (x + 1, y - 1),
-            (x - 1, y + 1),
-            (x + 1, y + 1),
-        }
-
-    def _logical_strip_hybrid_post_select_coords(
-        self,
-        all_syndrome_coords_2d: Set[Tuple[int, int]],
-    ) -> Set[Tuple[int, int]]:
-        """
-        Logical-strip defaults requested for hybrid mode:
-        - corner, Z: y in {0, 2}
-        - corner, X: x in {0, 2}
-        - middle, Z: y in {center_y-1, center_y+1}
-        - middle, X: x in {center_x-1, center_x+1}
-        """
-        if self.injection_protocol == "corner":
-            if self.inject_state == "Z":
-                return {(x, y) for (x, y) in all_syndrome_coords_2d if y in (0, 2)}
-            return {(x, y) for (x, y) in all_syndrome_coords_2d if x in (0, 2)}
-
-        mid = self.distance // 2 + 1
-        center_x = 2 * (mid - 1) + 1
-        center_y = 2 * (mid - 1) + 1
-
-        if self.inject_state == "Z":
-            target_rows = (center_y - 1, center_y + 1)
-            return {(x, y) for (x, y) in all_syndrome_coords_2d if y in target_rows}
-        target_cols = (center_x - 1, center_x + 1)
-        return {(x, y) for (x, y) in all_syndrome_coords_2d if x in target_cols}
-
-    def _resolve_post_select_coords(self) -> Set[Tuple[float, ...]]:
-        """Resolve detector coordinates to be post-selected for this experiment."""
-        assert self.system is not None
-        all_syndrome_coords_2d = {
-            (
-                int(self.system.qubit_coords[s["syn_idx"]][0]),
-                int(self.system.qubit_coords[s["syn_idx"]][1]),
-            )
-            for s in self.system.stabilizers
-        }
         if self.post_select_mode == "full_qec":
             selected_2d = set()
         elif self.post_select_mode == "full_postselection":
-            selected_2d = all_syndrome_coords_2d
+            selected_2d = all_syn_coords_2d
         else:
-            if self.post_select_coords is not None:
-                selected_2d = self._normalize_post_select_coords(self.post_select_coords)
-            else:
-                if self.hybrid_post_select_scheme == "logical_strips":
-                    selected_2d = self._logical_strip_hybrid_post_select_coords(
-                        all_syndrome_coords_2d
-                    )
-                else:
-                    selected_2d = self._local_neighbor_hybrid_post_select_coords()
+            # hybrid: logical strip post-selection (rotated SC only)
+            selected_2d = self._logical_strip_coords(all_syn_coords_2d)
 
-        # Guard against invalid coordinates and keep tagging scoped to syndrome checks.
-        selected_2d = selected_2d & all_syndrome_coords_2d
+        selected_2d = selected_2d & all_syn_coords_2d
         return {(float(x), float(y), 0.0) for x, y in selected_2d}
+
+    def _logical_strip_coords(self, all_syn_coords_2d) -> Set[Tuple[int, int]]:
+        """
+        Logical-strip hybrid post-selection.
+        Tag syndrome coords adjacent to the logical operator strips.
+
+        Rotated SC (spacing=2):  corner Z → y∈{0,2}, X → x∈{0,2}
+        Unrotated SC (spacing=1): corner Z → y∈{0,1}, X → x∈{0,1}
+        Y state: union of Z and X strips.
+        """
+        from src.qec_code.surface_code.unrotated import UnrotatedSurfaceCode
+
+        # Determine strip width based on code type
+        if self.code_patch_class == RotatedSurfaceCode:
+            strip_vals = (0, 2)  # rotated SC coord spacing = 2
+        elif self.code_patch_class == UnrotatedSurfaceCode:
+            strip_vals = (0, 1)  # unrotated SC coord spacing = 1
+        else:
+            raise NotImplementedError(
+                f"Hybrid post-selection not implemented for {self.code_patch_class.__name__}. "
+                f"Use 'full_postselection' or 'full_qec' instead."
+            )
+
+        if self.protocol == "corner":
+            z_strip = {(x, y) for (x, y) in all_syn_coords_2d if y in strip_vals}
+            x_strip = {(x, y) for (x, y) in all_syn_coords_2d if x in strip_vals}
+            if self.inject_state == "Z":
+                return z_strip
+            elif self.inject_state == "X":
+                return x_strip
+            else:
+                return z_strip | x_strip
+        else:
+            # Middle injection (rotated SC only)
+            mid = self.distance // 2 + 1
+            if self.code_patch_class == RotatedSurfaceCode:
+                center = 2 * (mid - 1) + 1
+            else:
+                center = mid - 1  # unrotated uses unit spacing
+            z_rows = (center - 1, center + 1)
+            x_cols = (center - 1, center + 1)
+            z_strip = {(x, y) for (x, y) in all_syn_coords_2d if y in z_rows}
+            x_strip = {(x, y) for (x, y) in all_syn_coords_2d if x in x_cols}
+            if self.inject_state == "Z":
+                return z_strip
+            elif self.inject_state == "X":
+                return x_strip
+            else:
+                return z_strip | x_strip
 
     def build(self) -> stim.Circuit:
         """Constructs the full Stim circuit for the state injection experiment."""
         # 1. Create patch and register in QECSystem
-        patch = RotatedSurfaceCode(distance=self.distance)
+        print(f"Creating {self.code_patch_class.__name__} patch...")
+        patch_local = self.code_patch_class(**self.code_params)
         self.system = QECSystem()
-        self.system.add_patch(patch, name="surface_code")
+        patch = self.system.add_patch(patch_local, name="patch")
 
-        num_qubits = self.system.num_qubits
-        num_logicals = self.system.num_logicals
+        # 2. Setup tracker, builder, logical executor
+        self._setup_experiment()
+        op_set = self.op_set_class(extraction_block_class=self.extraction_block_class)
+        self.logical_executor.register_op_set(self.code_patch_class, op_set)
 
-        # 2. Build init_dict
-        if self.injection_protocol == "corner":
-            init_dict = _get_corner_injection_init(self.system, self.inject_state)
-        else:
-            init_dict = _get_middle_injection_init(self.system, self.inject_state)
-
-        # 3. Resolve which syndrome-round detector coordinates should be tagged.
-        post_select_coords = self._resolve_post_select_coords()
-
-        # 4. Setup tracker (with post-select coords) and builder
-        self.tracker = SyndromeTracker(
-            num_qubits=num_qubits,
-            expected_num_logicals=num_logicals,
-            post_select_detector_coords=post_select_coords,
-        )
-        self.builder = CircuitBuilder(
-            tracker=self.tracker,
-            system_config=self.system,
-            if_detector=self.if_detector,
-        )
-
-        # 5. Write coordinates
+        # 3. Write coordinates
         self.builder.write_coordinates()
 
-        # 6. Initialize data qubits
-        self.builder.initialize(init_dict=init_dict, n=num_qubits)
+        # 4. Compute post-selection coords based on mode
+        ps_coords = self._compute_post_select_coords(patch, self.system)
 
-        # 7. Syndrome extraction
-        se_block = self.block_class(self.system)
-        self.builder.apply_syndrome_extraction(
-            circuit_chunk=se_block.circuit,
+        # 5. State injection (init + SE rounds)
+        print(f"State injection: {self.inject_state} ({self.protocol}, {self.post_select_mode})...")
+        self.logical_executor.apply_logical_operation(
+            op_name="state_injection",
+            patches=[patch],
+            inject_state=self.inject_state,
+            protocol=self.protocol,
             rounds=self.rounds,
+            post_select_coords=ps_coords,
         )
 
-        # 8. Final readout: measure in X basis if inject_state X, else Z
-        data_indices = [self.system.index_map[c] for c in self.system.data_coords]
-        final_measurements = {q: self.inject_state for q in data_indices}
-        self.builder.apply_data_readout(final_measurements=final_measurements)
-
-        # 9. Optional noise
-        if self.noise_params is not None:
-            return self.builder.build_noisy_circuit(
-                noise_params=self.noise_params,
-                noise_model=self.noise_model,
+        # 6. Readout
+        #    Z/X: transversal MZ/MX (full final-round detector coverage)
+        #    Y:   noiseless S_DAG → transversal MX if fold_transversal_s_dag available,
+        #         otherwise fall back to unencode + noiseless MY
+        if self.inject_state == "Y" and hasattr(op_set, "fold_transversal_s_dag"):
+            # Noiseless S_DAG rotates |+i⟩→|+⟩, then transversal MX
+            print("Noiseless S_DAG + transversal MX readout...")
+            self.logical_executor.apply_logical_operation(
+                op_name="fold_transversal_s_dag",
+                patches=[patch],
+                noiseless=True,
             )
-        return self.builder.circuit
+            self.builder.apply_data_readout(
+                {q: "X" for q in self.system.data_indices}
+            )
+        elif self.inject_state == "Y":
+            # Fallback: unencode + noiseless MY (for codes without S_DAG)
+            print("Logical unencode (Y fallback)...")
+            phys_q = self.logical_executor.apply_logical_operation(
+                op_name="logical_unencode",
+                patches=[patch],
+                inject_state=self.inject_state,
+                protocol=self.protocol,
+            )
+            print("Noiseless MY...")
+            self.builder.apply_data_readout(
+                final_measurements={phys_q: "Y"}, noiseless=True,
+            )
+        else:
+            measure_basis = self.inject_state
+            print(f"Transversal M{measure_basis} readout...")
+            self.builder.apply_data_readout(
+                {q: measure_basis for q in self.system.data_indices}
+            )
+
+        # 7. Noise injection
+        return self._inject_noise(self.builder.circuit)

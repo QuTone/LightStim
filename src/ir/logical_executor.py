@@ -40,4 +40,4 @@ class LogicalExecutor:
 
         # 3. Execute and inject (Injection)
         # Pass self.builder into the method!
-        method(self.builder, *patches, **kwargs)
+        return method(self.builder, *patches, **kwargs)

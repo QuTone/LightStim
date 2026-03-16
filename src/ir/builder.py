@@ -187,21 +187,33 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # C. Unitary Block (Logical Gates, Unitary Encoding, etc.)
     # --------------------------------------------------------------------------
-    def apply_unitary_block(self, unitary_block: stim.Circuit):
+    def apply_unitary_block(self, unitary_block: stim.Circuit, noiseless: bool = False):
         """
         Applies a unitary circuit block and updates the tracker's tableau.
-        
+
         This method is used for logical operations (e.g., transversal CNOT) that
         need to update the stabilizer tableau to reflect the unitary transformation.
-        
+
         Args:
             unitary_block: A Stim circuit containing only unitary operations (no measurements/resets).
+            noiseless: If True, tag all gate instructions with 'noiseless' so that
+                       noise injection rules skip them.
         """
         # Append the unitary block to the circuit
         if self.circuit[-1].name != "TICK":
             self.circuit.append("TICK")
-        self.circuit += unitary_block
-        
+
+        if noiseless:
+            # Re-emit each instruction with the noiseless tag
+            for inst in unitary_block:
+                if isinstance(inst, stim.CircuitInstruction):
+                    self.circuit.append(
+                        inst.name, inst.targets_copy(), inst.gate_args_copy(),
+                        tag="noiseless",
+                    )
+        else:
+            self.circuit += unitary_block
+
         # Update the tracker's tableau to reflect the unitary transformation
         self.tracker.process_unitary_block(unitary_block)
 
@@ -241,22 +253,29 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # E. Data Qubit Measurement
     # --------------------------------------------------------------------------
-    def apply_data_readout(self, final_measurements: Dict[int, str] = None):
+    def apply_data_readout(self, final_measurements: Dict[int, str] = None, noiseless: bool = False):
         """
-        Applies destructive measurement on data qubits and calls Tracker to 
+        Applies destructive measurement on data qubits and calls Tracker to
         resolve remaining stabilizers into Detectors/Observables.
+
+        Args:
+            final_measurements: Dict mapping qubit index to measurement basis ('X', 'Y', 'Z').
+            noiseless: If True, tag measurement instructions with 'noiseless' so that
+                       noise injection rules skip them.
         """
         if final_measurements is None:
             final_measurements = {q: 'Z' for q in self.system.data_indices}
-            
+
         xs = [q for q, b in final_measurements.items() if b == 'X']
         ys = [q for q, b in final_measurements.items() if b == 'Y']
         zs = [q for q, b in final_measurements.items() if b == 'Z']
 
+        tag = "noiseless" if noiseless else ""
+
         # Append gates (No manual noise here)
-        if xs: self.circuit.append("MX", xs)
-        if ys: self.circuit.append("MY", ys)
-        if zs: self.circuit.append("M", zs)
+        if xs: self.circuit.append("MX", xs, tag=tag)
+        if ys: self.circuit.append("MY", ys, tag=tag)
+        if zs: self.circuit.append("M", zs, tag=tag)
 
         # Prepare Basis for Tracker (order matches circuit: X then Y then Z)
         sorted_indices = xs + ys + zs
