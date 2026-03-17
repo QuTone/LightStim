@@ -529,3 +529,73 @@ class QECSystem:
         
         # B. Restore Original Stabilizers
         self.active_stabilizer_indices.update(restored_uids)
+
+    def remove_coupler(self, coupler_name: str):
+        """
+        Remove a coupler patch from the system so the same corridor space
+        can be reused by a new coupler registration.
+
+        Must be called AFTER deactivate_coupler. The coupler's qubit indices
+        become orphans (never measured again) but stay allocated to avoid
+        re-indexing. The coordinate maps are cleared so new couplers can
+        register at the same positions.
+        """
+        if coupler_name not in self.coupler_patches:
+            raise ValueError(f"Coupler '{coupler_name}' not found.")
+        if coupler_name in self.paused_stabilizer_indices:
+            raise ValueError(f"Coupler '{coupler_name}' is still active. Deactivate first.")
+
+        coupler_patch = self.coupler_patches[coupler_name]
+
+        # 1. Collect global indices owned by this coupler
+        coupler_global_indices = set()
+        if coupler_name in self.local_to_global_map:
+            coupler_global_indices = set(self.local_to_global_map[coupler_name].values())
+
+        # 2. Clear coordinate maps (allows re-registration at same coords)
+        coords_to_remove = []
+        for coord, owner in list(self.coord_to_owner_map.items()):
+            if owner == coupler_name:
+                coords_to_remove.append(coord)
+
+        for coord in coords_to_remove:
+            del self.coord_to_owner_map[coord]
+            if coord in self.index_map:
+                del self.index_map[coord]
+            grid_key = coupler_patch.get_grid_key(coord)
+            if grid_key in self.grid_map:
+                del self.grid_map[grid_key]
+
+        # 3. Remove from qubit category sets (data, syndrome)
+        self.data_indices.difference_update(coupler_global_indices)
+        self.syndrome_indices.difference_update(coupler_global_indices)
+        self.syndrome_indices_x.difference_update(coupler_global_indices)
+        self.syndrome_indices_z.difference_update(coupler_global_indices)
+
+        # 4. Remove coupler stabilizers from active set
+        coupler_stab_uids = {
+            i for i, s in enumerate(self.stabilizers)
+            if s.get('patch_name') == coupler_name
+        }
+        self.active_stabilizer_indices.difference_update(coupler_stab_uids)
+
+        # 5. Mark stabilizers as removed (set patch_name to None so they're skipped)
+        for uid in coupler_stab_uids:
+            self.stabilizers[uid]['patch_name'] = None
+
+        # 6. Clean up signature cache for removed stabilizers
+        sigs_to_remove = [sig for sig, uid in self._stabilizer_signatures.items()
+                          if uid in coupler_stab_uids]
+        for sig in sigs_to_remove:
+            del self._stabilizer_signatures[sig]
+
+        # 7. Remove from index_to_owner_map
+        for idx in coupler_global_indices:
+            if idx in self.index_to_owner_map:
+                del self.index_to_owner_map[idx]
+
+        # 8. Remove from patch/coupler registries
+        del self.local_to_global_map[coupler_name]
+        del self.coupler_patches[coupler_name]
+        del self.patches[coupler_name]
+        # Note: qubit_coords[idx] kept (orphaned but harmless — QUBIT_COORDS already in circuit)
