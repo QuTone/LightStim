@@ -71,6 +71,10 @@ class UnrotatedMultiPatchCoupler(LogicalCouplerProtocol):
         else:
             raise ValueError("Must provide either 'start_patch' (index) or 'center_axis' (float).")
 
+        # Inherit transposition/rotation from anchor so SE block uses consistent directions
+        coupler_patch.is_transposed = path_info.anchor_patch.is_transposed
+        coupler_patch.rotation_angle = path_info.anchor_patch.rotation_angle
+
         self._construct_coupling_region(coupler_patch, patches, path_info)
         self._init_stabilizers(coupler_patch, patches, path_info)
 
