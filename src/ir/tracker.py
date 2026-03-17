@@ -52,6 +52,7 @@ class SyndromeTracker:
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
         self.post_select_detector_coords = post_select_detector_coords or set()
+        self.post_select_row_indices = set()  # Stabilizer row indices to post-select in process_final_measurement
 
     def set_expected_logicals(self, k: int):
         """
@@ -397,57 +398,115 @@ class SyndromeTracker:
         # Basis: The clean measurements (Back-propagated Paulis)
         # Targets: The updated Full Tableau (System State)
         # new_basis_indices: Indices in full_matrix that form the Logical Basis.
-        _, _, new_basis_indices = solve_linear_decomposition(
+        #
+        # IMPORTANT: Reorder targets so logical rows come BEFORE stabilizer rows.
+        # This gives logicals priority for RREF pivots, preventing stabilizer rows
+        # from "stealing" a logical's pivot when they share the same independent direction.
+        # Without this, logicals can be lost (e.g., PQRM logical Z in CrossLS Z-state).
+        if num_logs > 0:
+            reordered_targets = np.vstack([full_matrix[num_stabs:], full_matrix[:num_stabs]])
+            reordered_records = full_records[num_stabs:] + full_records[:num_stabs]
+        else:
+            reordered_targets = full_matrix
+            reordered_records = full_records
+
+        _, is_dependent, new_basis_indices = solve_linear_decomposition(
             basis=back_propagated_paulis,
-            targets=full_matrix
+            targets=reordered_targets
         )
-        
+
+        # Map reordered indices back to original full_matrix semantics:
+        # reordered[0..num_logs-1]       = original logicals  (full_matrix[num_stabs..end])
+        # reordered[num_logs..num_logs+num_stabs-1] = original stabs (full_matrix[0..num_stabs-1])
+        def _remap(idx):
+            if idx < num_logs:
+                return num_stabs + idx          # logical row
+            else:
+                return idx - num_logs            # stabilizer row
+
         # 1. Update Logicals
-        # We extract the pivot independent rows identified by RREF. There are two possibilities:
-        # Case 1: The logical operators with no measurement records.
-        # Case 2: The stabilizers with measurement records that stay in the system, not being measured this round.
-        # e.g., Two QEC patches, and we measure two patches sequentially. The stabilizers in the first patch will stay in the system but not be measured in the second round.
+        # Independent rows fall into:
+        # (a) Logical rows: stay as logicals
+        # (b) Stab rows with records: stay as old stabilizers (not measured this round)
+        # (c) Stab rows without records: become logicals
         if len(new_basis_indices) > 0:
             new_log_basis_indices = []
             old_stab_basis_indices = []
-            # Split: stabilizer rows (indices < num_stabs) vs logical rows (>= num_stabs)
-            stab_new_indices = [i for i in new_basis_indices if i < num_stabs]
-            log_new_indices = [i for i in new_basis_indices if i >= num_stabs]
-            empty_record_indices = [i for i in stab_new_indices if full_records[i] == []]
-            has_record_indices = [i for i in stab_new_indices if full_records[i] != []]
 
-            # Rows with measurement records always stay as stabilizers
-            old_stab_basis_indices.extend(has_record_indices)
-
-            # Rows without records: independent of this round's measurements -> logicals
-            new_log_basis_indices.extend(empty_record_indices)
-
-            # Original logical rows (from previous logical tableau) stay logical
-            new_log_basis_indices.extend(log_new_indices)
+            for ri in new_basis_indices:
+                orig_idx = _remap(ri)
+                orig_record = reordered_records[ri]
+                if orig_idx >= num_stabs:
+                    # Logical row → stays as logical
+                    new_log_basis_indices.append(orig_idx)
+                elif orig_record == []:
+                    # Stab row without records → becomes logical
+                    new_log_basis_indices.append(orig_idx)
+                else:
+                    # Stab row with records → stays as old stabilizer
+                    old_stab_basis_indices.append(orig_idx)
 
             self.logicals.matrix = full_matrix[new_log_basis_indices]
             self.logicals.records = [full_records[i] for i in new_log_basis_indices]
         else:
+            new_log_basis_indices = []
+            old_stab_basis_indices = []
             self.logicals = PauliTableau(self.num_qubits)  # empty logicals
 
         # 2. Update Stabilizers
         # Reset stabilizer tableau to the canonical measurement basis.
         new_stab_records = [[self.total_measurements - num_meas + i] for i in range(num_meas)]
 
-        # Build old_stab part: rows with records + empty-record rows kept as stabilizers
+        # Build old_stab part: rows with records that stayed as stabilizers
         old_stab_matrix = full_matrix[old_stab_basis_indices]
         old_stab_records = [full_records[i] for i in old_stab_basis_indices]
 
         self.stabilizers.matrix = np.vstack([back_propagated_paulis, old_stab_matrix])
         self.stabilizers.records = new_stab_records + old_stab_records
 
+        # Update post_select_row_indices: map old full_matrix indices to new stabilizer indices.
+        # - Old stab rows in old_stab_basis_indices → new indices num_meas, num_meas+1, ...
+        # - Dependent rows (absorbed into measurement basis) → find which measurement rows captured them
+        if self.post_select_row_indices:
+            new_ps = set()
+            # Map old stab rows that survived
+            for j, old_idx in enumerate(old_stab_basis_indices):
+                if old_idx in self.post_select_row_indices:
+                    new_ps.add(num_meas + j)
+            # Map dependent rows: decompose against measurement basis to find which rows captured them
+            # Map dependent rows: decompose against measurement basis to find which rows captured them
+            # Note: is_dependent uses reordered indices; map post_select old_idx to reordered idx
+            coeffs_ps, _, _ = solve_linear_decomposition(
+                basis=back_propagated_paulis,
+                targets=full_matrix,
+                reduce_weight=False,
+            )
+            for old_idx in self.post_select_row_indices:
+                if old_idx < full_matrix.shape[0]:
+                    # Decompose against original full_matrix (not reordered)
+                    row = full_matrix[old_idx:old_idx+1]
+                    c, dep, _ = solve_linear_decomposition(basis=back_propagated_paulis, targets=row, reduce_weight=False)
+                    if dep[0]:
+                        meas_indices = np.where(c[0])[0]
+                        new_ps.update(int(m) for m in meas_indices)
+            self.post_select_row_indices = new_ps
+
         # 3. Final Sanity Check (The Guardrail)
-        # Count the number of independent logical degrees of freedom absorbed by gauge measurements.
-        # Multiple measurements may share the same logical component (e.g., in ZZ lattice surgery),
-        # and a single measurement may involve multiple logicals (e.g., XX coupler with both patches
-        # initialized in X). The GF(2) rank of the logical component vectors gives the true count.
+        # Count the number of independent logical degrees of freedom consumed by gauge measurements.
+        # A logical is "consumed" only if it appears in gauge vectors AND did NOT survive as a logical.
+        # Logicals that survive are still alive — gauge measurements referencing them are just
+        # measurements that CONTAIN a live logical component, not ones that absorbed it.
         if self._gauge_logical_vectors:
-            gauge_matrix = np.array(self._gauge_logical_vectors, dtype=np.uint8)
+            # Determine which logical indices survived in the logicals tableau
+            surviving_log_indices = set(
+                i - num_stabs for i in new_log_basis_indices
+                if i >= num_stabs
+            ) if 'new_log_basis_indices' in dir() else set()
+            # Zero out gauge vector entries for surviving logicals
+            gauge_matrix = np.array(self._gauge_logical_vectors, dtype=np.uint8).copy()
+            for j in surviving_log_indices:
+                if j < gauge_matrix.shape[1]:
+                    gauge_matrix[:, j] = 0
             num_absorbed = int(np.linalg.matrix_rank(gauge_matrix.astype(float)))
         else:
             num_absorbed = 0
@@ -511,10 +570,18 @@ class SyndromeTracker:
             meas_abs_idx = base_meas_idx + i
 
             comm_check = check_commutativity(meas_row, full_matrix)
-            anti_comm_indices = np.where(comm_check[0])[0]
+            anti_comm_indices = [j for j in np.where(comm_check[0])[0] if j not in destroyed_rows]
 
             if len(anti_comm_indices) > 0:
-                pivot = anti_comm_indices[0]
+                # Prefer rows that are: (1) not logicals, (2) not swlc rows
+                # This preserves logicals and gauge-measurement rows for observable construction.
+                safe = [j for j in anti_comm_indices
+                        if j < num_stabs and j not in self.stabilizer_with_logical_components]
+                if safe:
+                    pivot = safe[0]
+                else:
+                    stab_candidates = [j for j in anti_comm_indices if j < num_stabs]
+                    pivot = stab_candidates[0] if stab_candidates else anti_comm_indices[0]
                 destroyed_rows.add(pivot) # Mark pivot as destroyed
 
                 for other in anti_comm_indices[1:]:
@@ -570,7 +637,12 @@ class SyndromeTracker:
                     args_set.add(rec_to_append)
                 qubit_idx = self.meas_rec_to_idx_map.get(r)
                 if qubit_idx is not None and qubit_idx in idx_to_coord_map:
-                    det_coord = idx_to_coord_map[qubit_idx]
+                    # Only use this coord if the qubit is in this row's support
+                    # (avoids inheriting coords from unrelated syndrome qubits via row updates)
+                    row_k = full_matrix[k]
+                    n_q = self.num_qubits
+                    if row_k[qubit_idx] or row_k[n_q + qubit_idx]:
+                        det_coord = idx_to_coord_map[qubit_idx]
             args = list(args_set)
 
             # Fallback when no syndrome records (e.g. X stabilizers with Z-only SE, final X measure)
@@ -592,7 +664,8 @@ class SyndromeTracker:
                 coords = list(det_coord) + [1]
                 _append_detector(
                     circuit, args, coords,
-                    post_select=tuple(coords) in self.post_select_detector_coords,
+                    post_select=(tuple(coords) in self.post_select_detector_coords
+                                 or k in self.post_select_row_indices),
                 )
             else:
                 circuit.append("OBSERVABLE_INCLUDE", args, [logical_observable_idx])
