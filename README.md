@@ -30,7 +30,8 @@ LightStim/
 │   ├── test_LS_two_patch.ipynb
 │   ├── test_LS_CNOT.ipynb
 │   ├── test_ghz.ipynb
-│   └── test_injection.ipynb
+│   ├── test_injection.ipynb
+│   └── fold_transversal.ipynb
 ├── src/
 │   ├── ir/                         # Core abstractions and tracking
 │   ├── qec_code/                   # Code implementations

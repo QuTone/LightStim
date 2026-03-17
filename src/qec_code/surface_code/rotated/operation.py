@@ -3,13 +3,14 @@
 """
 Logical operation set for Rotated Surface Code.
 
-Provides state_injection and logical_unencode as LogicalOpSet methods,
-callable via LogicalExecutor.apply_logical_operation().
+Provides state_injection, logical_unencode, fold_transversal_hadamard,
+and fold_transversal_s as LogicalOpSet methods, callable via
+LogicalExecutor.apply_logical_operation().
 """
 
-from typing import Literal, Tuple, Dict, Any, Type
+from typing import List, Literal, Tuple, Dict, Any, Type
 
-from src.ir.operation import LogicalOpSet
+from src.ir.operation import CSSLogicalOpSet
 from src.ir.builder import CircuitBuilder
 from src.ir.qec_patch import QECPatch
 from src.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
@@ -127,10 +128,121 @@ def _get_injection_init(
 
 
 # ------------------------------------------------------------------------------
+# Fold-transversal helpers
+# ------------------------------------------------------------------------------
+
+def _get_rotation_cycles(system: Any, patch: QECPatch) -> List[List[int]]:
+    """
+    Compute the cycle decomposition of the 90° anticlockwise rotation
+    (lx, ly) → (2d − ly, lx) acting on data qubits of a square patch.
+
+    Returns:
+        cycles: list of lists of global qubit indices; fixed-point (length-1)
+                cycles are omitted.
+
+    Raises:
+        ValueError if the patch is non-square.
+    """
+    if patch.distance_z != patch.distance_x:
+        raise ValueError(
+            "Fold-transversal H requires a square patch "
+            f"(distance_z == distance_x). Got {patch.distance_z} != {patch.distance_x}."
+        )
+
+    d = patch.distance_z
+    sx, sy = patch.shift
+    y_max = 2 * d          # rotation: (lx, ly) → (y_max − ly, lx)
+    index_map = system.index_map
+
+    visited: set = set()
+    cycles: List[List[int]] = []
+
+    for coord in patch.data_coords:
+        global_idx = index_map[coord]
+        if global_idx in visited:
+            continue
+
+        lx = round(coord[0] - sx)
+        ly = round(coord[1] - sy)
+        cycle: List[int] = []
+        cur_lx, cur_ly = lx, ly
+
+        while True:
+            cur_global = QECPatch.snap_coord((cur_lx + sx, cur_ly + sy))
+            cur_idx = index_map[cur_global]
+            if cur_idx in visited:
+                break
+            cycle.append(cur_idx)
+            visited.add(cur_idx)
+            cur_lx, cur_ly = y_max - cur_ly, cur_lx   # 90° anticlockwise
+
+        if len(cycle) > 1:
+            cycles.append(cycle)
+
+    return cycles
+
+
+def _get_fold_s_pairs(
+    system: Any, patch: QECPatch
+) -> Tuple[List[int], List[int], List[Tuple[int, int]]]:
+    """
+    Partition ALL qubits of the patch (data + syndrome) by the y=x diagonal
+    reflection, for use in the fold-transversal S gate at the half-cycle
+    unrotated state.
+
+    Even-row diagonal qubits (local y even) receive S.
+    Odd-row diagonal qubits  (local y odd)  receive S_DAG.
+    Mirror pairs ((lx,ly) ↔ (ly,lx) with lx < ly) receive CZ.
+    Qubits with no mirror partner (asymmetric boundary) receive no operation.
+
+    Returns:
+        even_diag   : global indices of diagonal qubits with even local y → S
+        odd_diag    : global indices of diagonal qubits with odd  local y → S_DAG
+        mirror_pairs: list of (idx_a, idx_b) where local coord_a = (lx, ly),
+                      lx < ly, and coord_b = (ly, lx)
+
+    Raises:
+        ValueError if the patch is non-square.
+    """
+    if patch.distance_z != patch.distance_x:
+        raise ValueError(
+            "Fold-transversal S requires a square patch "
+            f"(distance_z == distance_x). Got {patch.distance_z} != {patch.distance_x}."
+        )
+
+    sx, sy = patch.shift
+    index_map = system.index_map
+
+    even_diag: List[int] = []
+    odd_diag:  List[int] = []
+    mirror_pairs: List[Tuple[int, int]] = []
+
+    for local_idx, local_coord in patch.qubit_coords.items():
+        lx = round(local_coord[0])
+        ly = round(local_coord[1])
+        global_coord = QECPatch.snap_coord((lx + sx, ly + sy))
+        if global_coord not in index_map:
+            continue
+        global_idx = index_map[global_coord]
+
+        if lx == ly:
+            if ly % 2 == 0:
+                even_diag.append(global_idx)
+            else:
+                odd_diag.append(global_idx)
+        elif lx < ly:
+            mirror_global = QECPatch.snap_coord((ly + sx, lx + sy))
+            if mirror_global in index_map:
+                mirror_pairs.append((global_idx, index_map[mirror_global]))
+
+    return even_diag, odd_diag, mirror_pairs
+
+
+# ------------------------------------------------------------------------------
 # LogicalOpSet implementation
 # ------------------------------------------------------------------------------
 
-class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
+class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
     """
     Logical operation set for Rotated Surface Code.
 
@@ -138,13 +250,15 @@ class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
     gates as composable operations for use with LogicalExecutor.
     """
 
-    def __init__(self, extraction_block_class: Type):
+    def __init__(self, extraction_block_class: Type = None):
         """
         Args:
             extraction_block_class: SE block class for this code
                 (e.g. RotatedSurfaceCodeExtractionBlock). Takes system, has .circuit.
+                Required for state_injection; optional otherwise.
         """
-        super().__init__("RotatedSurfaceCode")
+        super().__init__()
+        self.name = "RotatedSurfaceCode"
         self.extraction_block_class = extraction_block_class
 
     # ------------------------------------------------------------------
@@ -261,17 +375,98 @@ class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
         return injection_gidx
 
     # ------------------------------------------------------------------
-    # Gate operations (stubs for future implementation)
+    # Fold-transversal gates
     # ------------------------------------------------------------------
 
-    def transversal_Hadamard(self, builder: CircuitBuilder, patch: QECPatch) -> stim.Circuit:
+    def fold_transversal_hadamard(self, builder: CircuitBuilder, patch: QECPatch):
         """
-        Applies a fold-transversal Hadamard gate using H-SWAP gates.
-        """
-        pass
+        Implement the logical Hadamard H_L via fold-transversal gate.
 
-    def LS_Hadamard(self, builder: CircuitBuilder, patch: QECPatch) -> stim.Circuit:
+        Physical circuit:
+          Layer 1 — transversal H : H applied to every data qubit
+          Layers 2-N — rotation   : SWAP gates implementing the 90° anticlockwise
+                                    permutation (lx, ly) → (2d − ly, lx) on data qubits
+
+        The rotation decomposes into permutation cycles (two 4-cycles + one fixed
+        point for square d). Each k-cycle needs k−1 sequential SWAPs; cycles are
+        parallelised across TICKs.
+
+        Logical action: X_L ↔ Z_L
+
+        Args:
+            builder: CircuitBuilder driving the experiment.
+            patch:   The RotatedSurfaceCode patch (must be square).
         """
-        Applies a Hadamard gate using transversal H with patch rotation.
+        system = builder.system
+        cycles = _get_rotation_cycles(system, patch)
+        all_data = sorted(patch.data_indices)
+
+        unitary = stim.Circuit()
+        unitary.append("H", all_data)
+
+        if cycles:
+            max_steps = max(len(c) - 1 for c in cycles)
+            for step in range(max_steps):
+                flat = []
+                for cycle in cycles:
+                    if step >= len(cycle) - 1:
+                        continue
+                    if step == 0:
+                        flat.extend([cycle[0], cycle[-1]])
+                    else:
+                        flat.extend([cycle[-step], cycle[-step - 1]])
+                unitary.append("TICK")
+                if flat:
+                    unitary.append("SWAP", flat)
+
+        builder.apply_unitary_block(unitary)
+
+    def fold_transversal_s(
+        self,
+        builder: CircuitBuilder,
+        patch: QECPatch,
+        se_block=None,
+    ):
         """
-        pass
+        Implement the logical phase gate S_L by embedding the fold-transversal
+        operation inside a single syndrome-extraction round.
+
+        The rotated surface code morphs into an unrotated surface code at the
+        half-cycle point (after CNOT ticks 1-2). The fold-transversal S is
+        applied there, then the SE round is completed (CNOT ticks 3-4 + measure).
+
+        Physical circuit (one modified SE round):
+          [SE first half]  Reset + H_x + CNOT ticks 1-2
+          [fold-S]         S on even-diagonal, S_DAG on odd-diagonal, CZ on pairs
+          [SE second half] CNOT ticks 3-4 + H_x + Measure
+
+        Diagonal / mirror pairs are defined on ALL qubits (data + syndrome) of
+        the patch, using the y=x fold of the half-cycle unrotated layout.
+
+        Logical action: Z_L → Z_L,  X_L → Y_L
+
+        Args:
+            builder:  CircuitBuilder driving the experiment.
+            patch:    The RotatedSurfaceCode patch (must be square).
+            se_block: RotatedSurfaceCodeExtractionBlock instance (required).
+        """
+        if se_block is None:
+            raise ValueError(
+                "fold_transversal_s requires se_block "
+                "(RotatedSurfaceCodeExtractionBlock) as a keyword argument."
+            )
+
+        system = builder.system
+        even_diag, odd_diag, mirror_pairs = _get_fold_s_pairs(system, patch)
+
+        fold_circ = stim.Circuit()
+        fold_circ.append("TICK")
+        if even_diag:
+            fold_circ.append("S",     sorted(even_diag))
+        if odd_diag:
+            fold_circ.append("S_DAG", sorted(odd_diag))
+        for a, b in mirror_pairs:
+            fold_circ.append("CZ", [a, b])
+
+        modified_se = se_block.first_half + fold_circ + se_block.second_half
+        builder.apply_syndrome_extraction(modified_se)

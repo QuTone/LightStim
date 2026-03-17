@@ -1182,9 +1182,24 @@ class RotatedSurfaceCode(QECPatch):
 
 **Additional methods**: `shift_logical_operators(op_type, offset)`, `get_info()`
 
-**SE block**: `RotatedSurfaceCodeExtractionBlock(system)` -- 4-tick zigzag CNOT schedule.
+**SE block**: `RotatedSurfaceCodeExtractionBlock(system)` -- 4-tick zigzag CNOT schedule. Exposes `first_half` and `second_half` sub-circuits to support mid-round gate injection (used by fold-transversal S).
 
-**Logical ops**: `RotatedSurfaceCodeLogicalOpSet(LogicalOpSet)` -- stubs for Hadamard.
+**Logical ops**: `RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet)` -- fold-transversal H and S gates, plus inherited transversal CNOT.
+
+| Method | Description |
+|--------|-------------|
+| `fold_transversal_hadamard(builder, patch)` | Logical H via transversal H + 90° anticlockwise patch rotation (decomposed as SWAP cycles) |
+| `fold_transversal_s(builder, patch, se_block)` | Logical S via half-cycle SE (first_half) + fold S on the half-cycle unrotated state + second_half; `se_block` must be the `RotatedSurfaceCodeExtractionBlock` for this patch |
+| `transversal_cnot(builder, ctrl, tgt)` | Inherited from `CSSLogicalOpSet` |
+
+Usage via `LogicalExecutor`:
+```python
+executor.apply_logical_operation("fold_transversal_hadamard", [patch])
+executor.apply_logical_operation("fold_transversal_s", [patch], se_block=se)
+executor.apply_logical_operation("transversal_cnot", [ctrl, tgt])
+```
+
+Requires a square patch (`distance_z == distance_x`). See `notebooks/fold_transversal.ipynb` for single-patch and Bell pair examples.
 
 ---
 
@@ -1199,7 +1214,22 @@ class UnrotatedSurfaceCode(QECPatch):
 
 **SE block**: `UnrotatedSurfaceCodeExtractionBlock(system)` -- 6-tick CNOT schedule.
 
-**Logical ops**: `UnrotatedSurfaceCodeLogicalOpSet(LogicalOpSet)` -- stubs for fold-transversal Hadamard and S gate.
+**Logical ops**: `UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet)` -- fold-transversal H and S gates exploiting the y=x diagonal reflection symmetry, plus inherited transversal CNOT.
+
+| Method | Description |
+|--------|-------------|
+| `fold_transversal_hadamard(builder, patch)` | Logical H via transversal H on all data qubits + SWAP mirror pairs across the y=x diagonal |
+| `fold_transversal_s(builder, patch)` | Logical S via S on even-row diagonal qubits + S† on odd-row diagonal qubits + CZ on mirror pairs |
+| `transversal_cnot(builder, ctrl, tgt)` | Inherited from `CSSLogicalOpSet` |
+
+Usage via `LogicalExecutor`:
+```python
+executor.apply_logical_operation("fold_transversal_hadamard", [patch])
+executor.apply_logical_operation("fold_transversal_s", [patch])
+executor.apply_logical_operation("transversal_cnot", [ctrl, tgt])
+```
+
+Requires a square patch (`distance_z == distance_x`). See `notebooks/fold_transversal.ipynb` for examples.
 
 **Coupler**: `UnrotatedTwoPatchCoupler(LogicalCouplerProtocol)` -- two-patch lattice surgery coupler.
 

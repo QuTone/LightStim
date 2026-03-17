@@ -428,11 +428,13 @@ class CircuitBuilder:
         back_pauli_z = None
 
         if meas_basis == "Z":
-            # Make the syndrome qubit location zero, focus on the data qubit support
-            # (without this step the back-propagated Pauli string will involve both syndrome and data qubits)
-            # We zero out the columns corresponding to the syndrome qubits themselves
-            z2x_int[syn_qubit_indices, syn_qubit_indices] = 0
-            z2z_int[syn_qubit_indices, syn_qubit_indices] = 0
+            # Zero the full syndrome×syndrome block so that syndrome qubit contributions
+            # (from their |0⟩ reset state) are excluded from the back-propagated Pauli.
+            # For standard SE only the diagonal is non-zero; for modified SE rounds
+            # (e.g. fold-transversal S with mid-round gates on syndrome qubits) off-diagonal
+            # syndrome-syndrome entries can be non-zero and must also be removed.
+            z2x_int[np.ix_(syn_qubit_indices, syn_qubit_indices)] = 0
+            z2z_int[np.ix_(syn_qubit_indices, syn_qubit_indices)] = 0
 
             # Get the back-propagated Pauli string corresponding to the measured qubits
             # We take the rows corresponding to the syndrome indices
@@ -440,9 +442,9 @@ class CircuitBuilder:
             back_pauli_z = z2z_int[syn_qubit_indices, :]
 
         elif meas_basis == "X":
-            # Make the syndrome qubit location zero, focus on the data qubit support
-            x2x_int[syn_qubit_indices, syn_qubit_indices] = 0
-            x2z_int[syn_qubit_indices, syn_qubit_indices] = 0
+            # Same reasoning for X-basis measurements.
+            x2x_int[np.ix_(syn_qubit_indices, syn_qubit_indices)] = 0
+            x2z_int[np.ix_(syn_qubit_indices, syn_qubit_indices)] = 0
 
             # Get the back-propagated Pauli string
             back_pauli_x = x2x_int[syn_qubit_indices, :]

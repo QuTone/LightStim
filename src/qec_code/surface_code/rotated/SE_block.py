@@ -29,93 +29,75 @@ class RotatedSurfaceCodeExtractionBlock:
 
     def _build_circuit(self):
 
-        # --- Step 1: Reset Syndrome Qubits ---
-        # Reset all syndrome qubits to |0> (Z basis)
         active_syn_indices = self.system.active_syndrome_indices
-        self.circuit.append("R", sorted(active_syn_indices))
-        self.circuit.append("TICK", tag="SE_start") # DEPOLARIZE1 will be injected here on data qubits
-
-        # --- Step 2: Preparation (Hadamard on X-type syndromes) ---
-        # Transform X-syndrome qubits to |+> state to measure X operators
         active_x_syn_indices = self.system.active_syndrome_indices_x
-        self.circuit.append("H", sorted(active_x_syn_indices))
-        self.circuit.append("TICK")
 
-        # --- Step 3: Entangling Gates (CNOT Scheduling) ---
-        # Standard Rotated Surface Code scheduling (4 ticks)
-        # Format: ((dx_x, dy_x), (dx_z, dy_z))
-        # dx_x/dy_x is the offset for X-stabilizer checks
-        # dx_z/dy_z is the offset for Z-stabilizer checks
-        # Perpendicular zigzag scheduling
+        # Perpendicular zigzag scheduling (4 CNOT ticks)
         canonical_tick_deltas = [
-            ((+1, +1), (+1, +1)), # Tick 1: NE interaction
-            ((-1, +1), (+1, -1)), # Tick 2: NW / SE interaction
-            ((+1, -1), (-1, +1)), # Tick 3: SE / NW interaction
-            ((-1, -1), (-1, -1))  # Tick 4: SW interaction
+            ((+1, +1), (+1, +1)), # Tick 1: NE
+            ((-1, +1), (+1, -1)), # Tick 2: NW / SE
+            ((+1, -1), (-1, +1)), # Tick 3: SE / NW
+            ((-1, -1), (-1, -1)), # Tick 4: SW
         ]
 
-        # Parallel zigzag scheduling (not FT, half distsance)
-        # canonical_tick_deltas = [
-        #     ((+1, +1), (+1, +1)), # Tick 1: NE interaction
-        #     ((-1, +1), (-1, +1)), # Tick 2: NW / SE interaction
-        #     ((+1, -1), (+1, -1)), # Tick 3: SE / NW interaction
-        #     ((-1, -1), (-1, -1))  # Tick 4: SW interaction
-        # ]
-
-        # Get the active syndrome coordinates for X and Z stabilizers
         active_stabilizers_x = self.system.active_stabilizers_x
         active_stabilizers_z = self.system.active_stabilizers_z
 
-        for dx_x, dx_z in canonical_tick_deltas:
-            cnot_targets = []
-            
-            # 3.1 Handle X-Stabilizers (Syndrome is Control, Data is Target)
+        def _cnot_layer(dx_x, dx_z):
+            """Build the CNOT target list for one tick."""
+            targets = []
             for stab in active_stabilizers_x:
                 syn_coord = stab['syn_coord']
-                syn_idx = stab['syn_idx']
-                owner_patch = self.system.patches[self.system.coord_to_owner_map[syn_coord]][0]
-                dx_x_global = owner_patch.transform_vector(dx_x)
-                raw_target = (
-                    syn_coord[0] + dx_x_global[0], 
-                    syn_coord[1] + dx_x_global[1]
-                )
-                target_key = owner_patch.get_grid_key(raw_target)
-
-                if target_key in self.system.grid_map:
-                    neighbor_idx = self.system.grid_map[target_key]
-                    if neighbor_idx in stab['data_indices']:
-                        cnot_targets.extend([syn_idx, neighbor_idx]) # Syndrome -> Data
-
-            # 3.2 Handle Z-Stabilizers (Data is Control, Syndrome is Target)
+                syn_idx   = stab['syn_idx']
+                owner     = self.system.patches[self.system.coord_to_owner_map[syn_coord]][0]
+                delta     = owner.transform_vector(dx_x)
+                raw       = (syn_coord[0] + delta[0], syn_coord[1] + delta[1])
+                key       = owner.get_grid_key(raw)
+                if key in self.system.grid_map:
+                    nb = self.system.grid_map[key]
+                    if nb in stab['data_indices']:
+                        targets.extend([syn_idx, nb])
             for stab in active_stabilizers_z:
                 syn_coord = stab['syn_coord']
-                syn_idx = stab['syn_idx']
-                owner_patch = self.system.patches[self.system.coord_to_owner_map[syn_coord]][0]
-                dx_z_global = owner_patch.transform_vector(dx_z)
-                raw_target = (
-                    syn_coord[0] + dx_z_global[0], 
-                    syn_coord[1] + dx_z_global[1]
-                )
-                target_key = owner_patch.get_grid_key(raw_target)
+                syn_idx   = stab['syn_idx']
+                owner     = self.system.patches[self.system.coord_to_owner_map[syn_coord]][0]
+                delta     = owner.transform_vector(dx_z)
+                raw       = (syn_coord[0] + delta[0], syn_coord[1] + delta[1])
+                key       = owner.get_grid_key(raw)
+                if key in self.system.grid_map:
+                    nb = self.system.grid_map[key]
+                    if nb in stab['data_indices']:
+                        targets.extend([nb, syn_idx])
+            return targets
 
-                if target_key in self.system.grid_map:
-                    neighbor_idx = self.system.grid_map[target_key]
-                    if neighbor_idx in stab['data_indices']:
-                        cnot_targets.extend([neighbor_idx, syn_idx]) # Data -> Syndrome
+        # ------------------------------------------------------------------
+        # First half: Reset + H_x + CNOT ticks 1-2
+        # ------------------------------------------------------------------
+        first = stim.Circuit()
+        first.append("R",    sorted(active_syn_indices))
+        first.append("TICK", tag="SE_start")
+        first.append("H",    sorted(active_x_syn_indices))
+        first.append("TICK")
+        for dx_x, dx_z in canonical_tick_deltas[:2]:
+            targets = _cnot_layer(dx_x, dx_z)
+            if targets:
+                first.append("CNOT", targets)
+            first.append("TICK")
 
-            # Apply CNOTs if any pairs exist in this tick
-            if cnot_targets:
-                self.circuit.append("CNOT", cnot_targets)
-            
-            self.circuit.append("TICK")
+        # ------------------------------------------------------------------
+        # Second half: CNOT ticks 3-4 + H_x + Measure
+        # ------------------------------------------------------------------
+        second = stim.Circuit()
+        for dx_x, dx_z in canonical_tick_deltas[2:]:
+            targets = _cnot_layer(dx_x, dx_z)
+            if targets:
+                second.append("CNOT", targets)
+            second.append("TICK")
+        second.append("H", sorted(active_x_syn_indices))
+        second.append("TICK")
+        second.append("M", sorted(active_syn_indices))
 
-        # --- Step 4: Basis Change (Hadamard on X-type syndromes) ---
-        # Transform X-syndrome qubits back to Z basis for measurement
-        self.circuit.append("H", sorted(active_x_syn_indices))
-        self.circuit.append("TICK")
-
-        # --- Step 5: Measurement ---
-        # Measure all syndrome qubits in Z basis
-        self.circuit.append("M", sorted(active_syn_indices))
-        
+        self.first_half = first
+        self.second_half = second
+        self.circuit = first + second
         # Note: No final TICK here. CircuitBuilder controls the flow.
