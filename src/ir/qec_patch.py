@@ -217,7 +217,11 @@ class QECPatch(ABC):
                 if idx in self.qubit_coords:
                     stab['syn_coord'] = self.qubit_coords[idx]
         
-        # Note: We do NOT need to update other keys in self.stabilizers or self.logicals 
+        # 4. Track accumulated shift (used by fold-transversal gates to recover local coords)
+        if hasattr(self, 'shift'):
+            self.shift = (self.shift[0] + dx, self.shift[1] + dy)
+
+        # Note: We do NOT need to update other keys in self.stabilizers or self.logicals
         # because they rely on qubit indices, which haven't changed!
 
     def transpose_coords(self):
