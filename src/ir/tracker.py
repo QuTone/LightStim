@@ -72,6 +72,55 @@ class SyndromeTracker:
         self.logicals.expand(delta)
         self.num_qubits += delta
 
+    def reset_records_for_qubits(self, qubit_indices):
+        """
+        Clean up tracker state for qubits being re-initialized mid-circuit.
+
+        Three cases for each stabilizer row:
+        - Support ONLY on target qubits → remove (re-init adds fresh rows)
+        - Support on BOTH target and non-target → keep but clear records
+          (prevents detectors from comparing across state-change boundary)
+        - No target support → keep as-is
+
+        Same logic applied to logical rows.
+        """
+        n = self.num_qubits
+        qubit_set = set(qubit_indices)
+
+        def _clean_rows(tableau):
+            new_indices = []
+            new_records = []
+            for i in range(tableau.count):
+                row = tableau.matrix[i]
+                has_target = any(row[q] != 0 or row[q + n] != 0 for q in qubit_set)
+                if not has_target:
+                    # No target support → keep as-is
+                    new_indices.append(i)
+                    new_records.append(tableau.records[i])
+                elif has_target:
+                    # Check if support extends beyond target qubits
+                    has_non_target = False
+                    for q in range(n):
+                        if q not in qubit_set and (row[q] != 0 or row[q + n] != 0):
+                            has_non_target = True
+                            break
+                    if has_non_target:
+                        # Mixed support → keep but mark as unmeasured
+                        # (UNMEASURED_STAB_RECORD prevents detector comparison
+                        #  but keeps the row as a stabilizer, not a logical)
+                        new_indices.append(i)
+                        new_records.append([UNMEASURED_STAB_RECORD])
+                    # else: support ONLY on target → remove (skip)
+
+            if new_indices:
+                tableau.matrix = tableau.matrix[new_indices]
+            else:
+                tableau.matrix = np.zeros((0, 2 * n), dtype=np.uint8)
+            tableau.records = new_records
+
+        _clean_rows(self.stabilizers)
+        _clean_rows(self.logicals)
+
     def stabilizer_canonicalization(
         self,
         system: Any,
