@@ -274,24 +274,36 @@ class UnrotatedMultiPatchCoupler(LogicalCouplerProtocol):
             return self._center_axis_horizontal(patches, center_axis)
 
     def _center_axis_vertical(self, patches, center_x) -> PathInfo:
-        """Vertical corridor defined by center_axis splitting patches left/right."""
+        """
+        Vertical corridor defined by center_axis splitting patches left/right.
+
+        Patches whose x_range straddles the center_axis are classified as
+        top/bottom endpoints (they sit within the corridor, not on the side).
+        """
         left_patches = []  # (index, patch, bounds)
         right_patches = []
+        endpoint_patches = []  # patches that straddle the center axis
 
         for i, p in enumerate(patches):
             b = p._get_bounds()
-            cx = (b[0] + b[1]) / 2
-            if cx < center_x - 1e-3:
-                left_patches.append((i, p, b))
-            elif cx > center_x + 1e-3:
-                right_patches.append((i, p, b))
+            # Check if patch x_range contains the center_axis
+            if b[0] < center_x - 1e-3 and b[1] > center_x + 1e-3:
+                # Patch straddles the center axis → endpoint (top or bottom)
+                endpoint_patches.append((i, p, b))
             else:
-                raise ValueError(f"Patch {i} centroid x={cx} is on the center_axis={center_x}. Cannot classify.")
+                cx = (b[0] + b[1]) / 2
+                if cx < center_x - 1e-3:
+                    left_patches.append((i, p, b))
+                elif cx > center_x + 1e-3:
+                    right_patches.append((i, p, b))
+                else:
+                    raise ValueError(f"Patch {i} centroid x={cx} is on the center_axis={center_x} "
+                                     f"but does not straddle it. Cannot classify.")
 
         if not left_patches and not right_patches:
             raise ValueError("No patches on either side of center_axis.")
 
-        # Corridor interior x bounds: one step inside from patch edges
+        # Corridor interior x bounds: one step inside from side patch edges
         if left_patches:
             corr_x_min = max(b[1] for _, _, b in left_patches) + 1.0
         else:
@@ -306,10 +318,28 @@ class UnrotatedMultiPatchCoupler(LogicalCouplerProtocol):
             raise ValueError(f"No room for corridor interior: left_interior={corr_x_min}, right_interior={corr_x_max}. "
                              f"Need gap >= 3 between left/right patch edges.")
 
-        # Corridor y bounds from all patches
-        all_bounds = [b for _, _, b in left_patches + right_patches]
-        corr_y_min = min(b[2] for b in all_bounds)
-        corr_y_max = max(b[3] for b in all_bounds)
+        # Validate endpoint patches sit within corridor x_range
+        for i, p, b in endpoint_patches:
+            if b[0] < corr_x_min - 1e-3 or b[1] > corr_x_max + 1e-3:
+                raise ValueError(
+                    f"Endpoint patch {i} x_range [{b[0]}, {b[1]}] exceeds corridor x_range "
+                    f"[{corr_x_min}, {corr_x_max}]. Adjust side patch positions to widen corridor.")
+
+        # Corridor y bounds from side patches
+        side_bounds = [b for _, _, b in left_patches + right_patches]
+        corr_y_min = min(b[2] for b in side_bounds)
+        corr_y_max = max(b[3] for b in side_bounds)
+
+        # Extend corridor y to reach endpoint patches (with gap=1)
+        for i, p, b in endpoint_patches:
+            cy = (b[2] + b[3]) / 2
+            side_cy = (corr_y_min + corr_y_max) / 2
+            if cy < side_cy:
+                # Endpoint is above side patches
+                corr_y_min = min(corr_y_min, b[3])  # corridor extends up to endpoint's bottom edge
+            else:
+                # Endpoint is below side patches
+                corr_y_max = max(corr_y_max, b[2])  # corridor extends down to endpoint's top edge
 
         # Build interfaces
         interfaces = []
@@ -317,6 +347,13 @@ class UnrotatedMultiPatchCoupler(LogicalCouplerProtocol):
             interfaces.append(InterfaceInfo(patch=p, side='left', boundary_edge_coord=b[1]))
         for _, p, b in right_patches:
             interfaces.append(InterfaceInfo(patch=p, side='right', boundary_edge_coord=b[0]))
+        for _, p, b in endpoint_patches:
+            cy = (b[2] + b[3]) / 2
+            side_cy = (corr_y_min + corr_y_max) / 2
+            if cy < side_cy:
+                interfaces.append(InterfaceInfo(patch=p, side='top', boundary_edge_coord=b[3]))
+            else:
+                interfaces.append(InterfaceInfo(patch=p, side='bottom', boundary_edge_coord=b[2]))
 
         # Select anchor (smallest patch)
         anchor_patch = min(patches, key=lambda p: (p._get_bounds()[1] - p._get_bounds()[0]) * (p._get_bounds()[3] - p._get_bounds()[2]))
@@ -329,29 +366,33 @@ class UnrotatedMultiPatchCoupler(LogicalCouplerProtocol):
                         anchor_patch=anchor_patch, interfaces=interfaces)
 
     def _center_axis_horizontal(self, patches, center_y) -> PathInfo:
-        """Horizontal corridor defined by center_axis splitting patches top/bottom."""
+        """Horizontal corridor defined by center_axis splitting patches top/bottom.
+        Patches straddling the center_axis become left/right endpoints."""
         top_patches = []
         bottom_patches = []
+        endpoint_patches = []
 
         for i, p in enumerate(patches):
             b = p._get_bounds()
-            cy = (b[2] + b[3]) / 2
-            if cy < center_y - 1e-3:
-                top_patches.append((i, p, b))
-            elif cy > center_y + 1e-3:
-                bottom_patches.append((i, p, b))
+            if b[2] < center_y - 1e-3 and b[3] > center_y + 1e-3:
+                endpoint_patches.append((i, p, b))
             else:
-                raise ValueError(f"Patch {i} centroid y={cy} is on the center_axis={center_y}. Cannot classify.")
+                cy = (b[2] + b[3]) / 2
+                if cy < center_y - 1e-3:
+                    top_patches.append((i, p, b))
+                elif cy > center_y + 1e-3:
+                    bottom_patches.append((i, p, b))
+                else:
+                    raise ValueError(f"Patch {i} centroid y={cy} is on the center_axis={center_y} "
+                                     f"but does not straddle it. Cannot classify.")
 
         if not top_patches and not bottom_patches:
             raise ValueError("No patches on either side of center_axis.")
 
-        # Corridor interior y bounds: one step inside from patch edges
         if top_patches:
             corr_y_min = max(b[3] for _, _, b in top_patches) + 1.0
         else:
             corr_y_min = center_y
-
         if bottom_patches:
             corr_y_max = min(b[2] for _, _, b in bottom_patches) - 1.0
         else:
@@ -361,18 +402,38 @@ class UnrotatedMultiPatchCoupler(LogicalCouplerProtocol):
             raise ValueError(f"No room for corridor interior: top_interior={corr_y_min}, bottom_interior={corr_y_max}. "
                              f"Need gap >= 3 between top/bottom patch edges.")
 
-        all_bounds = [b for _, _, b in top_patches + bottom_patches]
-        corr_x_min = min(b[0] for b in all_bounds)
-        corr_x_max = max(b[1] for b in all_bounds)
+        for i, p, b in endpoint_patches:
+            if b[2] < corr_y_min - 1e-3 or b[3] > corr_y_max + 1e-3:
+                raise ValueError(
+                    f"Endpoint patch {i} y_range [{b[2]}, {b[3]}] exceeds corridor y_range "
+                    f"[{corr_y_min}, {corr_y_max}]. Adjust side patch positions.")
+
+        side_bounds = [b for _, _, b in top_patches + bottom_patches]
+        corr_x_min = min(b[0] for b in side_bounds)
+        corr_x_max = max(b[1] for b in side_bounds)
+
+        for i, p, b in endpoint_patches:
+            cx = (b[0] + b[1]) / 2
+            side_cx = (corr_x_min + corr_x_max) / 2
+            if cx < side_cx:
+                corr_x_min = min(corr_x_min, b[1])
+            else:
+                corr_x_max = max(corr_x_max, b[0])
 
         interfaces = []
         for _, p, b in top_patches:
             interfaces.append(InterfaceInfo(patch=p, side='top', boundary_edge_coord=b[3]))
         for _, p, b in bottom_patches:
             interfaces.append(InterfaceInfo(patch=p, side='bottom', boundary_edge_coord=b[2]))
+        for _, p, b in endpoint_patches:
+            cx = (b[0] + b[1]) / 2
+            side_cx = (corr_x_min + corr_x_max) / 2
+            if cx < side_cx:
+                interfaces.append(InterfaceInfo(patch=p, side='left', boundary_edge_coord=b[1]))
+            else:
+                interfaces.append(InterfaceInfo(patch=p, side='right', boundary_edge_coord=b[0]))
 
         anchor_patch = min(patches, key=lambda p: (p._get_bounds()[1] - p._get_bounds()[0]) * (p._get_bounds()[3] - p._get_bounds()[2]))
-
         self._validate_side_patches_horizontal(interfaces, corr_x_min, corr_x_max, anchor_patch)
 
         corridor_bounds = (corr_x_min, corr_x_max, corr_y_min, corr_y_max)
