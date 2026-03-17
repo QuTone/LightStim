@@ -105,11 +105,15 @@ class SyndromeTracker:
                             has_non_target = True
                             break
                     if has_non_target:
-                        # Mixed support → keep but mark as unmeasured
-                        # (UNMEASURED_STAB_RECORD prevents detector comparison
-                        #  but keeps the row as a stabilizer, not a logical)
+                        # Mixed support → keep but:
+                        # 1. Mark as unmeasured (prevents stale detector comparison)
+                        # 2. Zero out target qubit columns (partial trace over
+                        #    orphaned qubits — they're never measured again)
                         new_indices.append(i)
                         new_records.append([UNMEASURED_STAB_RECORD])
+                        for q in qubit_set:
+                            tableau.matrix[i, q] = 0
+                            tableau.matrix[i, q + n] = 0
                     # else: support ONLY on target → remove (skip)
 
             if new_indices:
