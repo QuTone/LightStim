@@ -37,6 +37,8 @@ Endpoint patches interface via **perpendicular boundaries** — the boundary edg
 
 ## Root Cause
 
+**Update (2026-03-17):** The root cause is in the **tracker's `_get_back_propagated_pauli`**, not the circuit scheduling itself. The back-propagated Pauli includes syndrome-to-syndrome cross-talk terms (via shared data qubits at consecutive CNOT ticks). In standard SC this cross-talk is resolved by the tracker's sequential anti-commutation. At perpendicular boundaries with wide corridors, the sequential processing order exhausts anti-commuting rows before cross-talk-affected measurements are reached, causing "commutes but linearly independent" errors. The physical circuit is valid — the tiling IS a regular Z/X checkerboard. A tracker/builder fix (likely in how `_get_back_propagated_pauli` handles syndrome columns, or in the sequential processing order) would resolve this.
+
 ### The 6-Tick CNOT Schedule
 
 The SE block uses a 6-tick interleaved schedule (from Li, arXiv:1410.7808):
