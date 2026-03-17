@@ -594,8 +594,12 @@ class QECSystem:
             if idx in self.index_to_owner_map:
                 del self.index_to_owner_map[idx]
 
-        # 8. Remove from patch/coupler registries
+        # 8. Remove qubit_coords for coupler qubits (prevents ghost qubits in diagrams)
+        for idx in coupler_global_indices:
+            if idx in self.qubit_coords:
+                del self.qubit_coords[idx]
+
+        # 9. Remove from patch/coupler registries
         del self.local_to_global_map[coupler_name]
         del self.coupler_patches[coupler_name]
         del self.patches[coupler_name]
-        # Note: qubit_coords[idx] kept (orphaned but harmless — QUBIT_COORDS already in circuit)

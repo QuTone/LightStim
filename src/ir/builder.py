@@ -40,7 +40,11 @@ class CircuitBuilder:
         Generates QUBIT_COORDS instructions based on the system's layout.
         Essential for visualization.
         When start_index > 0, only writes coords for qubit indices >= start_index (for define-by-run).
+        Tracks written indices to avoid duplicates from sequential coupler cycles.
         """
+        if not hasattr(self, '_written_coord_indices'):
+            self._written_coord_indices = set()
+
         coords_iterable = None
         if isinstance(self.system.qubit_coords, dict):
             coords_iterable = self.system.qubit_coords.items()
@@ -49,8 +53,9 @@ class CircuitBuilder:
 
         if coords_iterable:
             for q_index, coords in coords_iterable:
-                if q_index >= start_index:
+                if q_index >= start_index and q_index not in self._written_coord_indices:
                     self.circuit.append("QUBIT_COORDS", [q_index], list(coords))
+                    self._written_coord_indices.add(q_index)
 
     def append_coordinates_for_new_qubits(self, start_index: int):
         """
@@ -422,17 +427,17 @@ class CircuitBuilder:
             # We zero out the columns corresponding to the syndrome qubits themselves
             z2x_int[syn_qubit_indices, syn_qubit_indices] = 0
             z2z_int[syn_qubit_indices, syn_qubit_indices] = 0
-            
+
             # Get the back-propagated Pauli string corresponding to the measured qubits
             # We take the rows corresponding to the syndrome indices
             back_pauli_x = z2x_int[syn_qubit_indices, :]
             back_pauli_z = z2z_int[syn_qubit_indices, :]
-            
+
         elif meas_basis == "X":
             # Make the syndrome qubit location zero, focus on the data qubit support
             x2x_int[syn_qubit_indices, syn_qubit_indices] = 0
             x2z_int[syn_qubit_indices, syn_qubit_indices] = 0
-            
+
             # Get the back-propagated Pauli string
             back_pauli_x = x2x_int[syn_qubit_indices, :]
             back_pauli_z = x2z_int[syn_qubit_indices, :]
