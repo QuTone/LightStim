@@ -470,3 +470,43 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
 
         modified_se = se_block.first_half + fold_circ + se_block.second_half
         builder.apply_syndrome_extraction(modified_se)
+
+    def fold_transversal_s_dag(
+        self,
+        builder: CircuitBuilder,
+        patch: QECPatch,
+        se_block=None,
+    ):
+        """
+        Implement the logical S†_L via fold-transversal gate (inverse of S_L).
+
+        Identical to fold_transversal_s but with S and S_DAG swapped on the
+        diagonal qubits. CZ on mirror pairs is unchanged (CZ is self-inverse).
+
+        Logical action: Z_L → Z_L,  Y_L → X_L
+
+        Args:
+            builder:  CircuitBuilder driving the experiment.
+            patch:    The RotatedSurfaceCode patch (must be square).
+            se_block: RotatedSurfaceCodeExtractionBlock instance (required).
+        """
+        if se_block is None:
+            raise ValueError(
+                "fold_transversal_s_dag requires se_block "
+                "(RotatedSurfaceCodeExtractionBlock) as a keyword argument."
+            )
+
+        system = builder.system
+        even_diag, odd_diag, mirror_pairs = _get_fold_s_pairs(system, patch)
+
+        fold_circ = stim.Circuit()
+        fold_circ.append("TICK")
+        if even_diag:
+            fold_circ.append("S_DAG", sorted(even_diag))
+        if odd_diag:
+            fold_circ.append("S",     sorted(odd_diag))
+        for a, b in mirror_pairs:
+            fold_circ.append("CZ", [a, b])
+
+        modified_se = se_block.first_half + fold_circ + se_block.second_half
+        builder.apply_syndrome_extraction(modified_se)
