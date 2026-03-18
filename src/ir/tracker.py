@@ -162,7 +162,7 @@ class SyndromeTracker:
             full_matrix = self.stabilizers.matrix
             full_records = self.stabilizers.records
 
-        _, _, new_basis_indices = solve_linear_decomposition(
+        coeffs, _, new_basis_indices = solve_linear_decomposition(
             basis=canonical_basis,
             targets=full_matrix,
             reduce_weight=True,
@@ -172,11 +172,28 @@ class SyndromeTracker:
         old_stab_indices = [i for i in range(num_stabs) if i not in new_basis_indices]
         new_log_basis_indices = list(new_basis_indices)
 
-        new_stab_matrix = full_matrix[old_stab_indices]
-        new_stab_records = [
-            full_records[i] if full_records[i] else [UNMEASURED_STAB_RECORD]
-            for i in old_stab_indices
-        ]
+        # Split dependent rows into MEASURED (keep evolved form + records) and
+        # UNMEASURED (replace with canonical basis rows to preserve raw structure).
+        measured_indices = [i for i in old_stab_indices
+                           if full_records[i] and full_records[i] != [UNMEASURED_STAB_RECORD]]
+        unmeasured_indices = [i for i in old_stab_indices if i not in measured_indices]
+
+        measured_rows = full_matrix[measured_indices] if measured_indices else np.zeros((0, 2*n), dtype=np.uint8)
+
+        # For unmeasured slots: use canonical_basis rows that are independent of the measured rows.
+        # This replaces evolved RREF representatives with raw canonical forms (e.g., original RM
+        # generator matrix rows), preserving the structure for downstream gauge measurements.
+        if measured_rows.shape[0] > 0 and canonical_basis.shape[0] > 0:
+            _, _, indep_canonical = solve_linear_decomposition(
+                basis=measured_rows, targets=canonical_basis, reduce_weight=False)
+            unmeasured_rows = canonical_basis[indep_canonical]
+        else:
+            unmeasured_rows = canonical_basis
+
+        new_stab_matrix = np.vstack([measured_rows, unmeasured_rows]) if measured_rows.shape[0] > 0 else unmeasured_rows
+        measured_records = [full_records[i] for i in measured_indices]
+        unmeasured_records = [[UNMEASURED_STAB_RECORD]] * unmeasured_rows.shape[0]
+        new_stab_records = measured_records + unmeasured_records
         new_log_matrix = full_matrix[new_log_basis_indices]
         new_log_records = [full_records[i] for i in new_log_basis_indices]
 
