@@ -97,6 +97,9 @@ class CircuitBuilder:
 
         self.tracker.process_initialization(init_tableau)
 
+        # Track active qubits (logical lifetime)
+        self.system.active_qubit_indices.update(init_dict.keys())
+
     def stabilizer_canonicalization(self, stabilizer_uids: Optional[Set[int]] = None) -> None:
         """
         Re-organize stabilizer tableau into stabilizers vs logicals using
@@ -299,11 +302,14 @@ class CircuitBuilder:
 
         # Call Tracker
         if self.if_detector:
-            self.tracker.process_final_measurement(
+            self.tracker.process_data_measurement(
                 circuit=self.circuit,
                 final_paulis=final_paulis,
-                idx_to_coord_map=self.system.qubit_coords 
+                idx_to_coord_map=self.system.qubit_coords
             )
+
+        # Remove measured qubits from active set (ready for reuse)
+        self.system.active_qubit_indices.difference_update(final_measurements.keys())
 
     # --------------------------------------------------------------------------
     # F. Final Build & Noise Injection

@@ -51,6 +51,11 @@ class QECSystem:
         # The stabilizers indices that are paused because of the coupler's activation.
         self.paused_stabilizer_indices: Dict[str, Set[int]] = {}
         
+        # 6. Active Qubit Tracking (Logical Lifetime)
+        # Qubits are "active" from initialization to measurement.
+        # Dormant qubits (measured, not yet re-initialized) can be reused by new couplers.
+        self.active_qubit_indices: Set[int] = set()
+
         # Owner Map: (x, y) -> patch_name, Determine the owner of the qubit.
         # Used for collision detection and debugging
         self.coord_to_owner_map: Dict[Tuple[float, float], str] = {}
@@ -182,17 +187,22 @@ class QECSystem:
         self.local_to_global_map[name] = {}
 
         for global_coord, local_index in patch.index_map.items(): # the patch is already shifted to the global coordinate system
-            
-            # Collision Check
+
             if global_coord in self.index_map:
-                existing_owner = self.coord_to_owner_map[global_coord]
-                raise ValueError(
-                    f"Coordinate collision at {global_coord}. "
-                    f"Trying to add patch '{name}', but occupied by '{existing_owner}'."
-                )
-            
-            # Assign Unique Global Index, Categorize the qubit
-            idx = self.next_index
+                existing_idx = self.index_map[global_coord]
+                if existing_idx in self.active_qubit_indices:
+                    existing_owner = self.coord_to_owner_map.get(global_coord, '?')
+                    raise ValueError(
+                        f"Coordinate collision with ACTIVE qubit at {global_coord}. "
+                        f"Trying to add patch '{name}', but occupied by active '{existing_owner}'."
+                    )
+                # Reuse dormant qubit index (measured, ready for reuse)
+                idx = existing_idx
+            else:
+                # New qubit — assign fresh index
+                idx = self.next_index
+                self.next_index += 1
+
             self.index_map[global_coord] = idx
             self.qubit_coords[idx] = global_coord
             self.coord_to_owner_map[global_coord] = name
@@ -213,9 +223,6 @@ class QECSystem:
             if hasattr(patch, 'syndrome_indices_z'):
                 if local_index in patch.syndrome_indices_z:
                     self.syndrome_indices_z.add(idx)
-            
-    
-            self.next_index += 1
 
         # 3. Stabilizer and Logical Operator Translation
         stabilizer_indices = []

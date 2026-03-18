@@ -52,7 +52,7 @@ class SyndromeTracker:
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
         self.post_select_detector_coords = post_select_detector_coords or set()
-        self.post_select_row_indices = set()  # Stabilizer row indices to post-select in process_final_measurement
+        self.post_select_row_indices = set()  # Stabilizer row indices to post-select in process_data_measurement
 
     def set_expected_logicals(self, k: int):
         """
@@ -105,15 +105,10 @@ class SyndromeTracker:
                             has_non_target = True
                             break
                     if has_non_target:
-                        # Mixed support → keep but:
-                        # 1. Mark as unmeasured (prevents stale detector comparison)
-                        # 2. Zero out target qubit columns (partial trace over
-                        #    orphaned qubits — they're never measured again)
+                        # Mixed support → keep but mark as unmeasured
+                        # (prevents stale detector comparison, preserves Pauli operator)
                         new_indices.append(i)
                         new_records.append([UNMEASURED_STAB_RECORD])
-                        for q in qubit_set:
-                            tableau.matrix[i, q] = 0
-                            tableau.matrix[i, q + n] = 0
                     # else: support ONLY on target → remove (skip)
 
             if new_indices:
@@ -600,7 +595,7 @@ class SyndromeTracker:
                     swlc_to_remove.add(meas_idx)
             self.stabilizer_with_logical_components -= swlc_to_remove
 
-    def process_final_measurement(self,
+    def process_data_measurement(self,
                                   circuit: stim.Circuit, 
                                   final_paulis: np.ndarray,
                                   idx_to_coord_map: Dict[int, Tuple[float, float]]):
@@ -757,7 +752,7 @@ class SyndromeTracker:
         # qubits (e.g. Z_L = Z1*Z2*Z3 when Z2,Z3 are measured in Z basis)
         # must be reduced by XOR-ing out the measurement Paulis. This ensures
         # remaining rows only depend on unmeasured qubits, enabling correct
-        # decomposition in subsequent process_final_measurement calls.
+        # decomposition in subsequent process_data_measurement calls.
         emitted_rows = {k for k in range(num_rows)
                         if k not in destroyed_rows and is_dependent[k]}
         rows_to_remove = destroyed_rows | emitted_rows
