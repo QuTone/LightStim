@@ -545,17 +545,15 @@ class SyndromeTracker:
             self.post_select_row_indices = new_ps
 
         # 3. Final Sanity Check (The Guardrail)
+        # Determine which logical indices survived in the logicals tableau
+        surviving_log_indices = set(
+            i - num_stabs for i in new_log_basis_indices
+            if i >= num_stabs
+        ) if new_log_basis_indices else set()
+
         # Count the number of independent logical degrees of freedom consumed by gauge measurements.
         # A logical is "consumed" only if it appears in gauge vectors AND did NOT survive as a logical.
-        # Logicals that survive are still alive — gauge measurements referencing them are just
-        # measurements that CONTAIN a live logical component, not ones that absorbed it.
         if self._gauge_logical_vectors:
-            # Determine which logical indices survived in the logicals tableau
-            surviving_log_indices = set(
-                i - num_stabs for i in new_log_basis_indices
-                if i >= num_stabs
-            ) if 'new_log_basis_indices' in dir() else set()
-            # Zero out gauge vector entries for surviving logicals
             gauge_matrix = np.array(self._gauge_logical_vectors, dtype=np.uint8).copy()
             for j in surviving_log_indices:
                 if j < gauge_matrix.shape[1]:
@@ -573,8 +571,19 @@ class SyndromeTracker:
                  f"(3) Measurements with Logical Components {len(self.stabilizer_with_logical_components)}\n"
              )
 
+        # 4. Clear redundant swlc entries for surviving logicals.
+        # If a gauge measurement's logical components ALL survived as logicals,
+        # the logical itself will be the observable — the swlc row is redundant.
+        if surviving_log_indices and self._gauge_logical_vectors:
+            swlc_sorted = sorted(self.stabilizer_with_logical_components)
+            swlc_to_remove = set()
+            for meas_idx, log_vec in zip(swlc_sorted, self._gauge_logical_vectors):
+                log_indices = set(np.where(log_vec)[0])
+                if log_indices.issubset(surviving_log_indices):
+                    swlc_to_remove.add(meas_idx)
+            self.stabilizer_with_logical_components -= swlc_to_remove
 
-    def process_final_measurement(self, 
+    def process_final_measurement(self,
                                   circuit: stim.Circuit, 
                                   final_paulis: np.ndarray,
                                   idx_to_coord_map: Dict[int, Tuple[float, float]]):
