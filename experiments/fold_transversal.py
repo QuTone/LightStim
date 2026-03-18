@@ -372,9 +372,12 @@ def build_rotated_s_roundtrip_circuit(
     """
     Build a fault-tolerant S gate verification circuit via S·S† roundtrip:
 
-      |+⟩ → SE → S_L → SE → S†_L → SE → transversal MX
+      |0⟩ → SE → S_L → SE → S†_L → SE → transversal MZ
 
-    S·S† = I, so X_L should remain +1. LER_per_gate ≈ total_LER / 2.
+    S·S† = I, so Z_L should remain +1. Z-initialization avoids the boundary
+    X-syndrome tracking issue that occurs with X-initialized states (see
+    boundary syndrome note in fold_transversal rotated SC tests). LER_per_gate
+    ≈ total_LER / 2.
 
     Args:
         distance:      Code distance (must be odd, square patch).
@@ -404,7 +407,7 @@ def build_rotated_s_roundtrip_circuit(
 
     builder.write_coordinates()
     builder.initialize(
-        {q: "X" for q in system.data_indices},
+        {q: "Z" for q in system.data_indices},
         system.num_qubits,
     )
     builder.apply_syndrome_extraction(se.circuit, rounds=rounds)
@@ -416,7 +419,7 @@ def build_rotated_s_roundtrip_circuit(
     builder.apply_syndrome_extraction(se.circuit, rounds=rounds)
 
     builder.apply_data_readout(
-        {q: "X" for q in system.data_indices}
+        {q: "Z" for q in system.data_indices}
     )
 
     if noise_params is not None:
