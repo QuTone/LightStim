@@ -41,6 +41,8 @@ class SimulationPipeline:
         batch_size: int = 10_000,
         num_workers: int = 4,
         post_select_detector_indices: Optional[List[int]] = None,
+        post_select_observable_indices: Optional[List[int]] = None,
+        target_observable_indices: Optional[List[int]] = None,
         output_dir: Optional[str] = None,
         output_filename: Optional[str] = None,
         output_format: str = "csv",
@@ -63,6 +65,8 @@ class SimulationPipeline:
             num_workers=num_workers,
             decoder=decoder_config or DecoderConfig("pymatching", backend="cpu"),
             post_select_detector_indices=post_select_detector_indices,
+            post_select_observable_indices=post_select_observable_indices,
+            target_observable_indices=target_observable_indices,
             output_dir=output_dir,
             output_filename=output_filename,
             output_format=output_format,
@@ -115,7 +119,8 @@ class SimulationPipeline:
         decoder_name = self.config.decoder.name
         start = time.perf_counter()
         reporter = self._make_progress_reporter()
-        has_post_selection = len(post_select_indices) > 0
+        has_post_selection = (len(post_select_indices) > 0 or
+                              bool(self.config.post_select_observable_indices))
 
         if self.config.num_workers <= 1:
             return self._run_custom_single(
@@ -149,6 +154,8 @@ class SimulationPipeline:
                     self.config.max_shots,
                     self.config.max_errors,
                     post_select_indices,
+                    self.config.post_select_observable_indices,
+                    self.config.target_observable_indices,
                     shots_counter,
                     post_counter,
                     errors_counter,
@@ -229,7 +236,8 @@ class SimulationPipeline:
             total_shots += det_data.shape[0]
 
             det_filtered, obs_filtered = apply_post_selection(
-                det_data, obs_data, post_select_indices
+                det_data, obs_data, post_select_indices,
+                post_select_observable_indices=self.config.post_select_observable_indices,
             )
             kept = det_filtered.shape[0]
             post_selected_shots += kept
@@ -251,7 +259,16 @@ class SimulationPipeline:
             pred_packed = compiled.decode_shots_bit_packed(
                 bit_packed_detection_event_data=det_packed,
             )
-            errors += int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
+            if self.config.target_observable_indices is not None:
+                # Only count errors on specified observables
+                n_obs = obs_filtered.shape[1]
+                pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
+                target = self.config.target_observable_indices
+                errors += int(np.sum(np.any(
+                    pred_unpacked[:, target] != obs_filtered[:, target], axis=1
+                )))
+            else:
+                errors += int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
             reporter.emit(
                 self._build_snapshot(
                     shots=total_shots,

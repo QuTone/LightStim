@@ -21,6 +21,8 @@ def _decode_worker_cpu(
     max_shots: int,
     max_errors: int,
     post_select_indices: List[int],
+    post_select_observable_indices: Optional[List[int]],
+    target_observable_indices: Optional[List[int]],
     shots_counter,
     post_counter,
     errors_counter,
@@ -62,7 +64,8 @@ def _decode_worker_cpu(
         )
 
         det_filtered, obs_filtered = apply_post_selection(
-            det_data, obs_data, post_select_indices
+            det_data, obs_data, post_select_indices,
+            post_select_observable_indices=post_select_observable_indices,
         )
         kept = det_filtered.shape[0]
         if kept == 0:
@@ -74,7 +77,14 @@ def _decode_worker_cpu(
         pred_packed = compiled.decode_shots_bit_packed(
             bit_packed_detection_event_data=det_packed,
         )
-        batch_errors = int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
+        if target_observable_indices is not None:
+            n_obs = obs_filtered.shape[1]
+            pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
+            batch_errors = int(np.sum(np.any(
+                pred_unpacked[:, target_observable_indices] != obs_filtered[:, target_observable_indices], axis=1
+            )))
+        else:
+            batch_errors = int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
 
         with lock:
             post_counter.value += kept

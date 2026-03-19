@@ -28,6 +28,8 @@ class PipelineConfig:
     num_workers: int = 4
     decoder: Optional[DecoderConfig] = None
     post_select_detector_indices: Optional[List[int]] = None
+    post_select_observable_indices: Optional[List[int]] = None
+    target_observable_indices: Optional[List[int]] = None  # None = all observables
     output_dir: Optional[str] = None
     output_filename: Optional[str] = None
     output_format: Literal["csv", "json", "parquet"] = "csv"

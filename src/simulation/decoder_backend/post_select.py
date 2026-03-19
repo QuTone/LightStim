@@ -1,6 +1,6 @@
 """Post-selection utilities for detector data."""
 
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import stim
@@ -50,22 +50,28 @@ def apply_post_selection(
     det_data: np.ndarray,
     obs_data: np.ndarray,
     post_select_indices: List[int],
+    post_select_observable_indices: Optional[List[int]] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Filter samples by post-selection: keep only rows where all
-    post-select detectors are 0 (not flipped).
+    post-select detectors AND observables are 0 (not flipped).
 
     Args:
         det_data: Shape (num_shots, num_detectors), binary detection events.
         obs_data: Shape (num_shots, num_observables), ground-truth observables.
         post_select_indices: Detector column indices used for post-selection.
+        post_select_observable_indices: Observable column indices for post-selection.
+            Shots where any of these observables is flipped are discarded.
 
     Returns:
         (filtered_det_data, filtered_obs_data) - only rows passing post-selection.
     """
-    if not post_select_indices:
-        return det_data, obs_data
+    mask = np.ones(det_data.shape[0], dtype=bool)
 
-    # Keep samples where all post-select detectors are 0
-    mask = np.all(det_data[:, post_select_indices] == 0, axis=1)
+    if post_select_indices:
+        mask &= np.all(det_data[:, post_select_indices] == 0, axis=1)
+
+    if post_select_observable_indices:
+        mask &= np.all(obs_data[:, post_select_observable_indices] == 0, axis=1)
+
     return det_data[mask], obs_data[mask]
