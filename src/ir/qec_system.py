@@ -253,7 +253,10 @@ class QECSystem:
         # 4. Add number of logical qubits from the patch
         self.num_logicals += patch.num_logicals
 
-        # 5. Set Initial Active Stabilizers
+        # 5. Store registered stabilizer UIDs on the patch (for coupler activate/deactivate)
+        patch._registered_stabilizer_uids = set(stabilizer_indices)
+
+        # 6. Set Initial Active Stabilizers
         if is_active:
             self.active_stabilizer_indices.update(stabilizer_indices)
 
@@ -456,9 +459,9 @@ class QECSystem:
         # This will internally call self.add_patch(...)
         self.add_patch(coupler_patch, offset=(0,0), name=coupler_patch.name, is_active=False)
         
-        # 4. Store the Protocol reference (optional, for future reconfiguration)
-        # Or store the coupler patch name in a specific list
-        self.coupler_patches[coupler_patch.name] = coupler_patch
+        # 4. Store the registered patch (the deep-copied version from add_patch,
+        # which has _registered_stabilizer_uids set)
+        self.coupler_patches[coupler_patch.name] = self.patches[coupler_patch.name][0]
 
         return coupler_patch
     
@@ -479,15 +482,11 @@ class QECSystem:
 
         coupler_patch = self.coupler_patches[coupler_name]
 
-        # 1. Identify Coupler Stabilizers (The new guys)
-        # We need their UIDs. We can filter self.stabilizers by patch_name
-        coupler_stabilizer_uids = {
-            i for i, s in enumerate(self.stabilizers) 
-            if s.get('patch_name') == coupler_name
-        }
+        # 1. Identify Coupler Stabilizers from registered UIDs
+        # (stored during add_patch, includes deduplicated stabilizers)
+        coupler_stabilizer_uids = getattr(coupler_patch, '_registered_stabilizer_uids', set())
 
-        # 2. Identify Conflicting Stabilizers (The victims)
-        # We assume coupler_patch carries 'conflicting_coords' metadata
+        # 2. Identify Conflicting Stabilizers (code patch stabs at boundary positions)
         conflict_coords = getattr(coupler_patch, 'conflicting_stabilizer_coords', set())
         
         conflict_uids = set()
@@ -505,9 +504,9 @@ class QECSystem:
         
         # B. Deactivate Conflicts and update the stabilizer tableau
         self.active_stabilizer_indices.difference_update(conflict_uids)
-        
-        # C. Activate Coupler
-        self.active_stabilizer_indices.update(coupler_stabilizer_uids)
+
+        # C. Activate Coupler (exclude conflict UIDs — they're the originals being replaced)
+        self.active_stabilizer_indices.update(coupler_stabilizer_uids - conflict_uids)
 
 
     def deactivate_coupler(self, coupler_name: str):
@@ -520,11 +519,9 @@ class QECSystem:
             print(f"Coupler '{coupler_name}' is not currently active (or wasn't activated via this method).")
             return
 
-        # 1. Identify Coupler Stabilizers
-        coupler_stabilizer_uids = {
-            i for i, s in enumerate(self.stabilizers) 
-            if s.get('patch_name') == coupler_name
-        }
+        # 1. Identify Coupler Stabilizers from registered UIDs
+        coupler_patch = self.coupler_patches[coupler_name]
+        coupler_stabilizer_uids = getattr(coupler_patch, '_registered_stabilizer_uids', set())
 
         # 2. Retrieve History
         restored_uids = self.paused_stabilizer_indices.pop(coupler_name)
