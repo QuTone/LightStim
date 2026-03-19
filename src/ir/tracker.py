@@ -318,11 +318,30 @@ class SyndromeTracker:
         # Reset per-round tracking (these are only meaningful within a single PMM call)
         self.stabilizer_with_logical_components = set()
         self._gauge_logical_vectors = []
-        
+
+        # Reorder stabilizer rows: empty-record rows first.
+        # Fresh init rows (rec=[]) represent newly introduced qubits whose DOF should
+        # be consumed first by measurements, before established stabilizers with SE records.
+        # This produces cleaner detectors and correct logical observable construction.
+        num_stabs_pre = self.stabilizers.count
+        if num_stabs_pre > 0:
+            empty_indices = [i for i in range(num_stabs_pre) if self.stabilizers.records[i] == []]
+            other_indices = [i for i in range(num_stabs_pre) if self.stabilizers.records[i] != []]
+            if empty_indices and other_indices:  # only reorder if there's a mix
+                reorder = empty_indices + other_indices
+                self.stabilizers.matrix = self.stabilizers.matrix[reorder]
+                self.stabilizers.records = [self.stabilizers.records[i] for i in reorder]
+                # Remap post_select_row_indices
+                if self.post_select_row_indices:
+                    idx_map = {old: new for new, old in enumerate(reorder)}
+                    self.post_select_row_indices = {
+                        idx_map.get(k, k) for k in self.post_select_row_indices
+                    }
+
         # ======================================================================
         # Step 1: Combine Stabilizers and Logicals into Full Tableau
         # ======================================================================
-        num_stabs = self.stabilizers.count 
+        num_stabs = self.stabilizers.count
         num_logs = self.logicals.count
         
         # If logicals is empty, full_tableau is just stabilizers
