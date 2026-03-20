@@ -264,6 +264,57 @@ def _greedy_reduce_weight(coeffs: np.ndarray, null_rows: np.ndarray) -> np.ndarr
     return coeffs
 
 
+def _find_blocks(vectors: np.ndarray) -> List[List[int]]:
+    """
+    Partition vector indices into independent blocks via Union-Find on qubit support.
+
+    Two vectors are in the same block if they share any non-zero qubit column
+    (transitively). Returns a list of groups, each group is a list of row indices.
+
+    Args:
+        vectors: (K, 2N) binary matrix.
+
+    Returns:
+        List of groups (list of row indices). Single-block means no block structure.
+    """
+    K, cols = vectors.shape
+    if K == 0:
+        return []
+
+    # Union-Find
+    parent = list(range(K))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Build column → row index mapping (which rows touch each column)
+    col_to_rows = {}
+    for i in range(K):
+        nz_cols = np.where(vectors[i])[0]
+        for c in nz_cols:
+            if c in col_to_rows:
+                # Union this row with the first row that touches this column
+                union(i, col_to_rows[c])
+            else:
+                col_to_rows[c] = i
+
+    # Group by root
+    groups = {}
+    for i in range(K):
+        root = find(i)
+        groups.setdefault(root, []).append(i)
+
+    return list(groups.values())
+
+
 def solve_linear_decomposition(
     basis: np.ndarray,
     targets: np.ndarray,
@@ -271,6 +322,11 @@ def solve_linear_decomposition(
 ) -> Tuple[np.ndarray, np.ndarray, List[int]]:
     """
     Solves for x in: x @ basis = targets (over GF(2)).
+
+    Automatically detects block-diagonal structure and performs per-block RREF
+    when multiple independent blocks exist (e.g., multi-patch QEC systems
+    before inter-patch gates). This can provide orders-of-magnitude speedup
+    for systems with many independent patches.
 
     Args:
         basis: (M, 2N) matrix.
@@ -286,6 +342,76 @@ def solve_linear_decomposition(
                            NEW linear independent dimensions (Logical Basis).
                            These are the 'pivots' found in the target section.
     """
+    n_basis = basis.shape[0] if basis.shape[0] > 0 else 0
+    n_targets = targets.shape[0]
+
+    # --- Block-diagonal detection ---
+    # Stack all vectors (basis + targets) and find independent blocks.
+    # If multiple blocks exist, solve each independently for a large speedup.
+    if n_basis > 0 and n_targets > 0:
+        all_vectors = np.vstack([basis, targets])
+        blocks = _find_blocks(all_vectors)
+
+        if len(blocks) > 1:
+            # Multiple independent blocks detected — solve per-block
+            coeffs = np.zeros((n_targets, n_basis), dtype=np.uint8)
+            is_dependent = np.ones(n_targets, dtype=bool)
+            new_basis_indices = []
+
+            for block_indices in blocks:
+                # Split block indices into basis and target indices
+                b_local = [i for i in block_indices if i < n_basis]
+                t_local = [i - n_basis for i in block_indices if i >= n_basis]
+
+                if not t_local:
+                    continue  # No targets in this block
+
+                # Extract sub-matrices (only relevant columns)
+                if b_local:
+                    sub_basis = basis[b_local]
+                else:
+                    sub_basis = np.zeros((0, basis.shape[1]), dtype=basis.dtype)
+                sub_targets = targets[t_local]
+
+                # Find relevant columns (non-zero in this block)
+                block_rows = sub_basis if sub_basis.shape[0] > 0 else sub_targets
+                all_block = np.vstack([sub_basis, sub_targets]) if sub_basis.shape[0] > 0 else sub_targets
+                active_cols = np.where(np.any(all_block, axis=0))[0]
+
+                if len(active_cols) == 0:
+                    # All-zero block — targets are trivially dependent (zero vectors)
+                    continue
+
+                # Solve the sub-problem on reduced column space
+                sub_b = sub_basis[:, active_cols] if sub_basis.shape[0] > 0 else np.zeros((0, len(active_cols)), dtype=basis.dtype)
+                sub_t = sub_targets[:, active_cols]
+
+                sub_coeffs, sub_dep, sub_new = _solve_linear_decomposition_core(
+                    sub_b, sub_t, reduce_weight
+                )
+
+                # Map results back to global indices
+                for local_k, global_k in enumerate(t_local):
+                    is_dependent[global_k] = sub_dep[local_k]
+                    if sub_dep[local_k]:
+                        for local_m, global_m in enumerate(b_local):
+                            coeffs[global_k, global_m] = sub_coeffs[local_k, local_m]
+
+                for local_idx in sub_new:
+                    new_basis_indices.append(t_local[local_idx])
+
+            return coeffs, is_dependent, new_basis_indices
+
+    # --- Fallback: single block (no block structure or empty basis) ---
+    return _solve_linear_decomposition_core(basis, targets, reduce_weight)
+
+
+def _solve_linear_decomposition_core(
+    basis: np.ndarray,
+    targets: np.ndarray,
+    reduce_weight: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, List[int]]:
+    """Core RREF-based linear decomposition (single block)."""
     if basis.shape[0] == 0:
         system = targets.T
         n_basis = 0

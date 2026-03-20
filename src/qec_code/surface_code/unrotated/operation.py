@@ -145,7 +145,8 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
     # Fold-transversal gates
     # ------------------------------------------------------------------
 
-    def fold_transversal_hadamard(self, builder: CircuitBuilder, patch: QECPatch):
+    def fold_transversal_hadamard(self, builder: CircuitBuilder, patch: QECPatch,
+                                   noiseless: bool = False):
         """
         Implement the logical Hadamard H_L via fold-transversal gate.
 
@@ -158,6 +159,7 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         Args:
             builder: CircuitBuilder driving the experiment.
             patch:   The UnrotatedSurfaceCode patch (must be square).
+            noiseless: If True, tag gate instructions as noiseless.
         """
         system = builder.system
         diag_s, diag_sdag, mirror_pairs = _get_fold_yx_pairs(system, patch)
@@ -170,9 +172,10 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
             flat = [q for a, b in mirror_pairs for q in (a, b)]
             unitary.append("SWAP", flat)
 
-        builder.apply_unitary_block(unitary)
+        builder.apply_unitary_block(unitary, noiseless=noiseless)
 
-    def fold_transversal_s(self, builder: CircuitBuilder, patch: QECPatch):
+    def fold_transversal_s(self, builder: CircuitBuilder, patch: QECPatch,
+                            noiseless: bool = False):
         """
         Implement the logical phase gate S_L via fold-transversal gate.
 
@@ -188,6 +191,7 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         Args:
             builder: CircuitBuilder driving the experiment.
             patch:   The UnrotatedSurfaceCode patch (must be square).
+            noiseless: If True, tag gate instructions as noiseless.
         """
         system = builder.system
         diag_s, diag_sdag, mirror_pairs = _get_fold_yx_pairs(system, patch)
@@ -200,7 +204,7 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         for a, b in mirror_pairs:
             unitary.append("CZ", [a, b])
 
-        builder.apply_unitary_block(unitary)
+        builder.apply_unitary_block(unitary, noiseless=noiseless)
 
     def fold_transversal_s_dag(self, builder: CircuitBuilder, patch: QECPatch,
                                noiseless: bool = False):
