@@ -78,4 +78,87 @@ A record of significant design decisions, solved challenges, and architectural m
 - Incremental RREF (structured gate transformations → incremental decomposition updates)
 - Stim-native detector computation (bypass tracker RREF entirely for standard circuits)
 
+**Implemented**: Block-diagonal RREF via Union-Find in `solve_linear_decomposition`. Auto-detects independent blocks and dispatches per-block RREF. Build time results: d=3 (12s→5s), d=5 (603s→167s). Transparent to all callers; all 31 tests pass.
+
 **Key files**: `src/ir/tracker.py` (`process_mid_measurement`), `src/utils/linear_algebra.py` (`solve_linear_decomposition`, `row_echelon`)
+
+---
+
+## Open Problems — Tracker Extensions
+
+### Rotated Surface Code Coupler + Distillation
+
+Rotated surface code lattice surgery coupler has different construction from unrotated (different boundary geometry). Needed for rotated SC distillation circuits. Requires implementing `RotatedMultiPatchCoupler` following the unrotated pattern, then building LS/TG distillation experiments for rotated codes.
+
+### Flag Qubit Support
+
+Current tracker assumes a simple data-qubit + syndrome-qubit model. Flag qubits are ancilla qubits used to detect high-weight errors during syndrome extraction (e.g., in heavy-hex architectures or flag-based FTQEC). Supporting flags requires the tracker to handle additional measurement rounds with conditional error propagation paths.
+
+### Syndrome Qubit Operations (Mid-SE Gate Insertion)
+
+**Specific blocker**: `fold_transversal_s` on rotated surface code. The rotated SC implementation of S_L requires CZ gates applied to **syndrome qubits** mid-SE-round, at the point where the rotated code momentarily looks like an unrotated code. The current tracker assumes syndrome qubits are passive (reset → CNOT schedule → measure), and any gate on a syndrome qubit outside this pattern breaks the back-propagation logic.
+
+**Possible approaches**:
+1. Temporarily reclassify syndrome qubits as data qubits during the gate, then restore
+2. Extend the tracker's SE model to allow "gate insertion points" between CNOT layers
+3. Implement as a custom SE block that inlines the CZ gates within the extraction schedule
+
+---
+
+## Performance Roadmap
+
+### C++/Native RREF Backend
+
+The GF(2) Gaussian elimination (`row_echelon` in `linear_algebra.py`) operates on numpy bool arrays with Python-level loops. A C++ implementation with:
+- Bitwise row operations (64 columns per uint64 word → 64x fewer operations)
+- Cache-friendly memory layout (row-major, aligned)
+- OpenMP parallelization for independent block processing
+
+Could provide 100-1000x speedup over current Python+numpy. This would make d=7 TG distillation build times sub-minute and d=9+ feasible.
+
+**Implementation options**:
+- pybind11 extension module (cleanest integration)
+- Cython with typed memoryviews (easier build, good performance)
+- ctypes wrapper around standalone C library (simplest, no build dependency)
+
+---
+
+## Strategic Directions
+
+### Direction 1: Protocol Library + Benchmark Suite
+
+Expand LightStim into a comprehensive QEC protocol library with standardized benchmarks.
+
+**Goals**:
+- Every major QEC protocol (memory, CNOT, lattice surgery, transversal gates, distillation, color codes) as a reproducible benchmark with fixed parameters and standard output format
+- Tutorial-style documentation: each protocol = 1 notebook (interactive) + 1 eval script (batch)
+- pip-installable package (`pyproject.toml`) for low barrier to entry
+- "Protocol gallery" for the QEC community — and as structured training data for AI-assisted QEC research
+
+**Implemented protocols**:
+- Memory experiment (rotated/unrotated/toric SC, BB code)
+- Transversal CNOT (rotated/unrotated/toric SC)
+- Lattice surgery CNOT (unrotated SC, 2-patch and N-patch)
+- GHZ state preparation
+- State injection + unencode (rotated/unrotated SC)
+- Fold-transversal H, S, S† (unrotated SC)
+- LS distillation 7-to-1 |Y⟩ (lattice surgery, Steane code)
+- TG distillation 7-to-1 |Y⟩ (transversal gates, Zhou et al.)
+
+**Pending protocols**:
+- Rotated SC lattice surgery coupler + distillation
+- Fold-transversal S on rotated SC (blocked by syndrome qubit ops)
+- Color code experiments (6-6-6 hexagonal, triangular)
+- 15-to-1 |T⟩ distillation factory
+- Code switching / code enlarging
+
+### Direction 2: Industrial-Grade Performance
+
+Scale LightStim to handle large circuits (d=9+, 50+ patches) with acceptable build times.
+
+**Priority roadmap**:
+1. **C++ RREF backend** — single biggest bottleneck; 100-1000x via bitwise GF(2) ops
+2. **Sparse tableau storage** — rows have O(d) non-zeros in O(d²) columns
+3. **Circuit caching** — build once, reload for subsequent experiments (`--load-circuits`)
+4. **Incremental RREF** — exploit structured gate transformations
+5. **Packaging + CI** — `pyproject.toml`, GitHub Actions, automated testing + benchmarks

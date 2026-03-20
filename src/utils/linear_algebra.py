@@ -3,7 +3,33 @@ from typing import Tuple, List
 
 # Linear Algebra Utils
 
+# --- Optional C++ acceleration ---
+# Try to import the bitpacked GF(2) RREF backend.
+# Falls back to pure Python if not available (e.g., no C++ compiler).
+# Build with: python src/utils/cpp/build.py
+_CPP_AVAILABLE = False
+try:
+    from src.utils.cpp._gf2_rref_cpp import row_echelon as _row_echelon_cpp
+    _CPP_AVAILABLE = True
+except ImportError:
+    try:
+        # Also try relative import for when running from project root
+        from .cpp._gf2_rref_cpp import row_echelon as _row_echelon_cpp
+        _CPP_AVAILABLE = True
+    except (ImportError, SystemError):
+        _row_echelon_cpp = None
+
+
 def row_echelon(mat, reduced=False):
+    """GF(2) (reduced) row echelon form. Uses C++ backend if available."""
+    if _CPP_AVAILABLE:
+        mat_u8 = np.ascontiguousarray(mat, dtype=np.uint8)
+        rref, rank, transform, pivot_cols = _row_echelon_cpp(mat_u8, reduced)
+        return [np.asarray(rref), rank, np.asarray(transform), list(pivot_cols)]
+    return _row_echelon_python(mat, reduced)
+
+
+def _row_echelon_python(mat, reduced=False):
     r"""Converts a binary matrix to (reduced) row echelon form via Gaussian Elimination, 
     also works for rank-deficient matrix. Unlike the make_systematic method,
     no column swaps will be performed.
