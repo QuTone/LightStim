@@ -107,6 +107,16 @@ class CircuitBuilder:
         """
         self.tracker.stabilizer_canonicalization(self.system, stabilizer_uids)
 
+    def logical_canonicalization(self, canonical_logicals: Dict[int, "np.ndarray"]) -> None:
+        """
+        Replace logical operators with preferred canonical representatives.
+        Call after stabilizer_canonicalization(), before SE.
+
+        Args:
+            canonical_logicals: {logical_index: pauli_vector (2n,)}
+        """
+        self.tracker.logical_canonicalization(canonical_logicals)
+
     # --------------------------------------------------------------------------
     # B. Syndrome Extraction
     # --------------------------------------------------------------------------
@@ -133,12 +143,19 @@ class CircuitBuilder:
 
         # Append clean chunk to actual circuit
         self.circuit += circuit_chunk
-        
+
         total_measurements = self.tracker.total_measurements
         meas_rec_to_idx_map_update = {total_measurements + i: syn_idx for i, syn_idx in enumerate(syn_qubit_indices)}
         self.tracker.meas_rec_to_idx_map.update(meas_rec_to_idx_map_update)
         # Ask Tracker to process it (Update Tableau + Generate Detectors)
         if self.if_detector:
+            # Time shift before first-round detectors so that each call to
+            # apply_syndrome_extraction occupies its own time slice.  Without
+            # this, consecutive calls (e.g. surface-only SE then combined SE)
+            # place their detectors at the same t coordinate, confusing the
+            # decoder's matching graph.
+            self.circuit.append("SHIFT_COORDS", [], [0, 0, 1])
+
             self.tracker.process_mid_measurement(
                 circuit=self.circuit,
                 back_propagated_paulis=back_propagated_paulis,
@@ -305,7 +322,8 @@ class CircuitBuilder:
             self.tracker.process_data_measurement(
                 circuit=self.circuit,
                 final_paulis=final_paulis,
-                idx_to_coord_map=self.system.qubit_coords
+                idx_to_coord_map=self.system.qubit_coords,
+                syndrome_qubit_indices=self.system.syndrome_indices,
             )
 
         # Remove measured qubits from active set (ready for reuse)

@@ -204,15 +204,137 @@ class SyndromeTracker:
                 "Unitary encoding circuit may be incorrect."
             )
     
+    def logical_canonicalization(
+        self,
+        canonical_logicals: Dict[int, np.ndarray],
+    ) -> None:
+        """
+        Replace logical operators with preferred canonical representatives.
+
+        For each (logical_index, canonical_pauli) pair:
+          1. Verify that canonical_pauli is in span(stabilizers + logicals)
+             but NOT in span(stabilizers) alone — i.e. it is a genuine logical.
+          2. Replace the corresponding logical row and update remaining logicals
+             to eliminate the canonical component (RREF on the logical subspace).
+
+        This allows choosing minimal-weight logical representatives that lead
+        to lower-weight observables in the detector error model.
+
+        Args:
+            canonical_logicals: {logical_index: pauli_vector} where
+                logical_index is the row index in self.logicals (0-based),
+                pauli_vector is a (2*num_qubits,) GF(2) array.
+        """
+        n = self.num_qubits
+        num_stabs = self.stabilizers.count
+        num_logs = self.logicals.count
+
+        if num_logs == 0:
+            raise ValueError("No logicals to canonicalize.")
+
+        # Combined tableau: [stabilizers; logicals]
+        full_matrix = np.vstack([self.stabilizers.matrix, self.logicals.matrix])
+        full_records = self.stabilizers.records + self.logicals.records
+
+        for log_idx, canonical_pauli in canonical_logicals.items():
+            if log_idx < 0 or log_idx >= num_logs:
+                raise ValueError(
+                    f"Logical index {log_idx} out of range [0, {num_logs})."
+                )
+
+            canonical_pauli = np.asarray(canonical_pauli, dtype=np.uint8).reshape(1, -1)
+            if canonical_pauli.shape[1] != 2 * n:
+                raise ValueError(
+                    f"Canonical pauli has {canonical_pauli.shape[1]} columns, "
+                    f"expected {2 * n}."
+                )
+
+            # Step 1: Verify it's a valid logical (in full span but not in stab span)
+            # Check against stabilizers only
+            _, stab_dep, _ = solve_linear_decomposition(
+                basis=self.stabilizers.matrix,
+                targets=canonical_pauli,
+                reduce_weight=False,
+            )
+            if stab_dep[0]:
+                raise ValueError(
+                    f"Canonical logical {log_idx} is in span(stabilizers) — "
+                    "it's a stabilizer, not a logical."
+                )
+
+            # Check against full tableau
+            coeffs_full, full_dep, _ = solve_linear_decomposition(
+                basis=full_matrix,
+                targets=canonical_pauli,
+                reduce_weight=False,
+            )
+            if not full_dep[0]:
+                raise ValueError(
+                    f"Canonical logical {log_idx} is NOT in span(stabilizers + logicals) — "
+                    "it does not belong to the current code space."
+                )
+
+            # Step 2: Decompose and compute records for the canonical logical
+            # c = sum of contributing rows from full_matrix
+            contributing_indices = np.where(coeffs_full[0])[0]
+            canonical_records = []
+            rec_set = set()
+            for idx in contributing_indices:
+                rec_set.symmetric_difference_update(full_records[idx])
+            canonical_records = list(rec_set)
+
+            # Replace the target logical row
+            abs_idx = num_stabs + log_idx  # index in full_matrix
+            old_pauli = full_matrix[abs_idx].copy()
+            old_records = full_records[abs_idx]
+
+            full_matrix[abs_idx] = canonical_pauli[0]
+            full_records[abs_idx] = canonical_records
+
+            # Step 3: Update other logical rows to eliminate the canonical component.
+            # For each other logical row l_j, if l_j has a component along the
+            # old canonical direction, XOR it out.
+            # We do this by checking if l_j + canonical is simpler (in stab span
+            # minus one dimension) — but a simpler approach: just XOR any logical
+            # row that anti-commutes with the symplectic partner, or use RREF.
+            #
+            # Practical approach: for each other logical j != log_idx,
+            # decompose l_j against the new full_matrix. If it depends on the
+            # canonical row, XOR to remove that dependence.
+            for j in range(num_logs):
+                if j == log_idx:
+                    continue
+                j_abs = num_stabs + j
+                row_j = full_matrix[j_abs]
+                # Check if row_j has overlap with canonical in the logical subspace
+                # by seeing if (row_j XOR canonical) is in span(stabs + other logicals)
+                test = (row_j ^ canonical_pauli[0]).reshape(1, -1)
+                _, test_dep, _ = solve_linear_decomposition(
+                    basis=self.stabilizers.matrix,
+                    targets=test,
+                    reduce_weight=False,
+                )
+                # If row_j XOR canonical is a stabilizer, then row_j has the same
+                # logical component as canonical — need to XOR them
+                if test_dep[0]:
+                    full_matrix[j_abs] ^= canonical_pauli[0]
+                    rec_set_j = set(full_records[j_abs])
+                    rec_set_j.symmetric_difference_update(canonical_records)
+                    full_records[j_abs] = list(rec_set_j)
+
+        # Write back
+        self.logicals.matrix = full_matrix[num_stabs:]
+        self.logicals.records = full_records[num_stabs:]
+
     def process_initialization(self, init_tableau: np.ndarray):
         """
         Registers new stabilizers from initialization into the tracker.
-        
+
         For t=0 (System Start): Populates the empty tableau.
         For New Patch: Appends new independent stabilizers to the existing set.
-        
+
         Args:
-            init_tableau: Shape (k, 2n). 
+            init_tableau: Shape (k, 2n).
         """
         self.stabilizers.add_stabilizers(init_tableau)
 
@@ -615,17 +737,25 @@ class SyndromeTracker:
             self.stabilizer_with_logical_components -= swlc_to_remove
 
     def process_data_measurement(self,
-                                  circuit: stim.Circuit, 
+                                  circuit: stim.Circuit,
                                   final_paulis: np.ndarray,
-                                  idx_to_coord_map: Dict[int, Tuple[float, float]]):
+                                  idx_to_coord_map: Dict[int, Tuple[float, float]],
+                                  syndrome_qubit_indices: set = None):
         """
         Handles Final Data Qubit Measurements using Gaussian Elimination.
-        
+
         Args:
             circuit: Stim circuit to append to.
             final_paulis: (M, 2N) numpy array. The measurement basis.
                           Does NOT need to be single-qubit Paulis (can be general).
-            idx_to_coord_map: Mapping from qubit index to coordinate. Determine the coordinate of the detector in the decoding graph.
+            idx_to_coord_map: Mapping from qubit index to coordinate. Determines
+                the coordinate of the detector in the decoding graph.
+            syndrome_qubit_indices: Optional set of syndrome (ancilla) qubit indices.
+                When provided, historical measurement records that map to a syndrome
+                qubit take coordinate priority over data qubit fallback — aligning
+                final-round detectors with the syndrome grid rather than the data grid.
+                Coordinates are deduplicated: if a syndrome coord is already used by
+                a previous detector, the data qubit fallback is applied instead.
         """
 
         num_new_meas = final_paulis.shape[0]
@@ -699,6 +829,7 @@ class SyndromeTracker:
 
         num_rows = full_matrix.shape[0]
         logical_observable_idx = 0
+        _used_final_coords: set = set()  # dedup: each final detector gets a unique (x,y) coord
         for k in range(num_rows):
             # Condition 1: Must NOT be destroyed (anti-commuted).
             if k in destroyed_rows:
@@ -718,8 +849,11 @@ class SyndromeTracker:
                 args.append(stim.target_rec(stim_rec_target))
 
             # 2. Historical Record Components — use set-based XOR for O(1) toggle
-            det_coord = None
+            det_coord = None       # best coord from data-qubit Pauli support
+            syndrome_coord = None  # coord from a syndrome qubit historical record
             args_set = set(args)
+            row_k = full_matrix[k]
+            n_q = self.num_qubits
             for r in full_records[k]:
                 if r < 0:
                     continue
@@ -730,15 +864,19 @@ class SyndromeTracker:
                     args_set.add(rec_to_append)
                 qubit_idx = self.meas_rec_to_idx_map.get(r)
                 if qubit_idx is not None and qubit_idx in idx_to_coord_map:
-                    # Only use this coord if the qubit is in this row's support
-                    # (avoids inheriting coords from unrelated syndrome qubits via row updates)
-                    row_k = full_matrix[k]
-                    n_q = self.num_qubits
-                    if row_k[qubit_idx] or row_k[n_q + qubit_idx]:
-                        det_coord = idx_to_coord_map[qubit_idx]
+                    if syndrome_qubit_indices and qubit_idx in syndrome_qubit_indices:
+                        # Syndrome qubit: record directly which stabilizer was measured.
+                        # Syndrome qubits are NOT in the stabilizer Pauli support, so we
+                        # skip the support check and track this coord separately.
+                        syndrome_coord = idx_to_coord_map[qubit_idx]
+                    else:
+                        # Data / other qubit: only use if in this row's Pauli support
+                        # (avoids inheriting coords from unrelated qubits via row updates).
+                        if row_k[qubit_idx] or row_k[n_q + qubit_idx]:
+                            det_coord = idx_to_coord_map[qubit_idx]
             args = list(args_set)
 
-            # Fallback when no syndrome records (e.g. X stabilizers with Z-only SE, final X measure)
+            # Fallback when no data-qubit coord found via support check
             if det_coord is None:
                 row = full_matrix[k]
                 n = self.num_qubits
@@ -752,8 +890,14 @@ class SyndromeTracker:
                     else next(iter(idx_to_coord_map.values()), (0, 0))
                 )
 
+            # Prefer syndrome coord (aligns final detectors with the syndrome grid).
+            # Fall back to data coord if this syndrome position is already taken.
+            if syndrome_coord is not None and syndrome_coord not in _used_final_coords:
+                det_coord = syndrome_coord
+
             # 3. Output:
             if k < num_stabs and k not in self.stabilizer_with_logical_components:
+                _used_final_coords.add(det_coord)
                 coords = list(det_coord) + [1]
                 _append_detector(
                     circuit, args, coords,
