@@ -6,6 +6,9 @@ CNOT schedule (optimal from Lee et al., color-code-stim).
 Each hexagonal face has:
 - Z-ancilla: data qubits control ancilla (CNOT data→anc)
 - X-ancilla: ancilla controls data qubits (CNOT anc→data)
+
+Uses face['data_neighbors'] for neighbor lookup instead of coordinate
+offsets, making the SE block coordinate-system agnostic.
 """
 
 import stim
@@ -21,12 +24,9 @@ class ColorCodeExtractionBlock:
     Optimal schedule A = [2,3,6,5,4,1; 3,4,7,6,5,2] from Lee et al.
     """
 
-    # 6 offsets from face center to data qubit vertices (same for X and Z).
-    OFFSETS = [(-2, 1), (2, 1), (4, 0), (2, -1), (-2, -1), (-4, 0)]
-
     # 7-timeslice schedule.
-    # Each entry: (z_position_index_or_None, x_position_index_or_None)
-    # Position index into OFFSETS array.
+    # Each entry: (z_neighbor_index_or_None, x_neighbor_index_or_None)
+    # Indices into face['data_neighbors'] (0-5, matching NEIGHBOR_OFFSETS).
     # Optimal schedule from Lee et al.: A = [2,3,6,5,4,1, 3,4,7,6,5,2]
     # Z-positions [0-5] → timeslices [2,3,6,5,4,1]
     # X-positions [6-11] → timeslices [3,4,7,6,5,2]
@@ -49,7 +49,7 @@ class ColorCodeExtractionBlock:
     def _extract_color_code_params(self):
         """Extract color code parameters from the patch in the system."""
         for name, (patch, _) in self.system.patches.items():
-            if hasattr(patch, 'faces') and hasattr(patch, 'FACE_OFFSETS'):
+            if hasattr(patch, 'faces') and hasattr(patch, 'NEIGHBOR_OFFSETS'):
                 self._patch = patch
                 self._faces = patch.faces
                 return
@@ -72,33 +72,29 @@ class ColorCodeExtractionBlock:
 
             # Z-stabilizer CNOTs (data → ancilla)
             if z_pos is not None:
-                offset = self.OFFSETS[z_pos]
                 for face in self._faces:
-                    cx, cy = face['center']
-                    data_coord = self._patch.snap_coord(
-                        (cx + offset[0], cy + offset[1])
-                    )
-                    data_key = self._patch.get_grid_key(data_coord)
-                    if data_key in self.system.grid_map:
-                        data_idx = self.system.grid_map[data_key]
-                        if data_idx in self.system.data_indices:
-                            z_anc_idx = face['z_ancilla_idx']
-                            cnot_targets.extend([data_idx, z_anc_idx])
+                    neighbor = face['data_neighbors'][z_pos]
+                    if neighbor is not None:
+                        data_coord, _ = neighbor
+                        data_key = self._patch.get_grid_key(data_coord)
+                        if data_key in self.system.grid_map:
+                            data_idx = self.system.grid_map[data_key]
+                            if data_idx in self.system.data_indices:
+                                z_anc_idx = face['z_ancilla_idx']
+                                cnot_targets.extend([data_idx, z_anc_idx])
 
             # X-stabilizer CNOTs (ancilla → data)
             if x_pos is not None:
-                offset = self.OFFSETS[x_pos]
                 for face in self._faces:
-                    cx, cy = face['center']
-                    data_coord = self._patch.snap_coord(
-                        (cx + offset[0], cy + offset[1])
-                    )
-                    data_key = self._patch.get_grid_key(data_coord)
-                    if data_key in self.system.grid_map:
-                        data_idx = self.system.grid_map[data_key]
-                        if data_idx in self.system.data_indices:
-                            x_anc_idx = face['x_ancilla_idx']
-                            cnot_targets.extend([x_anc_idx, data_idx])
+                    neighbor = face['data_neighbors'][x_pos]
+                    if neighbor is not None:
+                        data_coord, _ = neighbor
+                        data_key = self._patch.get_grid_key(data_coord)
+                        if data_key in self.system.grid_map:
+                            data_idx = self.system.grid_map[data_key]
+                            if data_idx in self.system.data_indices:
+                                x_anc_idx = face['x_ancilla_idx']
+                                cnot_targets.extend([x_anc_idx, data_idx])
 
             if cnot_targets:
                 self.circuit.append("CNOT", cnot_targets)

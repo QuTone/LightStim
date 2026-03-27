@@ -206,12 +206,11 @@ class CudaQxDecoder(sinter.Decoder):
             "error_rate_vec": probs,
             "use_sparsity":   True,
             "use_osd":        True,
-            "bp_method":      1,          # min_sum
             "osd_method":     3,          # osd_cs
-            "scale_factor":   0,
             "max_iterations": 1000,
             "osd_order":      10,
             "bp_batch_size":  1_000,
+            "scale_factor":   0,          # ms_scaling_factor=0 for min_sum
             **_unified_to_gpu(self._params),
         }
         decoder = qec.get_decoder(self._decoder_name, H, **params)

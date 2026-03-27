@@ -137,49 +137,96 @@ class NoiseInjector:
         return injector
 
     @classmethod
-    def from_XZ_biased(cls, conifg: NoiseConfig, data_qubit_indices: List[int]) -> 'NoiseInjector':
+    def from_XZ_biased(cls, config: NoiseConfig, data_qubit_indices: List[int]) -> 'NoiseInjector':
         """
         Model 4: Bit/Phase-flip (Biased Circuit-level)
         - Noise: Similar to circuit-level, but uses GeneralPauliAfterGate for gates.
         - Assumption: User provides 'p_1q_x', 'p_1q_z', etc. in model.custom_params.
         """
-        injector = cls(conifg)
-        
+        injector = cls(config)
+
         # 1. Idling (still typically depolarizing, or you can write a PauliIdleRule)
         injector.add_rule(TaggedIdling(
             target_qubits=data_qubit_indices,
             param_name="p_idle",
             tag="SE_start"
         ))
-        
+
         # 2. Measurement & Reset (Using standard flip rules)
         injector.add_rule(FlipBeforeMeasurement(param_name="p_meas"))
         injector.add_rule(FlipAfterReset(param_name="p_reset"))
-        
+
         # 3. Biased 1-Qubit Gate Noise
-        # Maps Stim gate noise to specific custom parameters
-        injector.add_rule(GeneralPauliAfterGate(
+        # Separate X_ERROR + Z_ERROR for consistency with 2Q gate treatment.
+        injector.add_rule(DepolarizeAfterGate(
             target_gates=["H", "R", "RX", "RY", "RZ", "X", "Y", "Z", "S", "S_DAG"],
-            params_map={
-                "X": "p_1q_x", # User defines this in custom_params
-                "Z": "p_1q_z"
-            }
+            param_name="p_1q_x",
+            noise_op="X_ERROR"
         ))
-        
+        injector.add_rule(DepolarizeAfterGate(
+            target_gates=["H", "R", "RX", "RY", "RZ", "X", "Y", "Z", "S", "S_DAG"],
+            param_name="p_1q_z",
+            noise_op="Z_ERROR"
+        ))
+
         # 4. Biased 2-Qubit Gate Noise
-        # Typically dominantly ZZ error, or IX/XI/XX depending on hardware
-        injector.add_rule(GeneralPauliAfterGate(
+        # Independent X_ERROR + Z_ERROR on each qubit after 2Q gates.
+        # Using separate X_ERROR/Z_ERROR instead of PAULI_CHANNEL_1/2 avoids
+        # Stim's DEM composite-error symptom limit.
+        injector.add_rule(DepolarizeAfterGate(
             target_gates=["CX", "CZ", "SWAP"],
-            params_map={
-                "IX": "p_2q_ix",
-                "XI": "p_2q_xi",
-                "XX": "p_2q_xx",
-                "ZZ": "p_2q_zz"
-                # Add others as needed
-            }
+            param_name="p_2q_x",
+            noise_op="X_ERROR"
         ))
-        
+        injector.add_rule(DepolarizeAfterGate(
+            target_gates=["CX", "CZ", "SWAP"],
+            param_name="p_2q_z",
+            noise_op="Z_ERROR"
+        ))
+
         return injector
+
+    @staticmethod
+    def compute_XZ_biased_params(p_1q: float, p_2q: float, p_meas: float, p_reset: float, eta: float) -> NoiseConfig:
+        """
+        Compute NoiseConfig for XZ-biased noise model from physical error rates and bias ratio.
+
+        Treats X and Z errors as independent channels on each qubit.
+        - 1-qubit gates: p_x = eta * p_z, p_x + p_z = p_1q.
+        - 2-qubit gates: each qubit independently gets X/Z errors with the same
+          bias ratio. Per-qubit rates satisfy: 2*(p_x + p_z) ≈ p_2q (small-p approx).
+
+        Args:
+            p_1q:  Total 1-qubit gate error rate.
+            p_2q:  Total 2-qubit gate error rate.
+            p_meas: Measurement error rate (symmetric flip).
+            p_reset: Reset error rate (symmetric flip).
+            eta:   Bias ratio p_X / p_Z (>1 means X-biased, <1 means Z-biased).
+
+        Returns:
+            NoiseConfig with custom_params filled for from_XZ_biased().
+        """
+        # 1-qubit gates: p_x + p_z = p_1q, p_x = eta * p_z
+        p_1q_z = p_1q / (1 + eta)
+        p_1q_x = eta * p_1q_z
+
+        # 2-qubit gates: independent per-qubit errors.
+        # Two qubits each get (p_x, p_z), so total 2Q error rate ≈ 2*(p_x + p_z).
+        # Solve: 2*(1 + eta)*p_z_per_qubit = p_2q
+        p_2q_z = p_2q / (2 * (1 + eta))
+        p_2q_x = eta * p_2q_z
+
+        return NoiseConfig(
+            p_meas=p_meas,
+            p_reset=p_reset,
+            p_idle=0.0,
+            custom_params={
+                "p_1q_x": p_1q_x,
+                "p_1q_z": p_1q_z,
+                "p_2q_x": p_2q_x,
+                "p_2q_z": p_2q_z,
+            },
+        )
     
     # =========================================================================
     # Compose Rules into for Noise Injector for Custom Error Models

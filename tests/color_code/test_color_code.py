@@ -125,15 +125,12 @@ class TestColorCodeSEBlock:
 
         for tick_idx, (z_pos, x_pos) in enumerate(ColorCodeExtractionBlock.SCHEDULE):
             used = set()
-            offsets = ColorCodeExtractionBlock.OFFSETS
 
             if z_pos is not None:
-                dx, dy = offsets[z_pos]
                 for face in code.faces:
-                    cx, cy = face['center']
-                    data_coord = code.snap_coord((cx + dx, cy + dy))
-                    if data_coord in code.index_map:
-                        data_idx = code.index_map[data_coord]
+                    neighbor = face['data_neighbors'][z_pos]
+                    if neighbor is not None:
+                        data_coord, data_idx = neighbor
                         if data_idx in code.data_indices:
                             assert data_idx not in used, f"Collision at tick {tick_idx}"
                             assert face['z_ancilla_idx'] not in used, f"Collision at tick {tick_idx}"
@@ -141,12 +138,10 @@ class TestColorCodeSEBlock:
                             used.add(face['z_ancilla_idx'])
 
             if x_pos is not None:
-                dx, dy = offsets[x_pos]
                 for face in code.faces:
-                    cx, cy = face['center']
-                    data_coord = code.snap_coord((cx + dx, cy + dy))
-                    if data_coord in code.index_map:
-                        data_idx = code.index_map[data_coord]
+                    neighbor = face['data_neighbors'][x_pos]
+                    if neighbor is not None:
+                        data_coord, data_idx = neighbor
                         if data_idx in code.data_indices:
                             assert data_idx not in used, f"Collision at tick {tick_idx}"
                             assert face['x_ancilla_idx'] not in used, f"Collision at tick {tick_idx}"

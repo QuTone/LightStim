@@ -45,7 +45,6 @@ def _decode_worker_cpu(
     decoder = get_decoder(decoder_name, backend=decoder_backend, **decoder_params)
     dem = circuit.detector_error_model(
         decompose_errors=getattr(decoder, "decompose_errors", False),
-        approximate_disjoint_errors=True,
     )
     compiled = decoder.compile_decoder_for_dem(dem=dem)
     sampler = dem.compile_sampler(seed=os.getpid() + worker_id * 10000)

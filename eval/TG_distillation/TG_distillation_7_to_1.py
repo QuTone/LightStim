@@ -404,6 +404,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=50_000)
     parser.add_argument("--build-only", action="store_true",
                         help="Only build the circuit (no simulation)")
+    parser.add_argument("--load-circuits", action="store_true",
+                        help="Load pre-built circuits from eval/TG_distillation/circuits/ instead of building")
     args = parser.parse_args()
 
     out_dir = os.path.dirname(os.path.abspath(__file__))
@@ -415,25 +417,65 @@ if __name__ == "__main__":
         print(f"Building d={d}, init_rounds={rounds}, gate_se_rounds={args.gate_se_rounds}")
         print(f"{'='*60}")
 
-        t_build_start = time.perf_counter()
-        circuit, circuit_info, system = build_distillation_circuit(
-            d, rounds, r=args.gate_se_rounds)
-        t_build = time.perf_counter() - t_build_start
+        circuit_dir = os.path.join(out_dir, "circuits")
+        circuit_path = os.path.join(circuit_dir, f"TG_7to1_d{d}_r{args.gate_se_rounds}.stim")
+        transform_path = os.path.join(circuit_dir, f"TG_7to1_d{d}_r{args.gate_se_rounds}_obs.json")
 
-        print(f"Circuit: {circuit_info['num_qubits']} qubits, "
-              f"{circuit_info['num_detectors']} det, "
-              f"{circuit_info['num_observables']} obs "
-              f"(built in {t_build:.1f}s)")
+        if args.load_circuits and os.path.exists(circuit_path) and os.path.exists(transform_path):
+            # Load pre-built circuit + observable transform
+            t_build_start = time.perf_counter()
+            circuit = stim.Circuit.from_file(circuit_path)
+            with open(transform_path) as f:
+                obs_info = json.load(f)
+            T = np.array(obs_info['T'], dtype=int)
+            target_obs = obs_info['target_obs']
+            post_select_obs = obs_info['post_select_obs']
+            t_build = time.perf_counter() - t_build_start
 
-        # Noiseless verification
-        dets, obs = circuit.compile_detector_sampler().sample(
-            shots=100, separate_observables=True)
-        noiseless_ok = not np.any(dets) and not np.any(obs)
-        print(f"Noiseless check: {'OK' if noiseless_ok else 'FAIL'}")
+            circuit_info = {
+                'num_qubits': circuit.num_qubits,
+                'num_detectors': circuit.num_detectors,
+                'num_observables': circuit.num_observables,
+                'r': args.gate_se_rounds,
+            }
+            print(f"Circuit: {circuit_info['num_qubits']} qubits, "
+                  f"{circuit_info['num_detectors']} det, "
+                  f"{circuit_info['num_observables']} obs "
+                  f"(loaded from {circuit_path} in {t_build:.2f}s)")
+            print(f"  Target obs: {target_obs}, Post-select obs: {post_select_obs}")
+        else:
+            # Build circuit from scratch
+            t_build_start = time.perf_counter()
+            circuit, circuit_info, system = build_distillation_circuit(
+                d, rounds, r=args.gate_se_rounds)
+            t_build = time.perf_counter() - t_build_start
 
-        # Observable analysis with GF(2) elimination
-        T, target_obs, post_select_obs, _, _ = analyze_observables(
-            circuit, system, target_patch_names=['W0'])
+            print(f"Circuit: {circuit_info['num_qubits']} qubits, "
+                  f"{circuit_info['num_detectors']} det, "
+                  f"{circuit_info['num_observables']} obs "
+                  f"(built in {t_build:.1f}s)")
+
+            # Noiseless verification
+            dets, obs = circuit.compile_detector_sampler().sample(
+                shots=100, separate_observables=True)
+            noiseless_ok = not np.any(dets) and not np.any(obs)
+            print(f"Noiseless check: {'OK' if noiseless_ok else 'FAIL'}")
+
+            # Observable analysis with GF(2) elimination
+            T, target_obs, post_select_obs, _, _ = analyze_observables(
+                circuit, system, target_patch_names=['W0'])
+
+            # Save circuit + transform for reuse
+            os.makedirs(circuit_dir, exist_ok=True)
+            with open(circuit_path, "w") as f:
+                f.write(str(circuit))
+            with open(transform_path, "w") as f:
+                json.dump({
+                    'T': T.tolist(),
+                    'target_obs': target_obs,
+                    'post_select_obs': post_select_obs,
+                }, f, indent=2)
+            print(f"Saved circuit to {circuit_path}")
 
         if args.build_only:
             print("(build-only mode, skipping simulation)")

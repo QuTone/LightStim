@@ -17,14 +17,15 @@ class MemoryExperiment:
     3. Injects Noise using the configured strategy.
     """
 
-    def __init__(self, 
+    def __init__(self,
                  qec_system: Any,  # The System/Geometry object
                  extraction_block_class: Type, # Class ref, e.g. RotatedSurfaceCodeExtractionBlock
                  rounds: int = 2,
                  noise_params: Optional[NoiseConfig] = None,
                  noise_model: Optional[str] = 'circuit_level',
                  basis: Literal['X', 'Z'] = 'Z',
-                 if_detector: bool = True):
+                 if_detector: bool = True,
+                 se_block_kwargs: Optional[dict] = None):
         """
         Args:
             qec_patch: The system configuration object (contains coords, indices, map).
@@ -33,6 +34,8 @@ class MemoryExperiment:
             noise_params: Parameters for noise injection.
             noise_model: Strategy string ('code_capacity', 'phenomenological', etc.)
             basis: Memory basis to preserve ('X' or 'Z').
+            se_block_kwargs: Extra keyword arguments passed to extraction_block_class constructor.
+                e.g. {'scheduling': 'parallel'} for RotatedSurfaceCodeExtractionBlock.
         """
         self.system = qec_system
         self.block_class = extraction_block_class
@@ -40,7 +43,8 @@ class MemoryExperiment:
         self.noise_params = noise_params
         self.noise_model = noise_model
         self.basis = basis.upper()
-        
+        self.se_block_kwargs = se_block_kwargs or {}
+
         # Internal state
         self.builder: Optional[CircuitBuilder] = None
         self.tracker: Optional[SyndromeTracker] = None
@@ -76,7 +80,7 @@ class MemoryExperiment:
         # Instantiate the block to get the unit-cell circuit (One Round)
         # We pass self.patch because the Block needs coordinate info
         print("Building syndrome extraction rounds...")
-        se_block = self.block_class(self.system)
+        se_block = self.block_class(self.system, **self.se_block_kwargs)
 
         # Apply the loop using Builder, construct detectors
         self.builder.apply_syndrome_extraction(

@@ -53,6 +53,12 @@ archive/
 # Local planning docs
 plan/
 
+# Paper (synced with Overleaf separately)
+paper/
+
+# Frontend (developed separately in Lovable)
+front-end/
+
 # Processing (temporary processing files)
 processing/
 external/

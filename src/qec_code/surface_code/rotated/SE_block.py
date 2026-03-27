@@ -6,61 +6,57 @@ import stim
 class RotatedSurfaceCodeExtractionBlock:
     """
     Generates the noiseless syndrome extraction circuit block for Rotated Surface Code.
-    
+
     This block represents ONE cycle of stabilizer measurements:
     1. Reset syndrome qubits.
-    2. Entangling gates (H, CNOTs) following the "Z" (or "N") scheduling pattern.
+    2. Entangling gates (H, CNOTs) following a configurable scheduling pattern.
     3. Measure syndrome qubits.
-    
+
     It relies on the 'system' object to provide coordinate-to-index mappings.
     NO NOISE is injected here; it is handled by an external noise_injector.
+
+    Args:
+        system: QECSystem with rotated surface code patch(es).
+        scheduling: CNOT scheduling variant.
+            'perpendicular' (default) — fault-tolerant zigzag, achieves full code distance.
+            'parallel' — non-FT zigzag, effective distance is halved due to hook errors.
     """
 
-    def __init__(self, system):
-        """
-        Args:
-            system: A rotated surface code patch.
-        """
+    SCHEDULES = {
+        'perpendicular': [
+            ((+1, +1), (+1, +1)),  # Tick 1: NE interaction
+            ((-1, +1), (+1, -1)),  # Tick 2: NW / SE interaction (X and Z go different directions)
+            ((+1, -1), (-1, +1)),  # Tick 3: SE / NW interaction (X and Z go different directions)
+            ((-1, -1), (-1, -1)),  # Tick 4: SW interaction
+        ],
+        'parallel': [
+            ((+1, +1), (+1, +1)),  # Tick 1: NE interaction
+            ((-1, +1), (-1, +1)),  # Tick 2: NW interaction (X and Z go same direction → hook error)
+            ((+1, -1), (+1, -1)),  # Tick 3: SE interaction (X and Z go same direction → hook error)
+            ((-1, -1), (-1, -1)),  # Tick 4: SW interaction
+        ],
+    }
+
+    def __init__(self, system, scheduling='perpendicular'):
         self.system = system
+        self.scheduling = scheduling
         self.circuit = stim.Circuit()
-        
-        # Build the circuit immediately upon instantiation
         self._build_circuit()
 
     def _build_circuit(self):
 
         # --- Step 1: Reset Syndrome Qubits ---
-        # Reset all syndrome qubits to |0> (Z basis)
         active_syn_indices = self.system.active_syndrome_indices
         self.circuit.append("R", sorted(active_syn_indices))
-        self.circuit.append("TICK", tag="SE_start") # DEPOLARIZE1 will be injected here on data qubits
+        self.circuit.append("TICK", tag="SE_start")
 
         # --- Step 2: Preparation (Hadamard on X-type syndromes) ---
-        # Transform X-syndrome qubits to |+> state to measure X operators
         active_x_syn_indices = self.system.active_syndrome_indices_x
         self.circuit.append("H", sorted(active_x_syn_indices))
         self.circuit.append("TICK")
 
         # --- Step 3: Entangling Gates (CNOT Scheduling) ---
-        # Standard Rotated Surface Code scheduling (4 ticks)
-        # Format: ((dx_x, dy_x), (dx_z, dy_z))
-        # dx_x/dy_x is the offset for X-stabilizer checks
-        # dx_z/dy_z is the offset for Z-stabilizer checks
-        # Perpendicular zigzag scheduling
-        canonical_tick_deltas = [
-            ((+1, +1), (+1, +1)), # Tick 1: NE interaction
-            ((-1, +1), (+1, -1)), # Tick 2: NW / SE interaction
-            ((+1, -1), (-1, +1)), # Tick 3: SE / NW interaction
-            ((-1, -1), (-1, -1))  # Tick 4: SW interaction
-        ]
-
-        # Parallel zigzag scheduling (not FT, half distsance)
-        # canonical_tick_deltas = [
-        #     ((+1, +1), (+1, +1)), # Tick 1: NE interaction
-        #     ((-1, +1), (-1, +1)), # Tick 2: NW / SE interaction
-        #     ((+1, -1), (+1, -1)), # Tick 3: SE / NW interaction
-        #     ((-1, -1), (-1, -1))  # Tick 4: SW interaction
-        # ]
+        canonical_tick_deltas = self.SCHEDULES[self.scheduling]
 
         # Get the active syndrome coordinates for X and Z stabilizers
         active_stabilizers_x = self.system.active_stabilizers_x

@@ -218,7 +218,6 @@ class SimulationPipeline:
 
         dem = circuit.detector_error_model(
             decompose_errors=getattr(decoder_instance, "decompose_errors", False),
-            approximate_disjoint_errors=True,
         )
         compiled = decoder_instance.compile_decoder_for_dem(dem=dem)
         sampler = dem.compile_sampler(seed=0)

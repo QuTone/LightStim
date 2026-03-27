@@ -162,3 +162,62 @@ Scale LightStim to handle large circuits (d=9+, 50+ patches) with acceptable bui
 3. **Circuit caching** — build once, reload for subsequent experiments (`--load-circuits`)
 4. **Incremental RREF** — exploit structured gate transformations
 5. **Packaging + CI** — `pyproject.toml`, GitHub Actions, automated testing + benchmarks
+
+---
+
+## Post-Paper Roadmap
+
+### Performance: Beyond RREF
+
+C++ RREF (bitpacked uint64) accelerates `row_echelon` by 27-94x, but total circuit build only improves 2-3x due to Amdahl's law — RREF is only 30-40% of build time. Remaining hot paths (profiling needed):
+
+1. **`check_commutativity`** — symplectic inner product, called per-measurement against full tableau. Currently numpy matmul. Could be bitpacked.
+2. **`process_unitary_block`** — Stim tableau → symplectic matrix → numpy matmul for tableau conjugation. Large matrix multiply on every gate.
+3. **`_get_back_propagated_pauli`** — Stim `Tableau.from_circuit(ignore_reset=True)` inversion. Stim-internal, hard to optimize externally.
+4. **Python loop overhead** — `process_mid_measurement` iterates measurements one-by-one with per-iteration numpy calls.
+
+**Strategy**: Profile with `cProfile` on a d=7 TG build to identify which of these dominates. Then targeted C++ acceleration of the top 1-2 bottlenecks. Full tracker C++ rewrite (2-4 weeks) only if incremental optimization plateaus.
+
+### New Protocols to Implement
+
+- ~~Color code 6-6-6 hexagonal memory~~ (DONE — 2026-03-12, space-multiplexed SE, MWPF decoder verified d=3→7)
+- Rotated SC lattice surgery coupler + distillation
+- 15-to-1 |T⟩ distillation factory (Zhou et al. ED Fig. 3)
+- Fold-transversal S on rotated SC (requires syndrome qubit operation support)
+- Color code transversal gates
+- Code switching (e.g., surface code ↔ color code)
+
+### Optional — Post-Paper Tasks (2026-03-26)
+
+These are **stretch goals** before paper submission. If time permits, do them; otherwise defer to after paper.
+
+1. **Rotated SC lattice surgery coupler** — rotated surface code版本的lattice surgery，目前只有unrotated版本
+2. **Rotated SC fold-transversal S gate** — 需要 syndrome qubit 上的 operation 支持
+3. **Color code Bell flagging SE circuit** — see implementation plan below
+4. **5-qubit code distillation / Golay-based code (GBC) on color code** — 高级distillation协议
+5. **Chromobius decoder integration for color code** — 需要 detector coordinate annotation
+
+### Color Code Flag Qubit SE — Implementation Plan (2026-03-26)
+
+**Difficulty**: Medium-low. Tracker core (`tracker.py`) does NOT need modification.
+
+**Key insight**: Flag qubits are just syndrome qubits that, after back-propagation, only have Pauli support on other syndrome qubits (not data qubits). The tracker's existing decomposition naturally handles this:
+- Flag measurement → back-propagated Pauli has zero data qubit support → empty decomposition → trivially deterministic → auto-generates DETECTOR with single measurement record
+- Syndrome measurement → back-propagated Pauli on data qubits → normal stabilizer decomposition → normal DETECTOR
+
+**Implementation steps**:
+1. **SE block**: Write `ColorCodeFlagExtractionBlock`. Flag qubits registered as `role='syndrome'`. Add CX gates between syndrome-syndrome (flag-syndrome entangling). Geometry lookup relaxed from `if target in data_indices` to `if target in qubit_indices` for flag connections.
+2. **Alternating X/Z rounds**: Color code flag circuits measure Z and X stabilizers in separate rounds. Combine both into a single REPEAT block so the tracker sees complete stabilizer coverage per combined round. Unmeasured stabilizer rows in a half-round simply don't get new measurement records — they're stale but valid (Pauli frame unchanged).
+3. **Verify**: Run noiseless memory experiment, check all detectors are valid (zero events on 1000 samples). Then inject noise, extract DEM, decode with MWPF.
+
+**What could go wrong**: The tracker's `process_first_round_detectors` / `process_repeated_round_detectors` may not handle partial stabilizer measurement gracefully (some rows have new records, others don't). If so, the fix is in how measurement records are diffed for REPEAT blocks, not in the core back-propagation/decomposition logic.
+
+**Paper impact**: If completed before deadline, adds two lines to Figure 4 (memory experiment): Color code space-multiplexed (current) vs flag-qubit SE scheduling. Demonstrates modular SE block replacement on a non-trivial code family.
+
+### Framework Maturity
+
+- `pyproject.toml` + pip installable package
+- Comprehensive test suite (target >80% coverage)
+- CI/CD with GitHub Actions (test both Python fallback and C++ backend)
+- API documentation (auto-generated from docstrings)
+- Tutorial notebooks: one per protocol, suitable as both documentation and AI training data

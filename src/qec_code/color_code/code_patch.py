@@ -4,10 +4,10 @@ Implements the 6-6-6 (hexagonal) color code with a triangular patch
 boundary. Each hexagonal face has two ancilla qubits (X-type and Z-type)
 for space-multiplexed syndrome extraction.
 
-Coordinate convention follows color-code-stim (Lee et al.):
-- Integer coordinates (x, y)
-- Data qubits at vertex positions, ancilla pairs at face centers
-- Three colored boundaries: Red (top), Green (left), Blue (right)
+Compact integer coordinate system:
+- Data qubits and syndrome pairs placed on an integer grid
+- Each face center splits into (sZ, sX) at consecutive x positions
+- Triangle points downward with red boundary on top
 """
 
 from typing import Tuple, Dict, List, Optional, Any
@@ -35,9 +35,17 @@ class ColorCode(QECPatch):
     >>> code = ColorCode(distance=7)   # [[37, 1, 7]]
     """
 
-    # 6 offsets from face center (x, y) to neighboring data qubit vertices.
-    # Ordered counterclockwise starting from upper-left.
-    FACE_OFFSETS = [(-2, 1), (2, 1), (4, 0), (2, -1), (-2, -1), (-4, 0)]
+    # Neighbor offsets in (row, position) space.
+    # Maps the 6 hex neighbors of a face, counterclockwise from lower-left.
+    # Index 0-5 matches the CNOT schedule positions in SE_block.
+    NEIGHBOR_OFFSETS = [
+        (1, -1),   # pos 0: one row down, one position left
+        (1,  0),   # pos 1: one row down, same position
+        (0,  1),   # pos 2: same row, one position right
+        (-1, 1),   # pos 3: one row up, one position right
+        (-1, 0),   # pos 4: one row up, same position
+        (0, -1),   # pos 5: same row, one position left
+    ]
 
     def _process_params(self):
         self.distance = self.params.get('distance')
@@ -66,72 +74,102 @@ class ColorCode(QECPatch):
         L = self.L
 
         # -------------------------------------------------------------------
-        # Phase 1: Geometry Registration
+        # Phase 1: Enumerate positions and assign compact coordinates
         # -------------------------------------------------------------------
-        # Store face metadata for SE_block and stabilizer construction.
-        # Each face: {center, color, z_ancilla_coord, x_ancilla_coord, boundary}
+        # Face classification cycle: determines which position index is a face
+        ANC_POS_CYCLE = [1, 2, 0]
+
+        # Compute total slots in row 0 for centering
+        anc_pos_row0 = ANC_POS_CYCLE[0]
+        num_faces_row0 = sum(1 for p in range(L + 1) if p % 3 == anc_pos_row0)
+        total_slots_row0 = (L + 1) + num_faces_row0
+
+        # position_map: (y, p) -> position info
+        position_map = {}
+
         self.faces: List[Dict[str, Any]] = []
 
         for y in range(L + 1):
-            # Determine ancilla color and classification index for this row
-            if y % 3 == 0:
-                anc_color = 'g'   # green
-                anc_pos = 2
-            elif y % 3 == 1:
-                anc_color = 'b'   # blue
-                anc_pos = 0
-            else:  # y % 3 == 2
-                anc_color = 'r'   # red
-                anc_pos = 1
+            anc_pos = ANC_POS_CYCLE[y % 3]
+            num_positions = L - y + 1
 
-            for x in range(2 * y, 4 * L - 2 * y + 1, 4):
-                # Boundary classification
-                boundary = []
-                if y == 0:
-                    boundary.append('r')   # red boundary (top)
-                if x == 2 * y:
-                    boundary.append('g')   # green boundary (left)
-                if x == 4 * L - 2 * y:
-                    boundary.append('b')   # blue boundary (right)
-                boundary_str = ''.join(boundary) if boundary else None
+            # Count faces and compute compact x start
+            num_faces = sum(1 for p in range(num_positions) if p % 3 == anc_pos)
+            num_slots = num_positions + num_faces
+            x_start = (total_slots_row0 - num_slots + 1) // 2
 
-                # Data qubit vs ancilla pair classification
-                if round((x / 2 - y) / 2) % 3 != anc_pos:
-                    # This is a DATA QUBIT
-                    self.add_qubit(x, y, role='data')
-                else:
-                    # This is a FACE CENTER — place ancilla pair
-                    z_anc_x = x - 1
-                    x_anc_x = x + 1
+            cx = x_start
+            for p in range(num_positions):
+                if p % 3 == anc_pos:
+                    # Face center: place sZ and sX syndrome pair
+                    z_idx = self.add_qubit(cx, y, role='syndrome_z')
+                    x_idx = self.add_qubit(cx + 1, y, role='syndrome_x')
 
-                    z_idx = self.add_qubit(z_anc_x, y, role='syndrome_z')
-                    x_idx = self.add_qubit(x_anc_x, y, role='syndrome_x')
-
-                    face = {
-                        'center': (x, y),
-                        'color': anc_color,
-                        'z_ancilla_coord': self.snap_coord((z_anc_x, y)),
-                        'x_ancilla_coord': self.snap_coord((x_anc_x, y)),
-                        'z_ancilla_idx': z_idx,
-                        'x_ancilla_idx': x_idx,
-                        'boundary': boundary_str,
+                    position_map[(y, p)] = {
+                        'type': 'face',
+                        'z_coord': self.snap_coord((cx, y)),
+                        'x_coord': self.snap_coord((cx + 1, y)),
+                        'z_idx': z_idx,
+                        'x_idx': x_idx,
                     }
-                    self.faces.append(face)
+                    cx += 2
+                else:
+                    # Data qubit
+                    d_idx = self.add_qubit(cx, y, role='data')
+                    position_map[(y, p)] = {
+                        'type': 'data',
+                        'coord': self.snap_coord((cx, y)),
+                        'idx': d_idx,
+                    }
+                    cx += 1
 
         # -------------------------------------------------------------------
-        # Phase 2: Stabilizer Construction
+        # Phase 2: Build face metadata with data neighbors
+        # -------------------------------------------------------------------
+        # Face color cycle
+        COLOR_CYCLE = ['r', 'g', 'b']
+
+        for (y, p), info in sorted(position_map.items()):
+            if info['type'] != 'face':
+                continue
+
+            # Find 6 data neighbors using hex connectivity
+            data_neighbors = []
+            for dy, dp in self.NEIGHBOR_OFFSETS:
+                ny, np_ = y + dy, p + dp
+                neighbor = position_map.get((ny, np_))
+                if neighbor and neighbor['type'] == 'data':
+                    data_neighbors.append((neighbor['coord'], neighbor['idx']))
+                else:
+                    data_neighbors.append(None)
+
+            # Boundary classification
+            num_positions = L - y + 1
+            boundary = []
+            if y == 0:
+                boundary.append('r')       # red boundary (top)
+            if p == 0:
+                boundary.append('g')       # green boundary (left)
+            if p == num_positions - 1:
+                boundary.append('b')       # blue boundary (right)
+
+            face = {
+                'center': ((info['z_coord'][0] + info['x_coord'][0]) / 2, float(y)),
+                'color': COLOR_CYCLE[y % 3],
+                'z_ancilla_coord': info['z_coord'],
+                'x_ancilla_coord': info['x_coord'],
+                'z_ancilla_idx': info['z_idx'],
+                'x_ancilla_idx': info['x_idx'],
+                'boundary': ''.join(boundary) if boundary else None,
+                'data_neighbors': data_neighbors,
+            }
+            self.faces.append(face)
+
+        # -------------------------------------------------------------------
+        # Phase 3: Stabilizer Construction
         # -------------------------------------------------------------------
         for face in self.faces:
-            cx, cy = face['center']
-
-            # Find data qubit vertices for this face
-            data_coords = []
-            for dx, dy in self.FACE_OFFSETS:
-                data_coord = self.snap_coord((cx + dx, cy + dy))
-                if data_coord in self.index_map:
-                    idx = self.index_map[data_coord]
-                    if idx in self.data_indices:
-                        data_coords.append(data_coord)
+            data_coords = [n[0] for n in face['data_neighbors'] if n is not None]
 
             # X-stabilizer
             x_targets = {coord: 'X' for coord in data_coords}
@@ -150,16 +188,13 @@ class ColorCode(QECPatch):
             )
 
         # -------------------------------------------------------------------
-        # Phase 3: Logical Operators
+        # Phase 4: Logical Operators
         # -------------------------------------------------------------------
         # Logical X and Z on the red boundary (y == 0 top row data qubits).
-        # The red boundary has d data qubits. Since d is odd,
-        # X^d and Z^d on the same qubits anti-commute.
         red_boundary_data = []
-        for idx in sorted(self.data_indices):
-            coord = self.qubit_coords[idx]
-            if coord[1] == 0.0:  # y == 0 is the red boundary
-                red_boundary_data.append(coord)
+        for (y, p), info in sorted(position_map.items()):
+            if info['type'] == 'data' and y == 0:
+                red_boundary_data.append(info['coord'])
 
         lx_targets = {coord: 'X' for coord in red_boundary_data}
         self.create_stim_logical(lx_targets, 'X')
@@ -170,7 +205,7 @@ class ColorCode(QECPatch):
         self.num_logicals = 1
 
         # -------------------------------------------------------------------
-        # Phase 4: Shift
+        # Phase 5: Shift
         # -------------------------------------------------------------------
         if self.shift != (0, 0):
             self.shift_coords(*self.shift)
