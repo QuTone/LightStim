@@ -18,6 +18,7 @@ Usage:
 import argparse
 import io
 import contextlib
+import os
 import time
 from pathlib import Path
 
@@ -40,12 +41,20 @@ from src.simulation.decoder_backend import SimulationPipeline, ExperimentTask, D
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 
 
+BB_CONFIGS = {
+    "bb_72_12_6":   {"l": 6,  "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 6},
+    "bb_90_8_10":   {"l": 15, "m": 3,  "A": [[9,0],[0,1],[0,2]], "B": [[0,9],[1,0],[2,0]], "d": 10},
+    "bb_108_8_10":  {"l": 9,  "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 10},
+    "bb_144_12_12": {"l": 12, "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 12},
+    "bb_288_12_18": {"l": 12, "m": 12, "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 18},
+}
+
+
 # ── Code Factory ─────────────────────────────────────────────────────
 def make_code(code_name, distance, **kwargs):
     """Create a QEC code instance by name."""
     if code_name == "rotated_sc":
         code = RotatedSurfaceCode(distance=distance)
-        code.rotate_coords(np.pi / 4)
         return code, RotatedSurfaceCodeExtractionBlock
     elif code_name == "unrotated_sc":
         code = UnrotatedSurfaceCode(distance=distance)
@@ -57,15 +66,7 @@ def make_code(code_name, distance, **kwargs):
         code = ColorCode(distance=distance)
         return code, ColorCodeExtractionBlock
     elif code_name.startswith("bb_"):
-        # BB code configs: bb_72_12_6, bb_90_8_10, bb_144_12_12, bb_288_12_18
-        configs = {
-            "bb_72_12_6":   {"l": 6,  "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 6},
-            "bb_90_8_10":   {"l": 15, "m": 3,  "A": [[9,0],[0,1],[0,2]], "B": [[0,9],[1,0],[2,0]], "d": 10},
-            "bb_108_8_10":  {"l": 9,  "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 10},
-            "bb_144_12_12": {"l": 12, "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 12},
-            "bb_288_12_18": {"l": 12, "m": 12, "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 18},
-        }
-        cfg = configs[code_name]
+        cfg = BB_CONFIGS[code_name]
         code = BBCode(l=cfg["l"], m=cfg["m"], A=cfg["A"], B=cfg["B"])
         return code, BBCodeExtractionBlock
     else:
@@ -101,37 +102,39 @@ def build_circuit(code_name, distance, p, basis="Z", rounds=None, se_block_kwarg
 
 # ── Figure Configs ───────────────────────────────────────────────────
 
-ERROR_RATES = [1e-4, 5e-4, 1e-3, 2e-3, 5e-3]
+ERROR_RATES_FIG1 = [1e-3, 2e-3, 5e-3, 7e-3, 1e-2, 1.2e-2, 1.5e-2]
+ERROR_RATES_FIG2 = [1e-2, 7e-3, 5e-3, 3e-3, 2e-3, 1e-3]  # high→low: fast points first
+ERROR_RATES_FIG4 = [5e-3, 2e-3, 1e-3, 7e-4, 5e-4, 2e-4, 1e-4]
 ERROR_RATES_QUICK = [1e-3, 5e-3]
 
 # ── Experiment Plan ───────────────────────────────────────────────
 #
 # Fig 1: Surface Code Family — LER vs PER
 #   Codes: Rotated SC, Unrotated SC, Toric  ×  d=3,5,7
-#   p: [1e-4, 5e-4, 1e-3, 2e-3, 5e-3]
+#   p: [1e-3, 2e-3, 5e-3, 7e-3, 1e-2, 1.2e-2, 1.5e-2]
 #   Decoder: PyMatching (CPU, 32 workers)
-#   Points: 3 codes × 3 distances × 5 p = 45
-#   max_shots=1M, max_errors=200
+#   Points: 3 codes × 3 distances × 7 p = 63
+#   max_shots=1e9, max_errors=200
 #
 # Fig 2: BB Code Family — LER vs PER
-#   Codes: [[72,12,6]], [[90,8,10]], [[144,12,12]]  × GPU BP+OSD + MWPF = 6 lines
-#   p: [1e-4, 5e-4, 1e-3, 2e-3, 5e-3]
-#   Decoder: GPU BP+OSD + MWPF (cluster_node_limit=None)
-#   Points: 3 codes × 2 decoders × 5 p = 30
-#   max_shots=5M, max_errors=200
+#   Codes: [[72,12,6]], [[108,8,10]], [[144,12,12]]  × GPU BP+OSD + MWPF = 6 lines
+#   p: [1e-2, 7e-3, 5e-3, 3e-3, 2e-3, 1e-3]  (high→low: fast points first)
+#   Decoder: GPU BP+OSD (max_iter=1000) + MWPF (c=50)
+#   Points: 3 codes × 2 decoders × 6 p = 36
+#   max_shots=1e8, max_errors=100
 #
 # Fig 3: Qubit Efficiency — LER/k vs N_total/k at p=1e-3
-#   All codes from Fig1 + Fig2 (GPU BPOSD data) + Color Code d=3,5,7 (GPU BPOSD)
+#   All codes from Fig1 + Fig2 (GPU BPOSD data) + Color Code d=3,5,7 (MWPF c=50)
 #   X-axis: circuit.num_qubits / k (Physical Qubits per Logical Qubit)
-#   Points: one per code instance (~15 points)
+#   Points: 12 topological + 3 BB = 15 data points
 #   max_shots=1M, max_errors=200
 #
-# Fig 4: Scheduling Impact — LER vs PER (Rotated SC only)
+# Fig 4: Scheduling Impact — LER vs PER (Rotated SC only, standard orientation)
 #   Schedules: perpendicular (FT) vs parallel (non-FT, hook error)
-#   d=3,5,7  ×  p: [1e-4, 5e-4, 1e-3, 2e-3, 5e-3]
+#   d=3,5,7  ×  p: [5e-3, 2e-3, 1e-3, 7e-4, 5e-4, 2e-4, 1e-4]
 #   Decoder: PyMatching (CPU, 32 workers)
-#   Points: 2 schedules × 3 distances × 5 p = 30
-#   max_shots=1M, max_errors=200
+#   Points: 2 schedules × 3 distances × 7 p = 42
+#   max_shots=1e8, max_errors=100
 # ──────────────────────────────────────────────────────────────────
 
 # Figure 1: Surface Code Family — LER vs PER
@@ -149,7 +152,7 @@ FIG2_DECODERS = [
         name="nv-qldpc-decoder",
         backend="gpu",
         params={
-            "max_iterations": 100,
+            "max_iterations": 1000,
             "osd_order": 10,
             "bp_method": "min_sum",
             "ms_scaling_factor": 0,
@@ -176,12 +179,12 @@ FIG4_DISTANCES = [3, 5, 7]
 # ── Decoder Selection ────────────────────────────────────────────────
 def get_decoder_config(code_name):
     """Choose decoder by code family."""
-    if code_name.startswith("bb_") or code_name == "color":
+    if code_name.startswith("bb_"):
         return DecoderConfig(
             name="nv-qldpc-decoder",
             backend="gpu",
             params={
-                "max_iterations": 100,
+                "max_iterations": 1000,
                 "osd_order": 10,
                 "bp_method": "min_sum",
                 "ms_scaling_factor": 0,
@@ -189,6 +192,8 @@ def get_decoder_config(code_name):
                 "use_osd": True,
             },
         )
+    elif code_name == "color":
+        return DecoderConfig(name="mwpf", backend="cpu", params={"cluster_node_limit": 50})
     else:
         return DecoderConfig(name="pymatching", backend="cpu")
 
@@ -210,28 +215,38 @@ def run_figure1(error_rates, max_shots, max_errors, num_workers):
                         "n_data": n_data, "n_total": n_total, "k": k, "figure": 1}
                 tasks.append((circuit, meta, decoder))
 
-    return _run_tasks(tasks, max_shots, max_errors, num_workers)
+    return _run_tasks(tasks, max_shots, max_errors, num_workers,
+                      checkpoint_path=OUTPUT_DIR / "fig1_surface_codes.csv")
 
 
-def run_figure2(error_rates, max_shots, max_errors, num_workers):
-    """Figure 2: BB codes × GPU BP+OSD + MWPF (6 lines)."""
-    print("=" * 60)
-    print("FIGURE 2: BB Codes — LER vs PER")
-    print("=" * 60)
+def run_figure2(error_rates, max_shots, max_errors, num_workers,
+                codes=None, decoder_filter=None, checkpoint_path=None):
+    """Figure 2: BB codes × GPU BP+OSD + MWPF (6 lines).
 
-    # BB codes need more shots (LER can be very low at small p)
-    bb_max_shots = max(max_shots, 5_000_000)
+    Args:
+        codes: list of code names to run (default: FIG2_CODES)
+        decoder_filter: 'gpu_bposd', 'mwpf', or None (both)
+    """
+    print("=" * 60, flush=True)
+    print("FIGURE 2: BB Codes — LER vs PER", flush=True)
+    print("=" * 60, flush=True)
+
+    active_codes = codes if codes is not None else FIG2_CODES
+    active_decoders = [(lbl, dec) for lbl, dec in FIG2_DECODERS
+                       if decoder_filter is None or lbl == decoder_filter]
 
     tasks = []
-    for decoder_label, decoder in FIG2_DECODERS:
-        for code_name in FIG2_CODES:
+    for decoder_label, decoder in active_decoders:
+        for code_name in active_codes:
             for p in error_rates:
-                circuit, n_data, n_total, k = build_circuit(code_name, 0, p)
+                d = BB_CONFIGS[code_name]["d"]
+                circuit, n_data, n_total, k = build_circuit(code_name, 0, p, rounds=d)
                 meta = {"code": code_name, "p": p, "n_data": n_data, "n_total": n_total,
                         "k": k, "figure": 2, "decoder_label": decoder_label}
                 tasks.append((circuit, meta, decoder))
 
-    return _run_tasks(tasks, bb_max_shots, max_errors, num_workers)
+    return _run_tasks(tasks, max_shots, max_errors, num_workers,
+                      checkpoint_path=checkpoint_path)
 
 
 def run_figure4(error_rates, max_shots, max_errors, num_workers):
@@ -254,13 +269,46 @@ def run_figure4(error_rates, max_shots, max_errors, num_workers):
                         "k": k, "figure": 4}
                 tasks.append((circuit, meta, decoder))
 
-    return _run_tasks(tasks, max_shots, max_errors, num_workers)
+    return _run_tasks(tasks, max_shots, max_errors, num_workers,
+                      checkpoint_path=OUTPUT_DIR / "fig4_scheduling.csv")
 
 
-def _run_tasks(task_list, max_shots, max_errors, num_workers):
-    """Run a list of (circuit, metadata, decoder_config) tuples."""
-    records = []
-    for i, (circuit, meta, decoder) in enumerate(task_list):
+_CK_RESULT_COLS = frozenset({
+    "shots", "post_selected_shots", "post_selection_rate",
+    "errors", "logical_error_rate", "seconds", "decoder",
+    "n_data", "n_total",  # derived from circuit, not true inputs
+})
+
+
+def _ck_key(d: dict) -> tuple:
+    """Stable checkpoint key: input fields only, floats normalized to 6-digit sci notation."""
+    return tuple(
+        f"{v:.6e}" if isinstance(v, float) else str(v)
+        for k, v in sorted(d.items()) if k not in _CK_RESULT_COLS
+    )
+
+
+def _run_tasks(task_list, max_shots, max_errors, num_workers, checkpoint_path=None):
+    """Run a list of (circuit, metadata, decoder_config) tuples with per-task checkpointing."""
+    # Load existing checkpoint so already-done tasks are skipped on resume
+    existing_records = []
+    done_keys = set()
+    if checkpoint_path is not None:
+        cp = Path(checkpoint_path)
+        if cp.exists():
+            df_ck = pd.read_csv(cp)
+            existing_records = df_ck.to_dict("records")
+            for rec in existing_records:
+                done_keys.add(_ck_key(rec))
+            print(f"  Checkpoint: {len(done_keys)} tasks already done, skipping.")
+
+    pending = [(c, m, d) for c, m, d in task_list if _ck_key(m) not in done_keys]
+    n_skip = len(task_list) - len(pending)
+    if n_skip:
+        print(f"  Skipping {n_skip} completed tasks, {len(pending)} remaining.")
+
+    new_records = []
+    for i, (circuit, meta, decoder) in enumerate(pending):
         code_label = meta.get("code", "?")
         d_label = meta.get("distance", "?")
         p_label = meta.get("p", "?")
@@ -271,14 +319,20 @@ def _run_tasks(task_list, max_shots, max_errors, num_workers):
             label += f" [{sched}]"
         if dec_label:
             label += f" [{dec_label}]"
-        print(f"\n[{i+1}/{len(task_list)}] {label}")
+        print(f"\n[{i+1}/{len(pending)}] {label}", flush=True)
 
+        if decoder.backend == "gpu":
+            effective_workers = 1
+            effective_batch = 100_000
+        else:
+            effective_workers = num_workers
+            effective_batch = 1_000
         pipeline = SimulationPipeline(
             decoder_config=decoder,
             max_shots=max_shots,
             max_errors=max_errors,
-            batch_size=10_000,
-            num_workers=num_workers,
+            batch_size=effective_batch,
+            num_workers=effective_workers,
             print_progress=True,
         )
         stats = pipeline.run(circuit, meta)
@@ -290,10 +344,17 @@ def _run_tasks(task_list, max_shots, max_errors, num_workers):
             "seconds": stats.seconds,
             "decoder": stats.decoder,
         }
-        records.append(row)
-        print(f"  → LER={stats.logical_error_rate:.2e} ({stats.errors} errors, {stats.shots:,} shots, {stats.seconds:.1f}s)")
+        new_records.append(row)
 
-    return pd.DataFrame(records)
+        # Persist immediately — a kill/OOM never loses this result
+        if checkpoint_path is not None:
+            cp = Path(checkpoint_path)
+            pd.DataFrame([row]).to_csv(cp, mode="a", header=not cp.exists(), index=False)
+
+        print(f"  → LER={stats.logical_error_rate:.2e} ({stats.errors} errors, {stats.shots:,} shots, {stats.seconds:.1f}s)", flush=True)
+
+    all_records = existing_records + new_records
+    return pd.DataFrame(all_records) if all_records else pd.DataFrame()
 
 
 # ── Plotting ─────────────────────────────────────────────────────────
@@ -378,14 +439,14 @@ def plot_figure1(df, save_path):
             df_d = df_code[df_code["distance"] == d].sort_values("p")
             color = PALETTE_DIST.get(int(d), "gray")
             ax.loglog(
-                df_d["p"], df_d["logical_error_rate"],
+                df_d["p"], df_d["logical_error_rate"] / df_d["k"],
                 marker=marker, color=color, linestyle=ls,
                 markeredgecolor="none",
                 label=f"{label_base} d={int(d)}",
             )
 
     ax.set_xlabel("Physical Error Rate (p)")
-    ax.set_ylabel("Logical Error Rate")
+    ax.set_ylabel("Logical Error Rate per Logical Qubit")
     ax.set_title("Surface Code Family: LER vs PER", pad=10)
     ax.legend(fontsize=9, ncol=2, loc="lower right", frameon=True)
     ax.grid(True, which="both", ls="--", linewidth=0.5, alpha=0.5)
@@ -526,41 +587,73 @@ def main():
     parser.add_argument("--max-shots", type=int, default=1_000_000)
     parser.add_argument("--max-errors", type=int, default=200)
     parser.add_argument("--num-workers", type=int, default=32)
+    parser.add_argument("--fig2-codes", type=str, default=None,
+                        help="Comma-separated BB code names for fig2, e.g. bb_72_12_6,bb_108_8_10")
+    parser.add_argument("--fig2-decoder", type=str, default=None, choices=["gpu_bposd", "mwpf"],
+                        help="Run only one decoder type for fig2")
+    parser.add_argument("--gpu-id", type=int, default=None,
+                        help="GPU device ID for GPU backend (sets CUDA_VISIBLE_DEVICES)")
     args = parser.parse_args()
 
+    if args.gpu_id is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    error_rates = ERROR_RATES_QUICK if args.quick else ERROR_RATES
-    max_shots = 100_000 if args.quick else args.max_shots
     max_errors = 20 if args.quick else args.max_errors
+
+    er1 = ERROR_RATES_QUICK if args.quick else ERROR_RATES_FIG1
+    er2 = ERROR_RATES_QUICK if args.quick else ERROR_RATES_FIG2
+    er4 = ERROR_RATES_QUICK if args.quick else ERROR_RATES_FIG4
+
+    # Per-figure max_shots as specified in setup.md
+    ms1 = 100_000 if args.quick else int(1e9)
+    ms2 = 100_000 if args.quick else int(1e8)  # [[144,12,12]] at p=1e-3 needs ~42M shots
+    ms3 = 100_000 if args.quick else int(1e6)
+    ms4 = 100_000 if args.quick else int(1e8)
 
     all_dfs = []
 
     # Figure 1: Surface Code Family
     if args.figure in (None, 1):
-        df1 = run_figure1(error_rates, max_shots, max_errors, args.num_workers)
+        df1 = run_figure1(er1, ms1, max_errors, args.num_workers)
         df1.to_csv(OUTPUT_DIR / "fig1_surface_codes.csv", index=False)
         plot_figure1(df1, OUTPUT_DIR / "fig1_surface_codes.png")
         all_dfs.append(df1)
 
     # Figure 2: BB Codes (GPU + MWPF)
     if args.figure in (None, 2):
-        df2 = run_figure2(error_rates, max_shots, max_errors, args.num_workers)
-        df2.to_csv(OUTPUT_DIR / "fig2_bb_codes.csv", index=False)
-        plot_figure2(df2, OUTPUT_DIR / "fig2_bb_codes.png")
+        me2 = 20 if args.quick else 100
+        fig2_codes = args.fig2_codes.split(",") if args.fig2_codes else None
+        # Compute suffix first so checkpoint_path matches the final CSV
+        suffix = ""
+        if args.fig2_codes:
+            suffix += "_" + args.fig2_codes.replace(",", "_")
+        if args.fig2_decoder:
+            suffix += "_" + args.fig2_decoder
+        csv_path = OUTPUT_DIR / f"fig2_bb_codes{suffix}.csv"
+        df2 = run_figure2(er2, ms2, me2, args.num_workers,
+                          codes=fig2_codes, decoder_filter=args.fig2_decoder,
+                          checkpoint_path=csv_path)
+        df2.to_csv(csv_path, index=False)
+        print(f"Saved: {csv_path}")
+        # Only plot if we have the full dataset
+        if not suffix:
+            plot_figure2(df2, OUTPUT_DIR / "fig2_bb_codes.png")
         all_dfs.append(df2)
 
     # Figure 4: Scheduling (before 3, since 3 reuses data)
     if args.figure in (None, 4):
-        df4 = run_figure4(error_rates, max_shots, max_errors, args.num_workers)
+        me4 = 20 if args.quick else 100
+        df4 = run_figure4(er4, ms4, me4, args.num_workers)
         df4.to_csv(OUTPUT_DIR / "fig4_scheduling.csv", index=False)
         plot_figure4(df4, OUTPUT_DIR / "fig4_scheduling.png")
         all_dfs.append(df4)
 
     # Figure 3: Qubit Efficiency (uses p=1e-3 from fig1 + fig2 + color code extra)
     if args.figure in (None, 3):
-        # Run color code extra points for fig3 (GPU BP+OSD)
+        # Run color code extra points for fig3 (MWPF c=50)
         print("=" * 60)
-        print("FIGURE 3: Extra data — Color Code at p=1e-3 (GPU BP+OSD)")
+        print("FIGURE 3: Extra data — Color Code at p=1e-3 (MWPF)")
         print("=" * 60)
         color_tasks = []
         for code_name, distances in FIG3_EXTRA_CODES:
@@ -570,7 +663,8 @@ def main():
                 meta = {"code": code_name, "distance": d, "p": 1e-3,
                         "n_data": n_data, "n_total": n_total, "k": k, "figure": 3}
                 color_tasks.append((circuit, meta, decoder))
-        df_color = _run_tasks(color_tasks, max_shots, max_errors, args.num_workers)
+        df_color = _run_tasks(color_tasks, ms3, max_errors, args.num_workers,
+                              checkpoint_path=OUTPUT_DIR / "fig3_color_extra.csv")
         df_color.to_csv(OUTPUT_DIR / "fig3_color_extra.csv", index=False)
 
         # Combine all p=1e-3 data

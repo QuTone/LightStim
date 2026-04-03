@@ -39,7 +39,7 @@ def _decode_worker_cpu(
     from .registry import get_decoder
     from .post_select import apply_post_selection
 
-    if gpu_id is not None:
+    if gpu_id is not None and "CUDA_VISIBLE_DEVICES" not in os.environ:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
     decoder = get_decoder(decoder_name, backend=decoder_backend, **decoder_params)

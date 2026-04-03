@@ -70,7 +70,7 @@ Each code runs with **both** decoders:
 - **GPU BP+OSD** (solid line, marker `o`)
 - **MWPF** (dashed line, marker `X`) — `cluster_node_limit=50`
 
-**Physical error rates:** `[1e-3, 2e-3, 3e-3, 5e-3, 7e-3, 1e-2]`
+**Physical error rates:** `[1e-2, 7e-3, 5e-3, 3e-3, 2e-3, 1e-3]` (high→low: fast points first)
 **Noise model:** circuit_level (uniform depolarizing)
 **Rounds:** d (code distance)
 **Basis:** Z
@@ -96,11 +96,14 @@ DecoderConfig(
 DecoderConfig(name="mwpf", backend="cpu", params={"cluster_node_limit": 50})
 ```
 
-**num_workers:** 32
-**max_shots:** 2e9
-**max_errors:** 200
+**num_workers:** 32 (both GPU BP+OSD and MWPF)
+**batch_size:** 10,000
+**max_shots:** 1e8 per task (worst case [[144,12,12]] at p=1e-3 needs ~42M shots)
+**max_errors:** 100
 **Total data points:** 3 codes × 2 decoders × 6 p = 36
 **Note:** Must run with `venv/bin/python` for GPU (cudaq_qec). Compute LER/k for y-axis.
+
+**MWPF scope:** [[72,12,6]] only. Larger codes ([[108,8,10]], [[144,12,12]]) omitted — the MWPF paper (HyperBlossom) reports BPOSD is more accurate than MWPF for large BB codes under circuit-level noise, so there is no scientific motivation to run them.
 
 ## Figure 3: Qubit Efficiency — LER/k vs N_total/k
 
@@ -115,35 +118,24 @@ DecoderConfig(name="mwpf", backend="cpu", params={"cluster_node_limit": 50})
 | Rotated SC | 3, 5, 7 | PyMatching | from Fig 1 |
 | Unrotated SC | 3, 5, 7 | PyMatching | from Fig 1 |
 | Toric | 3, 5, 7 | PyMatching | from Fig 1 |
-| Color (6-6-6) | 3, 5, 7 | GPU BP+OSD | run separately |
+| Color (6-6-6) | 3, 5, 7 | MWPF (c=50) | run separately |
 | BB [[72,12,6]] | — | GPU BP+OSD | from Fig 2 |
 | BB [[108,8,10]] | — | GPU BP+OSD | from Fig 2 |
 | BB [[144,12,12]] | — | GPU BP+OSD | from Fig 2 |
 
 **Color code decoder:**
 ```python
-DecoderConfig(
-    name="nv-qldpc-decoder",
-    backend="gpu",
-    params={
-        "max_iterations": 1000,
-        "osd_order": 10,
-        "bp_method": "min_sum",
-        "ms_scaling_factor": 0,
-        "osd_method": "osd_cs",
-        "use_osd": True,
-    },
-)
+DecoderConfig(name="mwpf", backend="cpu", params={"cluster_node_limit": 50})
 ```
 
 **num_workers:** 32
-**max_shots:** 
+**max_shots:** 1e6
 **max_errors:** 200
 **Total data points:** 12 topological codes + 3 BB codes = 15 data points
 
 ## Figure 4: Scheduling Impact — LER vs PER
 
-**Code:** Rotated Surface Code only
+**Code:** Rotated Surface Code only (standard orientation, no coordinate rotation)
 
 **Schedules:**
 | Schedule | FT? | Effective distance | Description |
@@ -152,12 +144,13 @@ DecoderConfig(
 | `parallel` | No | ~d/2 | X and Z probe in same direction → hook errors halve effective distance |
 
 **Distances:** 3, 5, 7
-**Physical error rates:** `[1e-3, 2e-3, 5e-3, 7e-3, 1e-2, 1.2e-2, 1.5e-2]`
+**Physical error rates:** `[5e-3, 2e-3, 1e-3, 7e-4, 5e-4, 2e-4, 1e-4]`
+**Rationale:** Lower p range needed to see clear separation between FT and non-FT schedules; threshold is well below 1e-2 for this effect.
 **Noise model:** circuit_level
 **Decoder:** `DecoderConfig(name="pymatching", backend="cpu")`
 **num_workers:** 32 (CPU)
-**max_shots:** 1e7
-**max_errors:** 200
+**max_shots:** 1e8
+**max_errors:** 100
 **Total data points:** 2 schedules × 3 distances × 7 p = 42
 
 ## Data Storage

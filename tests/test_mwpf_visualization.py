@@ -4,9 +4,10 @@ MWPF Decoding Graph Visualization — for paper intro figure.
 Generates interactive HTML visualizations of a d=3 rotated surface code
 decoding graph with detection events (defects) and matched edges highlighted.
 
-Exports two variants for comparison:
+Exports variants for comparison:
   - circuit_level noise  (realistic, ~150 edges)
   - phenomenological noise (cleaner, ~45 edges, recommended for paper)
+  - d3_r2: 2-round Z-state memory experiment (simplest, best for intro figure)
 
 Usage:
     python tests/test_mwpf_visualization.py
@@ -14,6 +15,7 @@ Usage:
 Output:
     tests/mwpf_viz_output/decoding_graph_circuit_level.html
     tests/mwpf_viz_output/decoding_graph_phenomenological.html
+    tests/mwpf_viz_output/decoding_graph_d3_r2.html          ← 2-round example
     → Open in browser. Use keyboard shortcuts to adjust view, then screenshot.
 
 Key controls in browser:
@@ -23,6 +25,9 @@ Key controls in browser:
     Config panel (top-right) → set background=white for paper, adjust node/edge size
 
 Design notes:
+    - d3_r2: 2 rounds of Z-basis memory, phenomenological noise
+      * Fewest layers (t=0,T_SCALE,2*T_SCALE) → clearest temporal structure
+      * Ideal for showing spatial vs temporal edges in a paper figure
     - Noise model: phenomenological recommended for intro figure
       * data qubit errors  → spatial edges  (same-round detector pairs)
       * measurement errors → temporal edges (same detector, adjacent rounds)
@@ -171,17 +176,47 @@ def build_visualizer(circuit: stim.Circuit, defects: list[int]
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def build_circuit_custom(noise_model: str, p: float,
+                          distance: int, rounds: int) -> stim.Circuit:
+    """Build a rotated surface code memory-Z circuit with custom distance and rounds."""
+    code = RotatedSurfaceCode(distance=distance)
+    code.rotate_coords(np.pi / 4)
+    system = QECSystem()
+    system.add_patch(code, name="rotated_sc")
+    noise = NoiseConfig(p_idle=p, p_1q=p, p_2q=p, p_meas=p, p_reset=p)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        exp = MemoryExperiment(
+            qec_system=system,
+            extraction_block_class=RotatedSurfaceCodeExtractionBlock,
+            rounds=rounds,
+            noise_params=noise,
+            noise_model=noise_model,
+            basis="Z",
+        )
+        circuit = exp.build()
+    return circuit
+
+
+def run_variant(label: str, circuit: stim.Circuit,
+                defects: list[int], output_dir: Path) -> None:
+    """Build visualizer for a single variant and save HTML."""
+    viz, subgraph = build_visualizer(circuit, defects)
+    out_path = output_dir / f"decoding_graph_{label}.html"
+    out_path.write_text(viz.generate_html())
+    print(f"  Saved: {out_path}")
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # ── d=3, r=3: all noise models (existing) ────────────────────────────────
     noise_models = [
         ("phenomenological", "phenomenological"),   # recommended for paper: ~76 edges
         ("circuit_level",    "circuit_level"),       # realistic but busy: ~286 edges
-        ("XZ_biased",        "XZ_biased"),           # no Y errors: purely X/Z edges, no hyperedges
+        ("XZ_biased",        "XZ_biased"),           # no Y errors: purely X/Z edges
     ]
 
-    # Sample syndrome from the phenomenological circuit (same defect IDs are
-    # valid indices for either model since all have the same detector layout).
     print(f"Building d={DISTANCE} rotated SC, {ROUNDS} rounds for syndrome sampling...")
     ref_circuit = build_circuit("phenomenological", P)
     print(f"  {ref_circuit.num_qubits} qubits, {ref_circuit.num_detectors} detectors")
@@ -195,16 +230,23 @@ def main():
             continue
         print(f"\n── {label} ──────────────────────────")
         circuit = build_circuit(noise_model, P)
-        viz, subgraph = build_visualizer(circuit, defects)
+        run_variant(label, circuit, defects, OUTPUT_DIR)
 
-        out_path = OUTPUT_DIR / f"decoding_graph_{label}.html"
-        out_path.write_text(viz.generate_html())
-        print(f"  Saved: {out_path}")
+    # ── d=3, r=2: 2-round Z-state memory (new) ───────────────────────────────
+    print(f"\n── d3_r2 (2-round Z-state memory) ──────────────────────────")
+    D2, R2 = 3, 2
+    circuit_r2 = build_circuit_custom("phenomenological", P, distance=D2, rounds=R2)
+    print(f"  {circuit_r2.num_qubits} qubits, {circuit_r2.num_detectors} detectors")
+
+    # Sample a fresh syndrome for the 2-round circuit (fewer detectors → new IDs)
+    defects_r2 = sample_syndrome(circuit_r2, target=2)
+    run_variant("d3_r2", circuit_r2, defects_r2, OUTPUT_DIR)
 
     print("\n── Done ─────────────────────────────────────────────────────")
     print("Open HTML files in browser:")
-    print(f"  {OUTPUT_DIR}/decoding_graph_phenomenological.html  ← recommended for paper")
-    print(f"  {OUTPUT_DIR}/decoding_graph_XZ_biased.html         ← no Y errors, diagonal edges only")
+    print(f"  {OUTPUT_DIR}/decoding_graph_d3_r2.html              ← 2-round, simplest (new)")
+    print(f"  {OUTPUT_DIR}/decoding_graph_phenomenological.html  ← 3-round, recommended for paper")
+    print(f"  {OUTPUT_DIR}/decoding_graph_XZ_biased.html         ← no Y errors")
     print(f"  {OUTPUT_DIR}/decoding_graph_circuit_level.html     ← realistic but busy")
     print()
     print("Browser tips:")
