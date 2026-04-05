@@ -200,7 +200,7 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
         'corridor_internal_width': gap - 1,
         'y_prep': y_prep,
     }
-    return circuit, circuit_info
+    return circuit, circuit_info, system
 
 
 # =============================================================================
@@ -277,7 +277,7 @@ if __name__ == "__main__":
         print(f"{'='*60}")
 
         t_build_start = time.perf_counter()
-        circuit, circuit_info = build_distillation_circuit(d, rounds, args.y_prep)
+        circuit, circuit_info, system = build_distillation_circuit(d, rounds, args.y_prep)
         t_build = time.perf_counter() - t_build_start
 
         print(f"Circuit: {circuit_info['num_qubits']} qubits, "

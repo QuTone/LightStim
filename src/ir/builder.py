@@ -102,6 +102,8 @@ class CircuitBuilder:
         Resets specific qubits in a given basis.
 
         Args:
+            init_dict: Mapping from qubit index to basis ('X', 'Y', 'Z').
+            n: Total number of qubits in the system.
             noiseless: If True, tag all reset instructions with 'noiseless' so that
                 the noise injector skips them (useful for injection-phase init).
         """
@@ -171,8 +173,15 @@ class CircuitBuilder:
         back_propagated_paulis, syn_qubit_indices = self._get_back_propagated_pauli(circuit_chunk, self.tracker.num_qubits)
         syn_coords = [self.system.qubit_coords[i] for i in syn_qubit_indices] # extract from circuit_chunk, more robust
 
-        # Append clean chunk to actual circuit
-        self.circuit += circuit_chunk
+        # Append chunk to actual circuit (optionally tagging all instructions as noiseless)
+        if noiseless:
+            for inst in circuit_chunk:
+                if isinstance(inst, stim.CircuitInstruction):
+                    self.circuit.append(inst.name, inst.targets_copy(), inst.gate_args_copy(), tag="noiseless")
+                else:
+                    self.circuit.append(inst)
+        else:
+            self.circuit += circuit_chunk
 
         total_measurements = self.tracker.total_measurements
         meas_rec_to_idx_map_update = {total_measurements + i: syn_idx for i, syn_idx in enumerate(syn_qubit_indices)}
@@ -200,10 +209,17 @@ class CircuitBuilder:
 
             loop_body = stim.Circuit()
             num_syn = len(syn_coords)
-            
+
             # Circuit operations for the repeated block
             loop_body.append("TICK")
-            loop_body += circuit_chunk
+            if noiseless:
+                for inst in circuit_chunk:
+                    if isinstance(inst, stim.CircuitInstruction):
+                        loop_body.append(inst.name, inst.targets_copy(), inst.gate_args_copy(), tag="noiseless")
+                    else:
+                        loop_body.append(inst)
+            else:
+                loop_body += circuit_chunk
             
             if self.if_detector:
                 # Time Shift for visualization

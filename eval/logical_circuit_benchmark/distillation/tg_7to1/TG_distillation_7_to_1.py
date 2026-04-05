@@ -48,7 +48,7 @@ from src.simulation.observable_analysis import (
 # Circuit construction
 # =============================================================================
 
-def build_distillation_circuit(d, rounds, r=1):
+def build_distillation_circuit(d, rounds, r=1, injection_noise_only=False):
     """
     Build transversal-gate 7-to-1 distillation circuit.
 
@@ -129,7 +129,8 @@ def build_distillation_circuit(d, rounds, r=1):
     # Helper: create fresh SE block and apply
     def do_se(n_rounds):
         se = UnrotatedSurfaceCodeExtractionBlock(system)
-        builder.apply_syndrome_extraction(circuit_chunk=se.circuit, rounds=n_rounds)
+        builder.apply_syndrome_extraction(circuit_chunk=se.circuit, rounds=n_rounds,
+                                           noiseless=injection_noise_only)
 
     # --- Step 1: Initialize all 15 patches (1 tick) ---
     # Working patches: transversal X or Z
@@ -146,7 +147,7 @@ def build_distillation_circuit(d, rounds, r=1):
         for q in system.data_indices:
             if system.index_to_owner_map[q] == name:
                 init_dict[q] = 'Z'
-    builder.initialize(init_dict=init_dict, n=num_qubits)
+    builder.initialize(init_dict=init_dict, n=num_qubits, noiseless=injection_noise_only)
 
     # Magic patches M1-M7: Y state injection (corner protocol, rounds=0)
     # Use global patches (gp) so data_indices are global.
