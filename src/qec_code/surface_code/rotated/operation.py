@@ -159,6 +159,8 @@ class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
         protocol: Literal["corner", "middle"] = "corner",
         rounds: int = 0,
         post_select_coords=None,
+        se_block_kwargs: dict = None,
+        noiseless_init: bool = False,
     ):
         """
         State injection: initialize data qubits and optionally run SE rounds.
@@ -202,11 +204,11 @@ class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
         builder.tracker.post_select_detector_coords |= post_select_coords
 
         # Emit reset instructions and update the tracker tableau
-        builder.initialize(init_dict=init_dict, n=system.num_qubits)
+        builder.initialize(init_dict=init_dict, n=system.num_qubits, noiseless=noiseless_init)
 
         # Optional syndrome extraction rounds
         if rounds > 0:
-            se_block = self.extraction_block_class(system)
+            se_block = self.extraction_block_class(system, **(se_block_kwargs or {}))
             builder.apply_syndrome_extraction(
                 circuit_chunk=se_block.circuit,
                 rounds=rounds,

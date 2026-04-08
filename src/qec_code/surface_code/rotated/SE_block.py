@@ -35,6 +35,12 @@ class RotatedSurfaceCodeExtractionBlock:
             ((+1, -1), (+1, -1)),  # Tick 3: SE interaction (X and Z go same direction → hook error)
             ((-1, -1), (-1, -1)),  # Tick 4: SW interaction
         ],
+        'swapped': [
+            ((+1, +1), (+1, +1)),  # Tick 1: NE interaction
+            ((+1, -1), (-1, +1)),  # Tick 2: X→SE, Z→NW  (swap of perpendicular tick 2/3)
+            ((-1, +1), (+1, -1)),  # Tick 3: X→NW, Z→SE  (swap of perpendicular tick 2/3)
+            ((-1, -1), (-1, -1)),  # Tick 4: SW interaction
+        ],
     }
 
     def __init__(self, system, scheduling='perpendicular'):

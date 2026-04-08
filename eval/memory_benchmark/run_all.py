@@ -37,6 +37,12 @@ from src.ir.qec_system import QECSystem
 from src.noise.config import NoiseConfig
 from experiments.memory import MemoryExperiment
 from src.simulation.decoder_backend import SimulationPipeline, ExperimentTask, DecoderConfig
+from src.plot.styles import (
+    apply_paper_style, bold_ticks,
+    PALETTE_DISTANCE, CODES as _CODE_COLORS,
+    CODE_LABELS, CODE_LINESTYLES, CODE_MARKERS,
+    DECODER_LINESTYLES, DECODER_MARKERS,
+)
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "results"
 
@@ -146,6 +152,9 @@ FIG1_CODES = [
 
 # Figure 2: BB codes — LER vs PER (each code × 2 decoders)
 FIG2_CODES = ["bb_72_12_6", "bb_108_8_10", "bb_144_12_12"]
+
+# Rounds used for each BB code (= d of the code)
+BB_ROUNDS = {"bb_72_12_6": 6, "bb_108_8_10": 10, "bb_144_12_12": 12}
 
 FIG2_DECODERS = [
     ("gpu_bposd", DecoderConfig(
@@ -358,75 +367,15 @@ def _run_tasks(task_list, max_shots, max_errors, num_workers, checkpoint_path=No
 
 
 # ── Plotting ─────────────────────────────────────────────────────────
-
-# Distance-based color palette (high-contrast qualitative)
-PALETTE_DIST = {3: "#a63603", 5: "#1b9e77", 7: "#7570b3", 9: "#d95f02"}
-
-# BB code colors (for Fig 2, one color per code)
-BB_COLORS = {
-    "bb_72_12_6":   "#a63603",
-    "bb_108_8_10":  "#1b9e77",
-    "bb_144_12_12": "#7570b3",
-}
-
-# Paper-quality style — bold fonts, matching fig4_scheduling_v2.png
-PAPER_RC = {
-    "font.family": "sans-serif",
-    "font.weight": "bold",
-    "font.size": 14,
-    "axes.labelsize": 17,
-    "axes.titlesize": 20,
-    "axes.labelweight": "bold",
-    "axes.titleweight": "bold",
-    "xtick.labelsize": 13,
-    "ytick.labelsize": 13,
-    "legend.fontsize": 11,
-    "lines.linewidth": 2.0,
-    "lines.markersize": 9,
-}
-
-CODE_LINESTYLES = {
-    "rotated_sc":    "-",
-    "unrotated_sc":  "--",
-    "toric":         ":",
-    "color":         "-.",
-}
-
-CODE_MARKERS = {
-    "rotated_sc":    "o",
-    "unrotated_sc":  "s",
-    "toric":         "^",
-    "color":         "D",
-}
-
-CODE_LABELS = {
-    "rotated_sc":    "Rotated SC",
-    "unrotated_sc":  "Unrotated SC",
-    "toric":         "Toric",
-    "color":         "Color (6-6-6)",
-    "bb_72_12_6":    "[[72,12,6]]",
-    "bb_108_8_10":   "[[108,8,10]]",
-    "bb_144_12_12":  "[[144,12,12]]",
-    "bb_288_12_18":  "[[288,12,18]]",
-}
-
-DECODER_LINESTYLES = {"gpu_bposd": "-", "mwpf": "--"}
-DECODER_MARKERS    = {"gpu_bposd": "o", "mwpf": "X"}
-
-
-def _apply_paper_style():
-    plt.rcParams.update(PAPER_RC)
-
-
-def _bold_ticks(ax):
-    """Make tick labels bold (supplement rcParams font.weight for ticks)."""
-    for tick in ax.get_xticklabels() + ax.get_yticklabels():
-        tick.set_fontweight("bold")
+# All style constants imported from src.plot.styles.
+# Local aliases for convenience.
+PALETTE_DIST = PALETTE_DISTANCE
+BB_COLORS    = {k: _CODE_COLORS[k] for k in ("bb_72_12_6", "bb_108_8_10", "bb_144_12_12")}
 
 
 def plot_figure1(df, save_path):
     """Figure 1: Surface Code Family — color = distance, linestyle = code."""
-    _apply_paper_style()
+    apply_paper_style()
     fig, ax = plt.subplots(figsize=(5.9, 4.2))
 
     for code_name in ["rotated_sc", "unrotated_sc", "toric"]:
@@ -450,7 +399,7 @@ def plot_figure1(df, save_path):
     ax.set_title("Surface Code Family: LER vs PER", pad=10)
     ax.legend(fontsize=9, ncol=2, loc="lower right", frameon=True)
     ax.grid(True, which="both", ls="--", linewidth=0.5, alpha=0.5)
-    _bold_ticks(ax)
+    bold_ticks(ax)
     fig.tight_layout()
     fig.savefig(save_path, dpi=300, bbox_inches="tight")
     print(f"Plot saved: {save_path}")
@@ -459,43 +408,84 @@ def plot_figure1(df, save_path):
 
 def plot_figure2(df, save_path):
     """Figure 2: BB Codes — color = code, linestyle/marker = decoder."""
-    _apply_paper_style()
-    fig, ax = plt.subplots(figsize=(5.9, 4.2))
+    import numpy as np
+
+    apply_paper_style()
+    fig, ax = plt.subplots(figsize=(4.2, 4.6))
+
+    # Exclude unreliable data points
+    EXCLUDE = {
+        "bb_72_12_6": {7e-4},
+    }
+    # Only fit sub-threshold points up to this p per code
+    P_FIT_MAX = {"bb_72_12_6": 1e-3, "bb_108_8_10": 2e-3, "bb_144_12_12": 2e-3}
+    P_EXTRAP_MIN = 1e-4
 
     for code_name in FIG2_CODES:
-        df_code = df[df["code"] == code_name]
+        df_code = df[df["code"] == code_name].copy()
         color = BB_COLORS.get(code_name, "gray")
         label_base = CODE_LABELS.get(code_name, code_name)
+        rounds = BB_ROUNDS.get(code_name, 1)
+        excluded_p = EXCLUDE.get(code_name, set())
 
         for decoder_label in ["gpu_bposd", "mwpf"]:
-            df_d = df_code[df_code["decoder_label"] == decoder_label].sort_values("p")
+            df_d = df_code[df_code["decoder_label"] == decoder_label].copy()
             if df_d.empty:
                 continue
+            # Drop excluded p values
+            df_d = df_d[~df_d["p"].apply(lambda x: any(abs(x - ep) < 1e-12 for ep in excluded_p))]
+            df_d = df_d.sort_values("p")
+
             ls = DECODER_LINESTYLES[decoder_label]
             marker = DECODER_MARKERS[decoder_label]
-            dec_str = "GPU BP+OSD" if decoder_label == "gpu_bposd" else "MWPF"
+            p_vals = df_d["p"].values
+            ler_vals = df_d["logical_error_rate"].values / rounds
+
+            # Connected markers (original style)
             ax.loglog(
-                df_d["p"], df_d["logical_error_rate"] / df_d["k"],
+                p_vals, ler_vals,
                 marker=marker, color=color, linestyle=ls,
                 markeredgecolor="none",
-                label=f"{label_base} ({dec_str})",
+                label=label_base,
             )
 
+            # Power-law extrapolation extending left to P_EXTRAP_MIN
+            p_fit_max = P_FIT_MAX.get(code_name, 2e-3)
+            mask = (ler_vals < 0.5) & (p_vals <= p_fit_max)
+            p_min_data = p_vals[mask].min() if mask.sum() >= 2 else None
+            if p_min_data is not None and p_min_data > P_EXTRAP_MIN:
+                log_p = np.log10(p_vals[mask])
+                log_l = np.log10(ler_vals[mask])
+                slope, intercept = np.polyfit(log_p, log_l, 1)
+                # Draw only the extrapolated portion (left of the data)
+                p_extrap = np.logspace(np.log10(P_EXTRAP_MIN), np.log10(p_min_data), 100)
+                ler_extrap = 10 ** (intercept + slope * np.log10(p_extrap))
+                ax.loglog(p_extrap, ler_extrap, color=color, linestyle="--",
+                          linewidth=1.6, alpha=0.7, zorder=1)
+
     ax.set_xlabel("Physical Error Rate (p)")
-    ax.set_ylabel("Logical Error Rate per Logical Qubit")
+    ax.set_ylabel("LER per Round")
     ax.set_title("BB Codes: LER vs PER", pad=10)
-    ax.legend(fontsize=9, ncol=1, loc="lower right", frameon=True)
+    ax.set_xlim(left=1e-4)
+    ax.set_ylim(bottom=1e-13)
+    # Deduplicate legend labels
+    handles, labels = ax.get_legend_handles_labels()
+    seen = {}
+    for h, l in zip(handles, labels):
+        if l not in seen:
+            seen[l] = h
+    ax.legend(seen.values(), seen.keys(), fontsize=9, ncol=1, loc="lower right", frameon=True)
     ax.grid(True, which="both", ls="--", linewidth=0.5, alpha=0.5)
-    _bold_ticks(ax)
+    bold_ticks(ax)
     fig.tight_layout()
-    fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    fig.savefig(save_path, dpi=180, bbox_inches="tight")
     print(f"Plot saved: {save_path}")
     plt.close(fig)
 
 
 def plot_figure3(df, save_path):
     """Figure 3: LER/k vs Physical Qubits per Logical Qubit (N_total/k) at fixed p."""
-    _apply_paper_style()
+    apply_paper_style()
     fig, ax = plt.subplots(figsize=(5.9, 4.2))
 
     for code_name in df["code"].unique():
@@ -537,7 +527,7 @@ def plot_figure3(df, save_path):
     ax.set_title("Qubit Efficiency at $p = 10^{-3}$", pad=10)
     ax.legend(fontsize=9, frameon=True, ncol=2)
     ax.grid(True, which="both", ls="--", linewidth=0.5, alpha=0.5)
-    _bold_ticks(ax)
+    bold_ticks(ax)
     fig.tight_layout()
     fig.savefig(save_path, dpi=300, bbox_inches="tight")
     print(f"Plot saved: {save_path}")
@@ -546,7 +536,7 @@ def plot_figure3(df, save_path):
 
 def plot_figure4(df, save_path):
     """Scheduling comparison plot — color = distance, linestyle = schedule."""
-    _apply_paper_style()
+    apply_paper_style()
     fig, ax = plt.subplots(figsize=(5.9, 4.2))
 
     for sched in ["perpendicular", "parallel"]:
@@ -570,7 +560,7 @@ def plot_figure4(df, save_path):
     ax.set_title("CNOT Scheduling: Hook Error Impact", pad=10)
     ax.legend(fontsize=9, ncol=2, frameon=True)
     ax.grid(True, which="both", ls="--", linewidth=0.5, alpha=0.5)
-    _bold_ticks(ax)
+    bold_ticks(ax)
     fig.tight_layout()
     fig.savefig(save_path, dpi=300, bbox_inches="tight")
     print(f"Plot saved: {save_path}")

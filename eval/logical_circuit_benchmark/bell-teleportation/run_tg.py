@@ -128,7 +128,7 @@ def run_simulation(circuit, p: float, decoder_name: str,
     noisy = injector.inject_noise(circuit)
 
     pipeline = SimulationPipeline(
-        decoder_config=DecoderConfig(decoder_name, backend='cpu'),
+        decoder_config=DecoderConfig(decoder_name, backend='gpu' if decoder_name == 'nv-qldpc-decoder' else 'cpu'),
         max_shots=max_shots,
         max_errors=max_errors,
         batch_size=batch_size,
@@ -151,7 +151,7 @@ if __name__ == '__main__':
                         default=[5e-4, 1e-3, 2e-3, 5e-3])
     parser.add_argument('--states', nargs='+', choices=['X', 'Z'], default=['X', 'Z'],
                         help='States to teleport (default: X Z)')
-    parser.add_argument('--decoder', choices=['bposd', 'pymatching', 'mwpf'],
+    parser.add_argument('--decoder', choices=['bposd', 'pymatching', 'mwpf', 'nv-qldpc-decoder'],
                         default='bposd')
     parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--max-shots', type=int, default=1_000_000_000)

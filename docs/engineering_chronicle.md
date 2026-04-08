@@ -165,6 +165,89 @@ Scale LightStim to handle large circuits (d=9+, 50+ patches) with acceptable bui
 
 ---
 
+## 2026-04 — Decoder Backend Empirical Findings (Benchmarking Campaign)
+
+### Worker Parallelism Model
+
+`SimulationPipeline` with `num_workers=N` (N > 1) spawns N independent `mp.Process` instances sharing three
+`multiprocessing.Value` counters (`shots_counter`, `errors_counter`, `post_counter`) and a single `Lock`.
+Each worker independently samples a batch, decodes it, then acquires the lock briefly to update the shared
+counters and check the stopping condition. The lock is held for microseconds per batch; at `batch_size=10000`
+it contributes negligibly to total runtime.
+
+For the GPU backend (`nv-qldpc-decoder`), worker `wid` is assigned `gpu_id = wid` **unless**
+`CUDA_VISIBLE_DEVICES` is already set in the environment — in which case the env var takes precedence and
+all workers land on the same GPU. Implication: when running with a pre-set `CUDA_VISIBLE_DEVICES=6`, always
+use `--num-workers 1`; multi-worker GPU parallelism requires leaving `CUDA_VISIBLE_DEVICES` unset so the
+pipeline assigns worker 0 → GPU 0, worker 1 → GPU 1, etc.
+
+### Memory Bandwidth as the CPU Parallelism Ceiling
+
+Empirical result: 32 CPU workers (`bposd`) on a d=7 circuit (2268 detectors, ~48k error mechanisms) achieved
+only ~8× speedup. The explanation is memory-bandwidth saturation, not lock contention or compute limits.
+
+bposd's BP iterations are memory-bandwidth bound: each iteration sweeps the full `H` matrix
+(`num_errors × num_detectors`) for message passing. The per-worker working set is dominated by:
+
+| Circuit | Detectors | Error mechs | ~Working set / worker |
+|---|---|---|---|
+| TG d=3 | 180 | ~3k | ~1 MB |
+| TG d=5 | 840 | ~12k | ~3 MB |
+| TG d=7 | 2268 | ~48k | ~12 MB |
+| BB [[144,12,12]] | ~10k+ | ~100k+ | ~50+ MB |
+
+The machine (2× AMD EPYC 9534, 1.5 TB RAM) has ~256 MB L3 cache per socket. Once the aggregate working
+set across all workers exceeds the L3, every BP iteration incurs DRAM latency, and additional workers only
+increase contention on the memory bus. Estimated saturation thresholds:
+
+- **d=5**: saturates at ~85 workers (rarely hit in practice)
+- **d=7**: saturates at ~21 workers — explains the 32-worker/8× empirical observation
+- **BB [[144,12,12]]**: saturates at ~5 workers
+
+The H100 GPU bypasses this entirely: HBM3 bandwidth (~3.35 TB/s) is ~10× higher than host DRAM bandwidth,
+and the entire working set fits in 80 GB VRAM. This is why `nv-qldpc-decoder` finishes in seconds for
+circuits where CPU decoders hang for hours.
+
+### Practical Decoder Selection Rules (from Benchmarking)
+
+Established during the Bell teleportation + logical gate benchmark campaign (2026-04):
+
+1. **PyMatching**: only for circuits with no hyperedges (memory, LS); never for fold-transversal H/S or TG.
+2. **bposd CPU**: fold-transversal gates at d=3,5; TG at d=3,5. Beyond d=5 at low p, too slow and risks
+   hangs at high error density.
+3. **MWPF CPU**: TG at d=7 when p ≤ 2e-3. Hangs at p ≥ 5e-3 on d=7 (2268 detectors, dense syndrome —
+   ~200 detector firings per shot, 72% hyperedges in DEM). Same hang pattern as bposd.
+4. **nv-qldpc-decoder GPU**: required for d=7 fold-transversal H/S/CNOT_trans at any p; required for TG
+   d=7 at p ≥ 5e-3. Use 1 worker, pin to a specific GPU via `CUDA_VISIBLE_DEVICES`.
+
+Key finding: TG d=7 p=5e-3 has raw (undecoded) observable error rate ~49%, but after GPU decoding LER drops
+to ~5%. CPU decoders fail not because the circuit is wrong but because one syndrome per ~80k shots is a
+pathological matching instance that causes exponential blowup in MWPF/OSD.
+
+See `docs/decoder_selection_guide.md` for the full reference table.
+
+### Post-Paper TODO — Decoder Auto-Selection and Profiling
+
+**Goal**: develop a workflow that automatically selects the optimal decoder backend and `num_workers` for a
+given circuit, replacing the current manual trial-and-error process.
+
+**Planned work**:
+1. **Profiling harness**: for a given circuit + p, measure (a) per-shot decode time distribution,
+   (b) DEM hyperedge fraction, (c) average syndrome weight — these three statistics determine which decoder
+   regime applies.
+2. **Memory working-set estimator**: given `num_detectors` and `num_errors`, estimate bposd working set and
+   compute the theoretical CPU worker ceiling before memory-bandwidth saturation.
+3. **Auto-selection logic**:
+   - If `max_edge_weight ≤ 2`: use PyMatching
+   - Else if `estimated_working_set × num_workers ≤ L3_cache`: use bposd CPU with computed optimal workers
+   - Else: use `nv-qldpc-decoder` GPU (1 worker per GPU)
+4. **Hang detection + fallback**: if a decode batch exceeds N× the median batch time, abort and switch to
+   GPU. This is the root failure mode observed for MWPF/bposd at high p + large d.
+
+**Priority**: post paper submission. Current workaround: `docs/decoder_selection_guide.md`.
+
+---
+
 ## Post-Paper Roadmap
 
 ### Performance: Beyond RREF

@@ -56,6 +56,9 @@ plan/
 # Paper (synced with Overleaf separately)
 paper/
 
+# Quantinuum (shared separately, not part of repo)
+quantinuum/
+
 # Frontend (developed separately in Lovable)
 front-end/
 

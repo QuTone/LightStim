@@ -219,3 +219,97 @@ class StateInjectionExperiment(QECExperiment):
 
         # 7. Noise injection
         return self._inject_noise(self.builder.circuit)
+
+
+class YMemoryExperiment(QECExperiment):
+    """
+    Y-state memory experiment with configurable SE block scheduling.
+
+    Circuit structure:
+        1. Product-state Y injection  (noiseless physical init)
+        2. 1 noiseless SE round       (injection stabilization — always perpendicular)
+        3. `rounds` noisy SE rounds   (configurable scheduling — the variable under test)
+        4. Noiseless logical unencode
+        5. Noiseless physical MY
+
+    Because the Y logical is a ±1 eigenstate of Y_L = X_L · Z_L, it is
+    sensitive to BOTH X and Z hook errors simultaneously, making it ideal
+    for comparing SE schedulings that differ in hook-error orientation.
+    """
+
+    def __init__(
+        self,
+        distance: int = 3,
+        rounds: int = 2,
+        scheduling: str = 'perpendicular',
+        protocol: Literal["corner", "middle"] = "corner",
+        noise_params: Optional[NoiseConfig] = None,
+        noise_model: Optional[str] = "circuit_level",
+        if_detector: bool = True,
+    ):
+        """
+        Args:
+            distance: Code distance.
+            rounds: Number of noisy SE rounds (memory phase only; injection round is separate).
+            scheduling: SE block scheduling for memory rounds ('perpendicular' or 'swapped').
+            protocol: Injection site ('corner' or 'middle').
+            noise_params: Noise configuration (None = noiseless simulation).
+            noise_model: Noise model string ('circuit_level', etc.).
+            if_detector: Whether to emit DETECTOR instructions.
+        """
+        super().__init__(
+            extraction_block_class=RotatedSurfaceCodeExtractionBlock,
+            rounds=rounds,
+            noise_params=noise_params,
+            noise_model=noise_model,
+            if_detector=if_detector,
+        )
+        self.distance = distance
+        self.scheduling = scheduling
+        self.protocol = protocol
+
+    def build(self) -> stim.Circuit:
+        # 1. Create patch and system
+        patch_local = RotatedSurfaceCode(distance=self.distance)
+        self.system = QECSystem()
+        patch = self.system.add_patch(patch_local, name="patch")
+
+        self._setup_experiment()
+        op_set = RotatedSurfaceCodeLogicalOpSet(
+            extraction_block_class=RotatedSurfaceCodeExtractionBlock
+        )
+        self.logical_executor.register_op_set(RotatedSurfaceCode, op_set)
+
+        self.builder.write_coordinates()
+
+        # 2. Product-state Y injection (rounds=0 → init only, noiseless, no post-selection)
+        self.logical_executor.apply_logical_operation(
+            op_name="state_injection",
+            patches=[patch],
+            inject_state="Y",
+            protocol=self.protocol,
+            rounds=0,
+            post_select_coords=set(),
+            noiseless_init=True,
+        )
+
+        # 3. 1 noiseless SE round (injection stabilization)
+        inj_se = RotatedSurfaceCodeExtractionBlock(self.system)
+        self.builder.apply_syndrome_extraction(inj_se.circuit, rounds=1, noiseless=True)
+
+        # 4. `rounds` noisy SE rounds (scheduling under test)
+        mem_se = RotatedSurfaceCodeExtractionBlock(self.system, scheduling=self.scheduling)
+        self.builder.apply_syndrome_extraction(mem_se.circuit, rounds=self.rounds)
+
+        # 5. Noiseless unencode → corner qubit carries logical Y
+        phys_q = self.logical_executor.apply_logical_operation(
+            op_name="logical_unencode",
+            patches=[patch],
+            inject_state="Y",
+            protocol=self.protocol,
+        )
+
+        # 6. Noiseless physical MY
+        self.builder.apply_data_readout({phys_q: "Y"}, noiseless=True)
+
+        return self._inject_noise(self.builder.circuit)

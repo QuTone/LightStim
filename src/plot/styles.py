@@ -1,65 +1,209 @@
-"""Styling: color palettes, rcParams, theme for publication-ready figures."""
+"""
+LightStim Plot Styles
+=====================
+Single source of truth for publication-quality figure styling.
 
-from typing import Dict, List, Optional
+Color Palette (Dark2 / ColorBrewer-derived)
+--------------------------------------------
+Desaturated, high-contrast, colorblind-friendly.  These are the canonical
+colors for all LightStim figures.
 
+  RUST     #a63603  — Rotated SC d=3  / bb_72_12_6
+  TEAL     #1b9e77  — Rotated SC d=5  / bb_108_8_10
+  VIOLET   #7570b3  — Rotated SC d=7  / bb_144_12_12
+  ORANGE   #d95f02  — Rotated SC d=9
+  MAGENTA  #e7298a  — extra group 5
+  OLIVE    #66a61e  — extra group 6
+  GOLD     #e6ab02  — extra group 7
+  SLATE    #666666  — extra group 8 / neutral
+
+Usage
+-----
+from src.plot.styles import apply_paper_style, PALETTE, CODES, bold_ticks
+
+fig, ax = plt.subplots(...)
+apply_paper_style()          # call once per script/notebook
+...
+bold_ticks(ax)               # call on each Axes after plotting
+fig.tight_layout(pad=0.4)    # keep whitespace tight
+"""
+
+from __future__ import annotations
+
+from typing import Dict, List, Optional, Union
+
+import matplotlib as mpl
 import matplotlib.pyplot as plt
-import seaborn as sns
 
-# Tech-oriented, distinct, colorblind-friendly palette (extended from test_planar)
-PALETTE_DISTANCE: Dict[int, str] = {
-    3: "#a63603",
-    5: "#1b9e77",
-    7: "#7570b3",
-    9: "#d95f02",
-    11: "#e7298a",
-    13: "#66a61e",
-    15: "#e6ab02",
-}
 
-# Default palette for up to 8 groups (husl-based, distinct)
-DEFAULT_PALETTE_HEX: List[str] = [
-    "#a63603", "#1b9e77", "#7570b3", "#d95f02",
-    "#e7298a", "#66a61e", "#e6ab02", "#666666",
+# ── Color palette ─────────────────────────────────────────────────────────────
+
+#: Canonical 8-color palette (Dark2 / ColorBrewer-derived).
+PALETTE: List[str] = [
+    "#a63603",  # 0  RUST
+    "#1b9e77",  # 1  TEAL
+    "#7570b3",  # 2  VIOLET
+    "#d95f02",  # 3  ORANGE
+    "#e7298a",  # 4  MAGENTA
+    "#66a61e",  # 5  OLIVE
+    "#e6ab02",  # 6  GOLD
+    "#666666",  # 7  SLATE
 ]
 
+#: Map code distance → color (first 4 distances use RUST / TEAL / VIOLET / DUSTY-ROSE).
+PALETTE_DISTANCE: Dict[int, str] = {
+    3:  PALETTE[0],   # RUST
+    5:  PALETTE[1],   # TEAL
+    7:  PALETTE[2],   # VIOLET
+    9:  "#d4607a",    # ROSE RED — medium rose, distinct from violet
+    11: PALETTE[4],
+    13: PALETTE[5],
+    15: PALETTE[6],
+}
 
-def get_palette(n: int, palette: Optional[Dict | str] = None):
-    """Get color list for n groups. palette can be a dict (value->color) or preset name."""
-    if palette is None:
-        return DEFAULT_PALETTE_HEX[:n] if n <= len(DEFAULT_PALETTE_HEX) else sns.color_palette("husl", n).as_hex()
-    if isinstance(palette, dict):
-        values = sorted(palette.keys())
-        return [palette[v] for v in values]
-    if isinstance(palette, str) and palette == "distance":
-        return [PALETTE_DISTANCE.get(k, DEFAULT_PALETTE_HEX[i % len(DEFAULT_PALETTE_HEX)])
-                for i, k in enumerate(range(3, 3 + n))]
-    return sns.color_palette(palette, n_colors=n).as_hex()
-
-
-def apply_theme(
-    figsize: tuple = (7, 5),
-    font_size: int = 11,
-    font_family: str = "sans-serif",
-    grid_alpha: float = 0.3,
-    dpi: int = 150,
-) -> None:
-    """Apply professional theme to matplotlib."""
-    plt.rcParams.update({
-        "figure.figsize": figsize,
-        "figure.dpi": dpi,
-        "font.size": font_size,
-        "font.family": font_family,
-        "axes.labelsize": font_size + 1,
-        "axes.titlesize": font_size + 2,
-        "xtick.labelsize": font_size - 1,
-        "ytick.labelsize": font_size - 1,
-        "legend.fontsize": font_size - 1,
-        "grid.alpha": grid_alpha,
-    })
-    sns.set_style("whitegrid", {"grid.alpha": grid_alpha})
+#: Per-code-family colors for overlay plots (Fig 3 style).
+CODES: Dict[str, str] = {
+    # Surface codes — blue family
+    "rotated_sc":   "#2166ac",
+    "unrotated_sc": "#4dac26",
+    "toric":        "#d01c8b",
+    "color_code":   "#f4a582",
+    # BB codes — PALETTE order
+    "bb_72_12_6":   PALETTE[0],
+    "bb_108_8_10":  PALETTE[1],
+    "bb_144_12_12": PALETTE[2],
+    "bb_288_12_18": PALETTE[3],
+}
 
 
-def ensure_theme_applied():
-    """Apply default theme if not already customized."""
-    if plt.rcParams.get("figure.figsize") == [6.0, 4.0]:  # matplotlib default
-        apply_theme()
+# ── rcParams ───────────────────────────────────────────────────────────────────
+
+#: Full rcParams dict for paper-quality figures.
+#: Apply once per script with ``apply_paper_style()``.
+PAPER_RC: Dict[str, object] = {
+    # Font — everything bold
+    "font.family":        "sans-serif",
+    "font.weight":        "bold",
+    "font.size":          14,
+    # Axes labels & title
+    "axes.labelsize":     17,
+    "axes.labelweight":   "bold",
+    "axes.titlesize":     18,
+    "axes.titleweight":   "bold",
+    "axes.linewidth":     1.3,
+    # Ticks
+    "xtick.labelsize":    13,
+    "ytick.labelsize":    13,
+    "xtick.major.width":  1.2,
+    "ytick.major.width":  1.2,
+    # Legend
+    "legend.fontsize":    12,
+    "legend.title_fontsize": 12,
+    "legend.frameon":     True,
+    "legend.edgecolor":   "0.7",
+    # Lines & markers
+    "lines.linewidth":    2.2,
+    "lines.markersize":   8.0,
+    # Grid
+    "axes.grid":          True,
+    "grid.linestyle":     "--",
+    "grid.linewidth":     0.5,
+    "grid.alpha":         0.5,
+    # Figure
+    "figure.dpi":         150,
+    "figure.autolayout":  False,  # use tight_layout(pad=0.4) explicitly
+}
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+def apply_paper_style() -> None:
+    """Apply PAPER_RC to matplotlib global rcParams.
+
+    Call once at the top of any plotting script or notebook cell.
+    """
+    mpl.rcParams.update(PAPER_RC)
+
+
+def bold_ticks(ax: mpl.axes.Axes) -> None:
+    """Set fontweight='bold' on all tick labels of *ax*.
+
+    Tick label boldness cannot be set via rcParams alone — call this
+    after all plotting is done on the Axes.
+    """
+    for tick in ax.xaxis.get_major_ticks() + ax.yaxis.get_major_ticks():
+        tick.label1.set_fontweight("bold")
+
+
+def get_color(key: Union[int, str]) -> str:
+    """Return a canonical color.
+
+    Args:
+        key: integer index into PALETTE, code-family name from CODES,
+             or integer distance for PALETTE_DISTANCE.
+    """
+    if isinstance(key, int):
+        if key in PALETTE_DISTANCE:
+            return PALETTE_DISTANCE[key]
+        return PALETTE[key % len(PALETTE)]
+    if isinstance(key, str) and key in CODES:
+        return CODES[key]
+    raise KeyError(f"Unknown color key: {key!r}")
+
+
+def get_palette(n: int) -> List[str]:
+    """Return the first *n* colors from PALETTE (cycles if n > 8)."""
+    return [PALETTE[i % len(PALETTE)] for i in range(n)]
+
+
+# ── Legacy shim (keep old callers working) ────────────────────────────────────
+
+# ── Code / decoder metadata ────────────────────────────────────────────────────
+
+#: Human-readable labels for code families and specific BB codes.
+CODE_LABELS: Dict[str, str] = {
+    "rotated_sc":    "Rotated SC",
+    "unrotated_sc":  "Unrotated SC",
+    "toric":         "Toric",
+    "color_code":    "Color (6-6-6)",
+    "bb_72_12_6":    r"$[[72,12,6]]$",
+    "bb_108_8_10":   r"$[[108,8,10]]$",
+    "bb_144_12_12":  r"$[[144,12,12]]$",
+    "bb_288_12_18":  r"$[[288,12,18]]$",
+}
+
+#: Line styles per code family (distinguish on same axes).
+CODE_LINESTYLES: Dict[str, str] = {
+    "rotated_sc":   "-",
+    "unrotated_sc": "--",
+    "toric":        ":",
+    "color_code":   "-.",
+}
+
+#: Markers per code family.
+CODE_MARKERS: Dict[str, str] = {
+    "rotated_sc":   "o",
+    "unrotated_sc": "s",
+    "toric":        "^",
+    "color_code":   "D",
+}
+
+#: Line styles per decoder label.
+DECODER_LINESTYLES: Dict[str, str] = {
+    "gpu_bposd": "-",
+    "mwpf":      "--",
+}
+
+#: Markers per decoder label.
+DECODER_MARKERS: Dict[str, str] = {
+    "gpu_bposd": "o",
+    "mwpf":      "X",
+}
+
+
+# ── Legacy shim (keep old callers working) ────────────────────────────────────
+
+def apply_theme(figsize=(7, 5), font_size=12, **_):
+    """Deprecated shim — use apply_paper_style() instead."""
+    apply_paper_style()
+    mpl.rcParams["figure.figsize"] = list(figsize)

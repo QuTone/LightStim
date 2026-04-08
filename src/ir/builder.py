@@ -7,6 +7,26 @@ from ..ir.tracker import SyndromeTracker, _append_detector
 from ..noise.config import NoiseConfig
 from ..noise.injector import NoiseInjector
 
+def _make_noiseless(circuit: stim.Circuit) -> stim.Circuit:
+    """Return a copy of circuit with all gate instructions tagged 'noiseless'.
+
+    Structural instructions (TICK, SHIFT_COORDS, DETECTOR, etc.) are preserved
+    as-is so that detector generation and time-shift logic are unaffected.
+    """
+    structural = {'TICK', 'SHIFT_COORDS', 'QUBIT_COORDS', 'DETECTOR', 'OBSERVABLE_INCLUDE'}
+    result = stim.Circuit()
+    for inst in circuit:
+        if isinstance(inst, stim.CircuitRepeatBlock):
+            result.append(stim.CircuitRepeatBlock(inst.repeat_count, _make_noiseless(inst.body_copy())))
+        elif inst.name in structural:
+            args = inst.gate_args_copy() or None
+            result.append(inst.name, inst.targets_copy(), args, tag=inst.tag)
+        else:
+            args = inst.gate_args_copy() or None
+            result.append(inst.name, inst.targets_copy(), args, tag="noiseless")
+    return result
+
+
 class CircuitBuilder:
     """
     Constructs the Stim circuit for QEC experiments. 
@@ -77,21 +97,26 @@ class CircuitBuilder:
         # Insert at position start_index (first n_old instructions are existing coords)
         self.circuit = self.circuit[:start_index] + new_coords_circuit + self.circuit[start_index:]
 
-    def initialize(self, init_dict: Dict[int, str], n: int):
+    def initialize(self, init_dict: Dict[int, str], n: int, noiseless: bool = False):
         """
         Resets specific qubits in a given basis.
+
+        Args:
+            noiseless: If True, tag all reset instructions with 'noiseless' so that
+                the noise injector skips them (useful for injection-phase init).
         """
         qubit_indices_x = [q for q, b in init_dict.items() if b == 'X']
         qubit_indices_z = [q for q, b in init_dict.items() if b == 'Z']
         qubit_indices_y = [q for q, b in init_dict.items() if b == 'Y']
 
+        tag = "noiseless" if noiseless else ""
         # Apply Reset Gate
         if qubit_indices_x:
-            self.circuit.append("RX", qubit_indices_x)
+            self.circuit.append("RX", qubit_indices_x, tag=tag)
         if qubit_indices_z:
-            self.circuit.append("R", qubit_indices_z)
+            self.circuit.append("R", qubit_indices_z, tag=tag)
         if qubit_indices_y:
-            self.circuit.append("RY", qubit_indices_y)
+            self.circuit.append("RY", qubit_indices_y, tag=tag)
         
         init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
 
@@ -122,7 +147,8 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     def apply_syndrome_extraction(self,
                                   circuit_chunk: stim.Circuit,
-                                  rounds: int = 1):
+                                  rounds: int = 1,
+                                  noiseless: bool = False):
         """
         Applies syndrome extraction with automated Tracker integration.
 
@@ -130,8 +156,12 @@ class CircuitBuilder:
             circuit_chunk: A Stim circuit representing ONE round of stabilizer measurement.
                            Only includes circuit operations. The last instruction has to be syndrome qubit measurement.
             rounds: Number of times to repeat.
+            noiseless: If True, tag all gate instructions in circuit_chunk as 'noiseless'
+                so the noise injector skips them. Useful for injection-stabilization rounds.
         """
         if rounds < 1: return
+        if noiseless:
+            circuit_chunk = _make_noiseless(circuit_chunk)
 
         # ======================================================================
         # Phase 1: First Round (Tracker-Driven)
