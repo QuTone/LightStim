@@ -215,6 +215,69 @@ class FlipAfterReset(NoiseRule):
 
         return [], []
 
+class FlipAfterYResetFiltered(NoiseRule):
+    """
+    Applies Z_ERROR after RY/MRY (Y-basis) resets on a specified set of qubits.
+
+    Primary use-case: injection noise on TG magic patches using corner state
+    injection.  In that protocol, only the corner qubit of each magic patch
+    receives an RY reset (the other data qubits get RX or RZ). Filtering to
+    RY resets therefore naturally targets the single injected physical qubit
+    per patch — exactly the model in arXiv:2406.17653 ("extra Z errors on
+    the injected physical qubit").
+    """
+
+    def __init__(self, allowed_qubits, param_name: str = "p_reset"):
+        self.allowed_qubits = frozenset(allowed_qubits)
+        self.param_name = param_name
+        self.y_reset = {"RY", "MRY"}
+
+    def apply(self, instruction: stim.CircuitInstruction, config: NoiseConfig,
+              active_qubits: Set[int]) -> Tuple[List[stim.CircuitInstruction],
+                                                List[stim.CircuitInstruction]]:
+        if instruction.tag == "noiseless":
+            return [], []
+        if instruction.name not in self.y_reset:
+            return [], []
+        p = config.get(self.param_name)
+        if p <= 0:
+            return [], []
+        targets = [t for t in instruction.targets_copy()
+                   if t.is_qubit_target and t.value in self.allowed_qubits]
+        if not targets:
+            return [], []
+        return [], [stim.CircuitInstruction("Z_ERROR", targets, [p])]
+
+
+class FlipAfterResetFiltered(FlipAfterReset):
+    """
+    FlipAfterReset restricted to a specified set of qubit indices.
+
+    Applies the standard reset noise (X_ERROR after Z-reset, Z_ERROR after
+    X-reset or Y-reset) only to qubits in ``allowed_qubits``.  All other
+    qubits are left unaffected.
+
+    Primary use-case: add an independent injection noise channel on magic-state
+    qubits on top of a circuit-level NoiseInjector that already applies
+    FlipAfterReset to all qubits.
+    """
+
+    def __init__(self, allowed_qubits, param_name: str = "p_reset"):
+        super().__init__(param_name=param_name)
+        self.allowed_qubits = frozenset(allowed_qubits)
+
+    def apply(self, instruction, config, active_qubits):
+        pre, post = super().apply(instruction, config, active_qubits)
+        filtered_post = []
+        for inst in post:
+            targets = [t for t in inst.targets_copy()
+                       if t.is_qubit_target and t.value in self.allowed_qubits]
+            if targets:
+                filtered_post.append(
+                    stim.CircuitInstruction(inst.name, targets, inst.gate_args_copy()))
+        return pre, filtered_post
+
+
 # Insert Idling Error at specific moments on specific qubits, controlled by tags
 
 class TaggedIdling(NoiseRule):

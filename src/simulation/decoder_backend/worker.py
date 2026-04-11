@@ -22,6 +22,7 @@ def _decode_worker_cpu(
     max_errors: int,
     post_select_indices: List[int],
     post_select_observable_indices: Optional[List[int]],
+    post_select_corrected_observable_indices: Optional[List[int]],
     target_observable_indices: Optional[List[int]],
     shots_counter,
     post_counter,
@@ -76,15 +77,36 @@ def _decode_worker_cpu(
         pred_packed = compiled.decode_shots_bit_packed(
             bit_packed_detection_event_data=det_packed,
         )
-        if target_observable_indices is not None:
+
+        if post_select_corrected_observable_indices:
+            # Post-decode PS: keep only shots where corrected obs == 0.
+            n_obs = obs_filtered.shape[1]
+            pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
+            corrected = obs_filtered ^ pred_unpacked
+            corr_mask = np.all(corrected[:, post_select_corrected_observable_indices] == 0, axis=1)
+            kept_corr = int(corr_mask.sum())
+            if kept_corr > 0:
+                corrected_kept = corrected[corr_mask]
+                if target_observable_indices is not None:
+                    batch_errors = int(np.sum(np.any(corrected_kept[:, target_observable_indices] != 0, axis=1)))
+                else:
+                    batch_errors = int(np.sum(np.any(corrected_kept != 0, axis=1)))
+            else:
+                batch_errors = 0
+            with lock:
+                post_counter.value += kept_corr
+                errors_counter.value += batch_errors
+        elif target_observable_indices is not None:
             n_obs = obs_filtered.shape[1]
             pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
             batch_errors = int(np.sum(np.any(
                 pred_unpacked[:, target_observable_indices] != obs_filtered[:, target_observable_indices], axis=1
             )))
+            with lock:
+                post_counter.value += kept
+                errors_counter.value += batch_errors
         else:
             batch_errors = int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
-
-        with lock:
-            post_counter.value += kept
-            errors_counter.value += batch_errors
+            with lock:
+                post_counter.value += kept
+                errors_counter.value += batch_errors
