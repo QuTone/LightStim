@@ -54,6 +54,9 @@ def parse_args():
     parser.add_argument("--p-1q", type=float, default=1e-6, help="Single-qubit error rate")
     parser.add_argument("--max-shots", type=int, default=2_000_000)
     parser.add_argument("--max-errors", type=int, default=200)
+    parser.add_argument("--state", nargs="+", default=None,
+                        choices=["Z", "X", "Y"],
+                        help="Restrict to specific states (default: all Z X Y)")
     parser.add_argument("--ps-mode", default="hybrid", choices=["hybrid", "pqrm_only"],
                         help="Post-selection mode (default: hybrid)")
     parser.add_argument("--canonical", action="store_true", help="Use canonical PQRM logical")
@@ -85,6 +88,8 @@ def run_sweep(args):
     for s in args.pqrm:
         pqrm_codes.append([int(x) for x in s.split(",")])
 
+    state_list = args.state if args.state is not None else STATE_LIST
+
     noise = NoiseConfig(p_1q=args.p_1q, p_2q=args.p, p_meas=args.p, p_reset=args.p)
 
     pipeline = SimulationPipeline(
@@ -101,8 +106,8 @@ def run_sweep(args):
     write_header = not csv_path.exists()
 
     pqrm_strs = ["-".join(str(x) for x in p) for p in pqrm_codes]
-    total_points = len(pqrm_codes) * len(D_SURF_LIST) * len(STATE_LIST)
-    skipped = sum(1 for p in pqrm_codes for d in D_SURF_LIST for s in STATE_LIST
+    total_points = len(pqrm_codes) * len(D_SURF_LIST) * len(state_list)
+    skipped = sum(1 for p in pqrm_codes for d in D_SURF_LIST for s in state_list
                   if ("-".join(str(x) for x in p), d, s) in done)
     print(f"CrossLS sweep: PQRM={pqrm_strs}, p={args.p}, decoder={args.decoder}({backend}), "
           f"workers={args.workers}")
@@ -123,7 +128,7 @@ def run_sweep(args):
         for pqrm_para in pqrm_codes:
             pqrm_str = "-".join(str(x) for x in pqrm_para)
             for d in D_SURF_LIST:
-                for state in STATE_LIST:
+                for state in state_list:
                     if (pqrm_str, d, state) in done:
                         continue
 

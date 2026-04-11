@@ -3,25 +3,28 @@
 Logical Operation Benchmark — Unrotated Surface Code (Fig 1)
 
 Records raw per-sub-experiment data for:
-  H gate          2 sub-exps: H|0>→MX, H|+>→MZ
-  S gate          1 sub-exp:  S·S† roundtrip |+>→MX  (LER_per_gate = total/2)
+  H gate            2 sub-exps: H|0>→MX, H|+>→MZ
+  S gate            1 sub-exp:  S·S† roundtrip |+>→MX  (LER_per_gate = total/2)
   Transversal CNOT  5 sub-exps: ZZ→ZZ, ZX→ZX, XZ→XX, XZ→ZZ, XX→XX
-  LS CNOT           5 sub-exps: same basis coverage, ancilla |+> protocol
-  memory          Z-basis memory at d rounds — baseline for comparison
+  LS CNOT ZZ-XX     5 sub-exps: ancilla |+>, ZZ first, XX second  → fig1_cnot_ls_zz_xx_raw.csv
+  LS CNOT XX-ZZ     5 sub-exps: ancilla |0>, XX first, ZZ second  → fig1_cnot_ls_xx_zz_raw.csv
+  memory            Z-basis memory at d rounds — baseline for comparison
 
 All averaging / per-gate LER is computed in post-processing — not here.
 
 Usage:
-    python eval/logical_op_benchmark/run_logical_ops.py [--quick] [--gate GATE]
+    venv/bin/python eval/logical_op_benchmark/run_logical_ops.py [options]
 
-    --quick       Reduced sweep for fast iteration
-    --gate GATE   Run only one gate: H | S | CNOT_trans | CNOT_LS | memory
+    --quick              Reduced sweep for fast iteration
+    --gate GATE          Run only one gate: H | S | CNOT_trans | CNOT_LS_ZZ_XX | CNOT_LS_XX_ZZ | memory
+    --distances N [N ...]  Override distance list (e.g. --distances 3 5)
     --max-shots N
     --max-errors N
     --num-workers N
+    --decoder NAME
 
 Output:
-    eval/logical_op_benchmark/results/fig1_{gate}_raw.csv
+    eval/logical_op_benchmark/results/fig1_{gate_lower}_raw.csv
 """
 
 import sys
@@ -67,6 +70,9 @@ QUICK_SWEEP = {
     "p": [1e-4, 1e-3, 5e-3],
     "rounds": 2,
 }
+
+# LS CNOT uses rounds=d per segment (not the global sweep["rounds"])
+LS_CNOT_P_VALUES = [5e-4, 1e-3, 2e-3, 5e-3, 1e-2]
 
 PIPELINE_DEFAULTS = {
     "max_errors": 100,
@@ -206,14 +212,15 @@ def build_cnot_trans_tasks(sweep: dict) -> List[ExperimentTask]:
 # LS CNOT tasks
 # =============================================================================
 
-def build_cnot_ls_tasks(sweep: dict) -> List[ExperimentTask]:
+def build_cnot_ls_zz_xx_tasks(sweep: dict) -> List[ExperimentTask]:
     """
-    5 sub-experiments for LS CNOT via CNOTLSExperiment.
-    Protocol A: ancilla init |+> (X), measure Z.
-    Layout: ancilla at origin, target at (+2d, 0), control at (0, +2d).
+    5 sub-experiments for LS CNOT, ZZ-XX protocol:
+      ancilla init |+> (X basis), ZZ merge first, XX merge second, measure Z.
+    rounds = d per SE segment (fault-tolerance requirement for LS).
     """
     tasks = []
-    for (sub, ic, it, mc, mt), d, p in product(CNOT_SUB_EXPERIMENTS, sweep["distance"], sweep["p"]):
+    for (sub, ic, it, mc, mt), d, p in product(
+            CNOT_SUB_EXPERIMENTS, sweep["distance"], LS_CNOT_P_VALUES):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
             exp = CNOTLSExperiment(
@@ -227,17 +234,57 @@ def build_cnot_ls_tasks(sweep: dict) -> List[ExperimentTask]:
                 initial_state_dict={"a": "X", "c": ic, "t": it},
                 measure_state_dict={"a": "Z", "c": mc, "t": mt},
                 extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
-                rounds=sweep["rounds"],
+                rounds=d,
                 noise_params=noise,
             )
             circuit = exp.build()
         tasks.append(ExperimentTask(circuit, json_metadata={
-            "gate": "CNOT_LS",
+            "gate": "CNOT_LS_ZZ_XX",
+            "protocol": "ZZ-XX",
             "sub_experiment": sub,
             "init_basis": f"{ic}{it}",
             "measure_basis": f"{mc}{mt}",
             "d": d,
-            "rounds": sweep["rounds"],
+            "rounds": d,
+            "p": p,
+        }))
+    return tasks
+
+
+def build_cnot_ls_xx_zz_tasks(sweep: dict) -> List[ExperimentTask]:
+    """
+    5 sub-experiments for LS CNOT, XX-ZZ protocol:
+      ancilla init |0> (Z basis), XX merge first, ZZ merge second, measure X.
+    rounds = d per SE segment (fault-tolerance requirement for LS).
+    """
+    tasks = []
+    for (sub, ic, it, mc, mt), d, p in product(
+            CNOT_SUB_EXPERIMENTS, sweep["distance"], LS_CNOT_P_VALUES):
+        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        with contextlib.redirect_stdout(io.StringIO()):
+            exp = CNOTLSExperiment(
+                patch_configs={
+                    "c": {"distance": d},
+                    "t": {"distance": d},
+                    "a": {"distance": d},
+                },
+                offset_ta=(2 * d, 0),
+                offset_ca=(0, 2 * d),
+                initial_state_dict={"a": "Z", "c": ic, "t": it},
+                measure_state_dict={"a": "X", "c": mc, "t": mt},
+                extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
+                rounds=d,
+                noise_params=noise,
+            )
+            circuit = exp.build()
+        tasks.append(ExperimentTask(circuit, json_metadata={
+            "gate": "CNOT_LS_XX_ZZ",
+            "protocol": "XX-ZZ",
+            "sub_experiment": sub,
+            "init_basis": f"{ic}{it}",
+            "measure_basis": f"{mc}{mt}",
+            "d": d,
+            "rounds": d,
             "p": p,
         }))
     return tasks
@@ -324,11 +371,12 @@ def append_results(df_new: "pd.DataFrame", csv_path: Path) -> None:
 # =============================================================================
 
 GATE_BUILDERS = {
-    "H":          build_h_tasks,
-    "S":          build_s_tasks,
-    "CNOT_trans": build_cnot_trans_tasks,
-    "CNOT_LS":    build_cnot_ls_tasks,
-    "memory":     build_memory_tasks,
+    "H":             build_h_tasks,
+    "S":             build_s_tasks,
+    "CNOT_trans":    build_cnot_trans_tasks,
+    "CNOT_LS_ZZ_XX": build_cnot_ls_zz_xx_tasks,
+    "CNOT_LS_XX_ZZ": build_cnot_ls_xx_zz_tasks,
+    "memory":        build_memory_tasks,
 }
 
 # =============================================================================
@@ -341,6 +389,8 @@ def main():
                         help="Reduced sweep for fast iteration")
     parser.add_argument("--gate", choices=list(GATE_BUILDERS), default=None,
                         help="Run only one gate (default: all)")
+    parser.add_argument("--distances", type=int, nargs="+", default=None,
+                        help="Override distances (e.g. --distances 3 5)")
     parser.add_argument("--max-shots", type=int, default=PIPELINE_DEFAULTS["max_shots"])
     parser.add_argument("--max-errors", type=int, default=PIPELINE_DEFAULTS["max_errors"])
     parser.add_argument("--num-workers", type=int, default=PIPELINE_DEFAULTS["num_workers"])
@@ -350,6 +400,8 @@ def main():
     args = parser.parse_args()
 
     sweep = QUICK_SWEEP if args.quick else FULL_SWEEP
+    if args.distances:
+        sweep = dict(sweep, distance=args.distances)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     gates_to_run = [args.gate] if args.gate else list(GATE_BUILDERS)

@@ -411,7 +411,7 @@ def plot_figure2(df, save_path):
     import numpy as np
 
     apply_paper_style()
-    fig, ax = plt.subplots(figsize=(4.2, 4.6))
+    fig, ax = plt.subplots(figsize=(4.38, 4.38))
 
     # Exclude unreliable data points
     EXCLUDE = {
@@ -463,9 +463,9 @@ def plot_figure2(df, save_path):
                 ax.loglog(p_extrap, ler_extrap, color=color, linestyle="--",
                           linewidth=1.6, alpha=0.7, zorder=1)
 
-    ax.set_xlabel("Physical Error Rate (p)")
+    ax.set_xlabel("Physical Error Rate $p$")
     ax.set_ylabel("LER per Round")
-    ax.set_title("BB Codes: LER vs PER", pad=10)
+    ax.set_title("BB Codes", pad=10)
     ax.set_xlim(left=1e-4)
     ax.set_ylim(bottom=1e-13)
     # Deduplicate legend labels
@@ -474,7 +474,9 @@ def plot_figure2(df, save_path):
     for h, l in zip(handles, labels):
         if l not in seen:
             seen[l] = h
-    ax.legend(seen.values(), seen.keys(), fontsize=9, ncol=1, loc="lower right", frameon=True)
+    ax.legend(seen.values(), seen.keys(),
+              ncol=1, loc="lower right",
+              frameon=True)
     ax.grid(True, which="both", ls="--", linewidth=0.5, alpha=0.5)
     bold_ticks(ax)
     fig.tight_layout()

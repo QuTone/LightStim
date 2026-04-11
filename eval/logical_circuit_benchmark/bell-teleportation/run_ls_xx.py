@@ -96,6 +96,8 @@ def build_circuit(d: int, teleport_state: str):
     se_block = UnrotatedSurfaceCodeExtractionBlock(system)
     builder.apply_syndrome_extraction(circuit_chunk=se_block.circuit, rounds=rounds_ls)
     builder.deactivate_coupler('coupler_23')
+    # Measure coupler_23 data qubits immediately at deactivation (same bug as CNOT_LS)
+    builder.apply_data_readout(final_measurements={q: 'Z' for q in cp23_global})
 
     builder.activate_coupler('coupler_12')
     cp12_local = system.coupler_patches['coupler_12'].data_indices
@@ -114,7 +116,7 @@ def build_circuit(d: int, teleport_state: str):
         if system.index_to_owner_map[q] in meas_xx
     }
     meas_dict.update({q: 'Z' for q in cp12_global})
-    meas_dict.update({q: 'Z' for q in cp23_global})
+    # cp23_global already measured at deactivation
     builder.apply_data_readout(final_measurements=meas_dict)
 
     circuit = builder.circuit
