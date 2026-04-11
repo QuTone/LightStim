@@ -3,12 +3,14 @@ from typing import List, Dict, Set
 from .config import NoiseConfig
 # Import your defined rules
 from .rules import (
-    NoiseRule, 
-    DepolarizeAfterGate, 
+    NoiseRule,
+    DepolarizeAfterGate,
     GeneralPauliAfterGate,
-    FlipBeforeMeasurement, 
-    FlipAfterReset, 
-    TaggedIdling 
+    FlipBeforeMeasurement,
+    FlipAfterReset,
+    FlipAfterResetFiltered,
+    FlipAfterYResetFiltered,
+    TaggedIdling,
 )
 
 class NoiseInjector:

@@ -42,7 +42,9 @@ class SimulationPipeline:
         num_workers: int = 4,
         post_select_detector_indices: Optional[List[int]] = None,
         post_select_observable_indices: Optional[List[int]] = None,
+        post_select_corrected_observable_indices: Optional[List[int]] = None,
         target_observable_indices: Optional[List[int]] = None,
+        allow_gauge_detectors: bool = False,
         output_dir: Optional[str] = None,
         output_filename: Optional[str] = None,
         output_format: str = "csv",
@@ -66,7 +68,9 @@ class SimulationPipeline:
             decoder=decoder_config or DecoderConfig("pymatching", backend="cpu"),
             post_select_detector_indices=post_select_detector_indices,
             post_select_observable_indices=post_select_observable_indices,
+            post_select_corrected_observable_indices=post_select_corrected_observable_indices,
             target_observable_indices=target_observable_indices,
+            allow_gauge_detectors=allow_gauge_detectors,
             output_dir=output_dir,
             output_filename=output_filename,
             output_format=output_format,
@@ -120,7 +124,8 @@ class SimulationPipeline:
         start = time.perf_counter()
         reporter = self._make_progress_reporter()
         has_post_selection = (len(post_select_indices) > 0 or
-                              bool(self.config.post_select_observable_indices))
+                              bool(self.config.post_select_observable_indices) or
+                              bool(self.config.post_select_corrected_observable_indices))
 
         if self.config.num_workers <= 1:
             return self._run_custom_single(
@@ -155,6 +160,7 @@ class SimulationPipeline:
                     self.config.max_errors,
                     post_select_indices,
                     self.config.post_select_observable_indices,
+                    self.config.post_select_corrected_observable_indices,
                     self.config.target_observable_indices,
                     shots_counter,
                     post_counter,
@@ -217,10 +223,12 @@ class SimulationPipeline:
         )
 
         dem = circuit.detector_error_model(
-            decompose_errors=getattr(decoder_instance, "decompose_errors", False),
+            decompose_errors=getattr(decoder_instance, "decompose_errors", False) or self.config.allow_gauge_detectors,
+            allow_gauge_detectors=self.config.allow_gauge_detectors,
+            ignore_decomposition_failures=self.config.allow_gauge_detectors,
         )
         compiled = decoder_instance.compile_decoder_for_dem(dem=dem)
-        sampler = dem.compile_sampler(seed=0)
+        sampler = circuit.compile_detector_sampler(seed=0)
 
         total_shots = 0
         post_selected_shots = 0
@@ -228,9 +236,10 @@ class SimulationPipeline:
         batch_size = self.config.batch_size
 
         while total_shots < self.config.max_shots and errors < self.config.max_errors:
-            det_data, obs_data, _ = sampler.sample(
+            det_data, obs_data = sampler.sample(
                 shots=batch_size,
                 bit_packed=False,
+                separate_observables=True,
             )
             total_shots += det_data.shape[0]
 
@@ -239,7 +248,6 @@ class SimulationPipeline:
                 post_select_observable_indices=self.config.post_select_observable_indices,
             )
             kept = det_filtered.shape[0]
-            post_selected_shots += kept
             if kept == 0:
                 reporter.emit(
                     self._build_snapshot(
@@ -258,15 +266,34 @@ class SimulationPipeline:
             pred_packed = compiled.decode_shots_bit_packed(
                 bit_packed_detection_event_data=det_packed,
             )
-            if self.config.target_observable_indices is not None:
+
+            ps_corr_idx = self.config.post_select_corrected_observable_indices
+            if ps_corr_idx:
+                # Post-decode PS: keep only shots where corrected obs[ps_corr_idx] == 0.
+                # corrected[i] = obs[i] XOR pred[i] — the residual after applying the decoder.
+                n_obs = obs_filtered.shape[1]
+                pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
+                corrected = obs_filtered ^ pred_unpacked
+                corr_mask = np.all(corrected[:, ps_corr_idx] == 0, axis=1)
+                post_selected_shots += int(corr_mask.sum())
+                if corr_mask.sum() > 0:
+                    corrected_kept = corrected[corr_mask]
+                    target = self.config.target_observable_indices
+                    if target is not None:
+                        errors += int(np.sum(np.any(corrected_kept[:, target] != 0, axis=1)))
+                    else:
+                        errors += int(np.sum(np.any(corrected_kept != 0, axis=1)))
+            elif self.config.target_observable_indices is not None:
                 # Only count errors on specified observables
                 n_obs = obs_filtered.shape[1]
                 pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
                 target = self.config.target_observable_indices
+                post_selected_shots += kept
                 errors += int(np.sum(np.any(
                     pred_unpacked[:, target] != obs_filtered[:, target], axis=1
                 )))
             else:
+                post_selected_shots += kept
                 errors += int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
             reporter.emit(
                 self._build_snapshot(

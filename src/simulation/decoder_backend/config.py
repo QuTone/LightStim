@@ -29,7 +29,9 @@ class PipelineConfig:
     decoder: Optional[DecoderConfig] = None
     post_select_detector_indices: Optional[List[int]] = None
     post_select_observable_indices: Optional[List[int]] = None
+    post_select_corrected_observable_indices: Optional[List[int]] = None
     target_observable_indices: Optional[List[int]] = None  # None = all observables
+    allow_gauge_detectors: bool = False
     output_dir: Optional[str] = None
     output_filename: Optional[str] = None
     output_format: Literal["csv", "json", "parquet"] = "csv"

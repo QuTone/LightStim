@@ -1,23 +1,31 @@
 """
 Steane 7-to-1 |Y⟩ Distillation — sweep over d and p.
 
-Usage:
-    # Default (fold-transversal S for |Y⟩ preparation):
-    python eval/LS_distillation/LS_distillation_7_to_1.py
+Noise modes:
+    injection   p_injected only on magic-patch resets (W1,W2,W3,W5); circuit otherwise noiseless.
+    full        p applied uniformly to all noise channels (default).
+    both        p on all channels + p_injected extra on magic-patch resets independently.
 
-    # With corner state injection for |Y⟩ preparation:
-    python eval/LS_distillation/LS_distillation_7_to_1.py --y-prep injection
+Usage:
+    # Default full noise sweep:
+    python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_7_to_1.py
+
+    # Injection-only noise:
+    python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_7_to_1.py --noise-mode injection --p-injected 1e-3 5e-3
+
+    # Both modes:
+    python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_7_to_1.py --noise-mode both -p 1e-3 --p-injected 5e-3
 
     # Custom sweep:
-    python eval/LS_distillation/LS_distillation_7_to_1.py -d 3 5 -p 1e-3 1e-4 1e-5
+    python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_7_to_1.py -d 3 5 -p 1e-3 1e-4 1e-5
 
-Outputs detailed CSV + JSON results to eval/LS_distillation/
-See setup.md for experiment details.
+Outputs detailed CSV + JSON results to eval/logical_circuit_benchmark/distillation/ls_7to1/
 """
 import argparse
 import sys, os, json, time
+import numpy as np
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')))
 
 from src.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode,
@@ -32,6 +40,16 @@ from src.simulation.decoder_backend.pipeline import SimulationPipeline
 from src.simulation.decoder_backend.config import DecoderConfig
 from src.noise.config import NoiseConfig
 from src.noise.injector import NoiseInjector
+from src.noise.rules import FlipAfterResetFiltered
+from src.simulation.observable_analysis import (
+    build_obs_patch_matrix,
+    identify_distillation_observables,
+)
+
+import stim
+
+# Magic patch names: the four input |Y⟩ patches
+_LS_MAGIC_NAMES = {"W1", "W2", "W3", "W5"}
 
 
 # =============================================================================
@@ -40,18 +58,17 @@ from src.noise.injector import NoiseInjector
 
 def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
     """
-    Build Steane 7-to-1 distillation circuit.
+    Build Steane 7-to-1 distillation circuit (noiseless).
 
     Args:
         d: Code distance.
         rounds: Number of SE rounds per measurement cycle (typically d).
         y_prep: |Y⟩ state preparation method:
             - "fold_transversal_s": RX + fold-transversal S (deterministic, default)
-            - "injection": Corner state injection (non-deterministic, adds
-              detector-level post-selection)
 
     Returns:
-        (circuit, circuit_info) tuple.
+        (circuit, circuit_info, system) where circuit_info has keys:
+            num_qubits, num_detectors, num_observables, corridor_internal_width, y_prep
     """
     # --- Parameterized layout ---
     patch_size = 2 * (d - 1)
@@ -94,31 +111,10 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
                   if system.index_to_owner_map[q] == patch_name}
             builder.initialize(init_dict=wd, n=system.num_qubits)
             op_set.fold_transversal_s(builder, patch)
-        elif y_prep == "injection":
-            # Corner state injection: non-deterministic |Y⟩ preparation with
-            # diagonal X/Z split + post-selection on first SE round.
-            #
-            # NOTE: Currently requires single-patch SE (state_injection runs
-            # SE internally on the full system). In the multi-patch distillation
-            # circuit, we initialize all patches first then run system-wide SE,
-            # which conflicts with injection's non-code-space initial state.
-            #
-            # Workaround: use injection only for W5 (the reusable magic state)
-            # while using fold_transversal_s for W1-W4. This mirrors a realistic
-            # scenario where the main patches are fault-tolerantly prepared and
-            # the ancilla magic state is injected.
-            raise NotImplementedError(
-                "Corner state injection is not yet compatible with multi-patch "
-                "distillation circuits. The tracker cannot handle syndrome "
-                "extraction on a non-code-space state across multiple patches "
-                "simultaneously. Use --y-prep fold_transversal_s (default) or "
-                "implement per-patch SE isolation."
-            )
         else:
             raise ValueError(f"Unknown y_prep method: {y_prep}")
 
     # --- Step 1: State preparation ---
-    # W1, W2, W3: |Y⟩ (noisy magic states)
     for wname in ['W1', 'W2', 'W3']:
         prepare_y(wname)
 
@@ -145,7 +141,6 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
     for i, subset in enumerate(subsets):
         coupler_name = f'meas_{i+1}'
 
-        # Register coupler (reuses qubit indices if corridor already exists)
         if coupler_name not in system.coupler_patches:
             system.register_coupler(UnrotatedMultiPatchCoupler(),
                 patch_names=subset, name=coupler_name,
@@ -155,36 +150,29 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
                 tracker.expand(n - tracker.num_qubits)
             builder.write_coordinates()
 
-        # Activate coupler + init corridor data in X
         builder.activate_coupler(coupler_name)
         cp = system.coupler_patches[coupler_name]
         cd = sorted([system.local_to_global_map[coupler_name][q]
                      for q in cp.data_indices])
         builder.initialize(init_dict={q: 'X' for q in cd}, n=system.num_qubits)
 
-        # SE with coupler active
         se2 = UnrotatedSurfaceCodeExtractionBlock(system)
         builder.apply_syndrome_extraction(circuit_chunk=se2.circuit, rounds=rounds)
 
-        # Mid-circuit MX on coupler data + W5 data
         measure_mid = {q: 'X' for q in cd}
         for q in system.data_indices:
             if system.index_to_owner_map.get(q) == 'W5':
                 measure_mid[q] = 'X'
         builder.apply_data_readout(final_measurements=measure_mid)
 
-        # Deactivate coupler
         builder.deactivate_coupler(coupler_name)
 
-        # Re-inject W5 for next cycle
         if i < len(subsets) - 1:
             prepare_y('W5')
 
     # --- Step 4: Final readout ---
-    # S† on W4: |Y⟩ → |+⟩
     op_set.fold_transversal_s_dag(builder, system.patches['W4'][0], noiseless=True)
 
-    # MX on W1-W4
     measure_final = {q: 'X' for q in system.data_indices
                      if system.index_to_owner_map.get(q) in ('W1', 'W2', 'W3', 'W4')}
     builder.apply_data_readout(final_measurements=measure_final)
@@ -200,38 +188,188 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
         'corridor_internal_width': gap - 1,
         'y_prep': y_prep,
     }
-    return circuit, circuit_info
+    return circuit, circuit_info, system
+
+
+# =============================================================================
+# Noise injection
+# =============================================================================
+
+def inject_noise(circuit, magic_qubits, p, p_injected, mode="full", data_indices=None):
+    """
+    Inject noise into a clean LS 7-to-1 distillation circuit.
+
+    Args:
+        circuit:      Noiseless stim.Circuit from build_distillation_circuit().
+        magic_qubits: Set of global qubit indices belonging to magic patches (W1,W2,W3,W5).
+                      Obtained from system.index_to_owner_map.
+        p:            Circuit-level depolarizing rate (1q, 2q gates, meas, reset).
+                      Active in modes 'full' and 'both'.
+        p_injected:   Injection noise rate on magic-patch DATA qubit resets only.
+                      Active in modes 'injection' and 'both'.
+        mode:         'injection' — p_injected on magic DATA qubit resets; circuit otherwise
+                                    noiseless. Matches paper (arXiv:2406.17653): Z_ERROR only
+                                    on data qubit RX resets (state prep), skipping ancilla
+                                    resets in SE rounds.
+                      'full'      — p on all noise channels uniformly.
+                      'both'      — p on everything + p_injected extra on magic DATA qubit
+                                    resets.
+        data_indices: Set of global DATA qubit indices for the full system (system.data_indices).
+                      When provided, injection noise in 'injection' and 'both' modes is
+                      restricted to magic_qubits ∩ data_indices, excluding ancilla qubits.
+                      If None, injection noise applies to all magic_qubits (old behaviour).
+
+    Returns:
+        Noisy stim.Circuit.
+    """
+    all_qubits = list(range(circuit.num_qubits))
+
+    # Injection targets: restrict to data qubits only when data_indices is available.
+    # Magic DATA qubits only get RX (X-basis) resets, so FlipAfterReset applies
+    # Z_ERROR after RX — a phase flip on |+⟩ before fold-transversal-S, which maps
+    # directly to a logical input error on |Y⟩. Ancilla resets (RZ in SE rounds)
+    # are excluded, matching the paper's model of noisy magic state inputs.
+    if data_indices is not None:
+        injection_targets = magic_qubits & frozenset(data_indices)
+    else:
+        injection_targets = magic_qubits
+
+    if mode == "injection":
+        cfg = NoiseConfig(p_reset=p_injected)
+        inj = NoiseInjector(cfg)
+        inj.add_rule(FlipAfterResetFiltered(injection_targets, param_name="p_reset"))
+        return inj.inject_noise(circuit)
+
+    elif mode == "full":
+        cfg = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p)
+        return NoiseInjector.from_circuit_level(cfg, all_qubits).inject_noise(circuit)
+
+    elif mode == "both":
+        # Circuit-level p on everything, plus extra p_injected on magic DATA qubit resets.
+        cfg = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p,
+                          custom_params={"p_injected": p_injected})
+        inj = NoiseInjector.from_circuit_level(cfg, all_qubits)
+        inj.add_rule(FlipAfterResetFiltered(injection_targets, param_name="p_injected"))
+        return inj.inject_noise(circuit)
+
+    else:
+        raise ValueError(f"Unknown noise mode: {mode!r}. Choose from 'injection', 'full', 'both'.")
+
+
+# =============================================================================
+# P_in calibration
+# =============================================================================
+
+def estimate_p_in(d, rounds, p_injected, p_background=0.0,
+                  max_shots=10_000_000, max_errors=100, batch_size=5_000):
+    """
+    Estimate the effective logical input infidelity P_in for a |Y⟩ magic state
+    prepared with physical injection noise rate p_injected.
+
+    Simulates a single-patch calibration circuit:
+        RX (data qubits) → fold_transversal_S → SE(rounds)
+        → noiseless fold_transversal_S† → MX logical readout
+
+    Noise model mirrors the corresponding distillation noise mode:
+        p_background=0   → injection-only  (Z_ERROR on data qubits only)
+        p_background>0   → both modes      (circuit-level p_background + extra
+                                            Z_ERROR(p_injected) on data qubits)
+
+    Returns:
+        p_in (float): estimated logical error rate of the prepared |Y⟩ state.
+    """
+    patch = UnrotatedSurfaceCode(distance=d)
+    patch.transpose_coords()
+    sys1 = QECSystem()
+    sys1.add_patch(patch, name='cal', offset=(0, 0))
+
+    op_set = UnrotatedSurfaceCodeLogicalOpSet(UnrotatedSurfaceCodeExtractionBlock)
+    tracker = SyndromeTracker(num_qubits=sys1.num_qubits,
+                              expected_num_logicals=sys1.num_logicals)
+    builder = CircuitBuilder(tracker=tracker, system_config=sys1, if_detector=True)
+    builder.write_coordinates()
+
+    # |Y⟩ = S_L|+⟩_L preparation
+    wd = {q: 'X' for q in sys1.data_indices}
+    builder.initialize(init_dict=wd, n=sys1.num_qubits)
+    op_set.fold_transversal_s(builder, sys1.patches['cal'][0])
+
+    # SE round(s): partially correct preparation errors
+    se = UnrotatedSurfaceCodeExtractionBlock(sys1)
+    builder.apply_syndrome_extraction(circuit_chunk=se.circuit, rounds=rounds)
+
+    # Noiseless S†_L + MX: |Y⟩ → |+⟩_L; logical Z error on |Y⟩ becomes logical X error here
+    op_set.fold_transversal_s_dag(builder, sys1.patches['cal'][0], noiseless=True)
+    builder.apply_data_readout(final_measurements={q: 'X' for q in sys1.data_indices})
+
+    circuit = builder.circuit
+    all_qubits = list(range(circuit.num_qubits))
+
+    if p_background > 0:
+        # Both-mode calibration: circuit-level background + extra injection on data qubits
+        cfg = NoiseConfig(p_1q=p_background, p_2q=p_background,
+                          p_meas=p_background, p_reset=p_background,
+                          custom_params={"p_injected": p_injected})
+        inj = NoiseInjector.from_circuit_level(cfg, all_qubits)
+        inj.add_rule(FlipAfterResetFiltered(set(sys1.data_indices), param_name="p_injected"))
+    else:
+        # Injection-only calibration: Z_ERROR on data-qubit RX resets only
+        cfg = NoiseConfig(p_reset=p_injected)
+        inj = NoiseInjector(cfg)
+        inj.add_rule(FlipAfterResetFiltered(set(sys1.data_indices), param_name="p_reset"))
+
+    noisy = inj.inject_noise(circuit)
+
+    pipeline = SimulationPipeline(
+        decoder_config=DecoderConfig("pymatching"),
+        max_shots=max_shots,
+        max_errors=max_errors,
+        batch_size=batch_size,
+        target_observable_indices=[0],
+        print_progress=False,
+    )
+    return pipeline.run(noisy).logical_error_rate
 
 
 # =============================================================================
 # Simulation
 # =============================================================================
 
-def run_simulation(circuit, p, max_shots=10_000_000, max_errors=200):
-    """Run noisy simulation with post-selection. Returns stats."""
-    noise_config = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p, p_idle=p)
-    all_qubits = set()
-    for inst in circuit.flattened():
-        if inst.name in ("H", "S", "S_DAG", "CX", "CZ", "R", "RX", "M", "MX"):
-            for t in inst.targets_copy():
-                if t.is_qubit_target:
-                    all_qubits.add(t.value)
-    injector = NoiseInjector.from_circuit_level(noise_config, sorted(all_qubits))
-    noisy = injector.inject_noise(circuit)
+def run_simulation(circuit, magic_qubits, p, p_injected, mode,
+                   ps_obs, target_obs,
+                   decoder_name="pymatching",
+                   max_shots=10_000_000, max_errors=100,
+                   batch_size=50_000, num_workers=1,
+                   data_indices=None):
+    """
+    Run noisy LS simulation with post-decode post-selection.
+
+    Args:
+        circuit:      Noiseless stim.Circuit from build_distillation_circuit().
+        magic_qubits: Magic qubit index set (data + ancilla of W1/W2/W3/W5).
+        p:            Circuit-level error rate.
+        p_injected:   Injection noise rate on magic DATA qubit resets.
+        mode:         'injection', 'full', or 'both'.
+        ps_obs:       Observable indices to post-select on (corrected == 0 after decoding).
+        target_obs:   Observable index to measure LER on.
+        decoder_name: Decoder to use.
+        data_indices: system.data_indices — restricts injection noise to data qubits only.
+    """
+    noisy = inject_noise(circuit, magic_qubits, p, p_injected, mode,
+                         data_indices=data_indices)
 
     pipeline = SimulationPipeline(
-        decoder_config=DecoderConfig("pymatching", backend="cpu"),
+        decoder_config=DecoderConfig(decoder_name, backend="cpu"),
         max_shots=max_shots,
         max_errors=max_errors,
-        batch_size=50_000,
-        num_workers=32,
-        post_select_observable_indices=[0, 1, 3],
-        target_observable_indices=[2],
+        batch_size=batch_size,
+        num_workers=num_workers,
+        post_select_corrected_observable_indices=ps_obs,
+        target_observable_indices=[target_obs[0]],
         print_progress=True,
         progress_interval_sec=30.0,
     )
-    stats = pipeline.run(noisy)
-    return stats
+    return pipeline.run(noisy)
 
 
 # =============================================================================
@@ -244,30 +382,38 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--distances", type=int, nargs="+",
                         default=[3, 5, 7], help="Code distances (default: 3 5 7)")
     parser.add_argument("-p", "--p-values", type=float, nargs="+",
-                        default=[1e-3, 1e-4],
-                        help="Physical error rates (default: 1e-3 1e-4)")
-    parser.add_argument("--y-prep", choices=["fold_transversal_s", "injection"],
+                        default=[1e-3],
+                        help="Circuit-level error rates (used in 'full' and 'both' modes)")
+    parser.add_argument("--p-injected", type=float, nargs="+",
+                        default=[1e-3, 2e-3, 5e-3, 1e-2],
+                        help="Injection noise rates on magic-patch resets "
+                             "(used in 'injection' and 'both' modes)")
+    parser.add_argument("--noise-mode", choices=["injection", "full", "both"],
+                        default="both",
+                        help="Noise model: injection (p_injected only on magic resets), "
+                             "full (p everywhere), both (p + p_injected independently). "
+                             "Default: both.")
+    parser.add_argument("--y-prep", choices=["fold_transversal_s"],
                         default="fold_transversal_s",
                         help="Y state preparation method (default: fold_transversal_s)")
+    parser.add_argument("--decoder", choices=["bposd", "mwpf", "pymatching"],
+                        default="pymatching", help="Decoder (default: pymatching)")
     parser.add_argument("--max-shots", type=int, default=10_000_000,
                         help="Max shots per run (default: 10M)")
-    parser.add_argument("--max-errors", type=int, default=200,
-                        help="Max errors for early stopping (default: 200)")
+    parser.add_argument("--max-errors", type=int, default=100,
+                        help="Max errors for early stopping (default: 100)")
+    parser.add_argument("--batch-size", type=int, default=50_000)
+    parser.add_argument("--build-only", action="store_true",
+                        help="Only build the circuit (no simulation)")
+    parser.add_argument("--load-circuits", action="store_true",
+                        help="Load pre-built circuits from eval/logical_circuit_benchmark/distillation/ls_7to1/circuits/ "
+                             "instead of building")
     args = parser.parse_args()
 
     out_dir = os.path.dirname(os.path.abspath(__file__))
+    circuit_dir = os.path.join(out_dir, "circuits")
     suffix = f"_{args.y_prep}" if args.y_prep != "fold_transversal_s" else ""
     csv_path = os.path.join(out_dir, f"LS_distillation_7_to_1_results{suffix}.csv")
-
-    # Load checkpoint: skip (d, p, y_prep) combos already in CSV
-    done_keys = set()
-    if os.path.exists(csv_path):
-        import csv as _csv
-        with open(csv_path) as f:
-            for row in _csv.DictReader(f):
-                done_keys.add((int(row["d"]), float(row["p"]), row.get("y_prep", "")))
-        print(f"Checkpoint: {len(done_keys)} tasks already done, skipping.")
-
     all_results = []
 
     for d in args.distances:
@@ -276,27 +422,110 @@ if __name__ == "__main__":
         print(f"Building d={d}, rounds={rounds}, y_prep={args.y_prep}")
         print(f"{'='*60}")
 
-        t_build_start = time.perf_counter()
-        circuit, circuit_info = build_distillation_circuit(d, rounds, args.y_prep)
-        t_build = time.perf_counter() - t_build_start
+        circuit_path = os.path.join(circuit_dir, f"LS_7to1_d{d}{suffix}.stim")
+        transform_path = os.path.join(circuit_dir, f"LS_7to1_d{d}{suffix}_obs.json")
 
-        print(f"Circuit: {circuit_info['num_qubits']} qubits, "
-              f"{circuit_info['num_detectors']} det, "
-              f"{circuit_info['num_observables']} obs "
-              f"(built in {t_build:.1f}s)")
+        if args.load_circuits and os.path.exists(circuit_path) and os.path.exists(transform_path):
+            t_build_start = time.perf_counter()
+            circuit = stim.Circuit.from_file(circuit_path)
+            with open(transform_path) as f:
+                obs_info = json.load(f)
+            ps_obs = obs_info['ps_obs']
+            target_obs = obs_info['target_obs']
+            magic_qubits = set(obs_info['magic_qubit_indices'])
+            # Fall back to magic_qubits for JSON files saved before this field was added
+            magic_data_qubits = set(obs_info.get('magic_data_qubit_indices',
+                                                  obs_info['magic_qubit_indices']))
+            t_build = time.perf_counter() - t_build_start
 
-        for p in args.p_values:
-            if (d, p, args.y_prep) in done_keys:
-                print(f"\n--- d={d}, p={p:.0e} --- SKIPPED (checkpoint)")
-                continue
-            print(f"\n--- d={d}, p={p:.0e} ---")
-            stats = run_simulation(circuit, p, args.max_shots, args.max_errors)
+            circuit_info = {
+                'num_qubits': circuit.num_qubits,
+                'num_detectors': circuit.num_detectors,
+                'num_observables': circuit.num_observables,
+                'corridor_internal_width': obs_info.get('corridor_internal_width', '?'),
+                'y_prep': args.y_prep,
+            }
+            print(f"Circuit: {circuit_info['num_qubits']} qubits, "
+                  f"{circuit_info['num_detectors']} det, "
+                  f"{circuit_info['num_observables']} obs "
+                  f"(loaded from {circuit_path} in {t_build:.2f}s)")
+            print(f"  Target obs: {target_obs}, Post-select obs: {ps_obs}")
+
+        else:
+            t_build_start = time.perf_counter()
+            circuit, circuit_info, system = build_distillation_circuit(d, rounds, args.y_prep)
+            t_build = time.perf_counter() - t_build_start
+
+            print(f"Circuit: {circuit_info['num_qubits']} qubits, "
+                  f"{circuit_info['num_detectors']} det, "
+                  f"{circuit_info['num_observables']} obs "
+                  f"(built in {t_build:.1f}s)")
+
+            # Noiseless verification
+            dets, obs = circuit.compile_detector_sampler().sample(
+                shots=100, separate_observables=True)
+            noiseless_ok = not np.any(dets) and not np.any(obs)
+            print(f"Noiseless check: {'OK' if noiseless_ok else 'FAIL'}")
+
+            # Observable analysis (GF(2) elimination targeting W4)
+            matrix, patch_names = build_obs_patch_matrix(circuit, system)
+            _, target_obs, ps_obs = identify_distillation_observables(
+                matrix, patch_names, ["W4"])
+            print(f"  Target obs: {target_obs}, Post-select obs: {ps_obs}")
+
+            # Magic qubit indices (data + ancilla) and data-only subset
+            magic_qubits = {q for q, owner in system.index_to_owner_map.items()
+                            if owner in _LS_MAGIC_NAMES}
+            magic_data_qubits = magic_qubits & system.data_indices
+
+            # Save circuit + transform for reuse
+            os.makedirs(circuit_dir, exist_ok=True)
+            with open(circuit_path, "w") as f:
+                f.write(str(circuit))
+            with open(transform_path, "w") as f:
+                json.dump({
+                    'ps_obs': ps_obs,
+                    'target_obs': target_obs,
+                    'magic_qubit_indices': sorted(magic_qubits),
+                    'magic_data_qubit_indices': sorted(magic_data_qubits),
+                    'corridor_internal_width': circuit_info['corridor_internal_width'],
+                }, f, indent=2)
+            print(f"Saved circuit to {circuit_path}")
+
+        if args.build_only:
+            print("(build-only mode, skipping simulation)")
+            continue
+
+        # Build sweep pairs based on noise mode
+        if args.noise_mode == "injection":
+            sweep_pairs = [(0.0, p_inj) for p_inj in args.p_injected]
+        elif args.noise_mode == "full":
+            sweep_pairs = [(p, 0.0) for p in args.p_values]
+        else:  # "both"
+            sweep_pairs = [(p, p_inj)
+                           for p in args.p_values
+                           for p_inj in args.p_injected]
+
+        for p, p_inj in sweep_pairs:
+            label = (f"p={p:.1e}, p_injected={p_inj:.1e}"
+                     if args.noise_mode != "full" else f"p={p:.1e}")
+            print(f"\n--- d={d}, {label}, mode={args.noise_mode}, decoder={args.decoder} ---")
+
+            stats = run_simulation(
+                circuit, magic_qubits, p, p_inj, args.noise_mode,
+                ps_obs, target_obs, args.decoder,
+                args.max_shots, args.max_errors, args.batch_size,
+                data_indices=magic_data_qubits,
+            )
 
             result = {
                 'd': d,
                 'rounds': rounds,
                 'p': p,
+                'p_injected': p_inj,
+                'noise_mode': args.noise_mode,
                 'y_prep': args.y_prep,
+                'decoder': args.decoder,
                 'num_qubits': circuit_info['num_qubits'],
                 'num_detectors': circuit_info['num_detectors'],
                 'num_observables': circuit_info['num_observables'],
@@ -333,8 +562,7 @@ if __name__ == "__main__":
         json.dump(all_results, f, indent=2)
     print(f"\nSaved {json_path}")
 
-    # Save CSV
-    csv_path = os.path.join(out_dir, f"LS_distillation_7_to_1_results{suffix}.csv")
+    # Save CSV (csv_path defined before the loop, above)
     if all_results:
         keys = all_results[0].keys()
         with open(csv_path, "w") as f:
@@ -344,14 +572,15 @@ if __name__ == "__main__":
     print(f"Saved {csv_path}")
 
     # Print summary table
-    print(f"\n{'='*90}")
-    print(f"SUMMARY (y_prep={args.y_prep})")
-    print(f"{'='*90}")
-    print(f"{'d':>3} {'p':>8} {'qubits':>7} {'detectors':>10} {'shots':>12} {'kept':>12} "
-          f"{'PS_rate':>8} {'errors':>7} {'LER':>10} {'time':>7}")
-    print("-" * 90)
+    print(f"\n{'='*100}")
+    print(f"SUMMARY (y_prep={args.y_prep}, mode={args.noise_mode}, decoder={args.decoder})")
+    print(f"{'='*100}")
+    print(f"{'d':>3} {'p':>8} {'p_inj':>8} {'qubits':>7} {'detectors':>10} "
+          f"{'shots':>12} {'kept':>12} {'PS_rate':>8} {'errors':>7} {'LER':>10} {'time':>7}")
+    print("-" * 100)
     for r in all_results:
-        print(f"{r['d']:>3} {r['p']:>8.0e} {r['num_qubits']:>7} {r['num_detectors']:>10} "
+        print(f"{r['d']:>3} {r['p']:>8.0e} {r['p_injected']:>8.0e} "
+              f"{r['num_qubits']:>7} {r['num_detectors']:>10} "
               f"{r['shots']:>12,} {r['post_selected_shots']:>12,} "
               f"{r['post_selection_rate']*100:>7.2f}% {r['errors']:>7} "
               f"{r['logical_error_rate']:>10.2e} {r['decoding_time_sec']:>6.1f}s")
