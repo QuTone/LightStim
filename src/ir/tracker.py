@@ -509,7 +509,6 @@ class SyndromeTracker:
             else:
                 # --- Case B: Commutes (Detector) ---
                 # Detector is formed by decomposing Back-propagated Pauli Measurements into existing STABILIZERS only (rows in the stabilizer tableau).
-                # (Logicals do not contribute to the decomposition)
 
                 if num_stabs > 0:
                     # First check if meas_row is exactly one row in curr_stab_matrix

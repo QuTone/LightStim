@@ -117,6 +117,70 @@ def build_gate_verification_circuit(
     return builder.circuit
 
 
+def build_s_oneway_circuit(
+    distance: int,
+    rounds: int = 2,
+    noise_params: Optional[NoiseConfig] = None,
+    noise_model: str = "circuit_level",
+) -> stim.Circuit:
+    """
+    Build a single S gate verification circuit with noiseless S† restoration:
+
+      |+⟩ → SE → S_L (noisy) → SE → S†_L (noiseless) → SE → transversal MX
+
+    S†_L is noiseless (used only to restore |+⟩ for MX readout), so the
+    measured LER directly reflects the single S gate — no division by 2 needed.
+
+    Args:
+        distance:      Code distance (must be odd, square patch).
+        rounds:        SE rounds between operations.
+        noise_params:  Optional NoiseConfig for noise injection.
+        noise_model:   Noise model string (default 'circuit_level').
+
+    Returns:
+        stim.Circuit
+    """
+    patch_local = UnrotatedSurfaceCode(distance=distance)
+    system = QECSystem()
+    patch = system.add_patch(patch_local, name="patch")
+
+    tracker = SyndromeTracker(
+        num_qubits=system.num_qubits,
+        expected_num_logicals=system.num_logicals,
+    )
+    builder = CircuitBuilder(tracker=tracker, system_config=system, if_detector=True)
+    system.register_tracker(tracker)
+    system.register_builder(builder)
+
+    executor = LogicalExecutor(builder)
+    executor.register_op_set(UnrotatedSurfaceCode, UnrotatedSurfaceCodeLogicalOpSet())
+
+    builder.write_coordinates()
+    builder.initialize(
+        {q: "X" for q in system.data_indices},
+        system.num_qubits,
+    )
+
+    se_block = UnrotatedSurfaceCodeExtractionBlock(system)
+
+    builder.apply_syndrome_extraction(se_block.circuit, rounds=rounds)
+
+    executor.apply_logical_operation("fold_transversal_s", [patch])
+    builder.apply_syndrome_extraction(se_block.circuit, rounds=rounds)
+
+    # S† is noiseless — restores |+⟩ for MX readout without contributing errors
+    executor.apply_logical_operation("fold_transversal_s_dag", [patch], noiseless=True)
+    builder.apply_syndrome_extraction(se_block.circuit, rounds=rounds)
+
+    builder.apply_data_readout(
+        {q: "X" for q in system.data_indices}
+    )
+
+    if noise_params is not None:
+        return builder.build_noisy_circuit(noise_params, noise_model)
+    return builder.circuit
+
+
 def build_s_roundtrip_circuit(
     distance: int,
     rounds: int = 2,
