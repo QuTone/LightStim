@@ -367,27 +367,27 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     # parser.add_argument("--type", choices=["tg", "ls", "all"], default="all",
     #                     help="Which distillation experiment to run (default: all)")
-    parser.add_argument("--type", choices=["tg", "ls", "all"], default="all",
+    parser.add_argument("--type", choices=["tg", "ls", "all"], default="ls",
                     help="Which distillation experiment to run (default: all)")
-    parser.add_argument("--noise", choices=["injection", "full", "both", "all"], default="both",
+    parser.add_argument("--noise", choices=["injection", "full", "both", "all"], default="full",
                         help="Which noise model(s) to simulate (default: both)")
 
-    parser.add_argument("-d", type=int, default=3, help="Code distance (default: 3)")
+    parser.add_argument("-d", type=int, default=7, help="Code distance (default: 3)")
     parser.add_argument("--rounds", type=int, default=1,
                         help="SE rounds per cycle (default: 1)")
     parser.add_argument("--r", type=int, default=1,
                         help="TG: SE rounds between transversal gate layers (default: 1)")
     parser.add_argument("--p-values", type=float, nargs="+",
-                        default=[1e-5],
-                        help="Circuit-level error rates (default: 1e-5)")
+                        default=np.logspace(-5, -1, 6),
+                        help="Circuit-level error rates (default: 1e-3)")
     parser.add_argument("--p-injected", type=float, nargs="+",
                         default=np.logspace(-3, -1, 5),
                         help="Injection noise rates on magic resets "
                              "(default: logspace(-3,-1,5))")
-    parser.add_argument("--max-shots", type=int, default=50_000_000)
+    parser.add_argument("--max-shots", type=int, default=100_000_000)
     parser.add_argument("--max-errors", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=5_000)
-    parser.add_argument("--num-workers", type=int, default=1,
+    parser.add_argument("--num-workers", type=int, default=4,
                         help="Number of parallel decoder workers (default: 1)")
     args = parser.parse_args()
 
