@@ -2,6 +2,7 @@
 
 import multiprocessing as mp
 import time
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -113,6 +114,34 @@ class SimulationPipeline:
         post_indices = self._resolve_post_select_indices(circuit)
         return self._run_custom(circuit, meta, post_indices)
 
+    def _warn_dem_flags(self, circuit: stim.Circuit, decoder_name: str) -> None:
+        """Warn about DEM/decoder combinations that can silently affect LER."""
+        if self.config.allow_gauge_detectors:
+            warnings.warn(
+                "allow_gauge_detectors=True: decomposition failures are silently "
+                "ignored (ignore_decomposition_failures=True). Hyperedges that cannot "
+                "be decomposed are dropped, which can underestimate LER.",
+                stacklevel=4,
+            )
+            return
+
+        # Check the actual circuit DEM for hyperedges regardless of decoder flags.
+        dem = circuit.detector_error_model(decompose_errors=False)
+        n_hyperedges = sum(
+            1 for inst in dem.flattened()
+            if inst.type == "error"
+            and sum(t.is_relative_detector_id() for t in inst.targets_copy()) > 2
+        )
+        if n_hyperedges > 0:
+            n_total = sum(1 for inst in dem.flattened() if inst.type == "error")
+            warnings.warn(
+                f"Circuit DEM contains {n_hyperedges}/{n_total} hyperedges "
+                f"({100*n_hyperedges/n_total:.0f}%). Decoder '{decoder_name}' may "
+                f"approximate these as edges, which can inflate LER. "
+                f"Consider using BPOSD for exact decoding.",
+                stacklevel=4,
+            )
+
     def _run_custom(
         self,
         circuit: stim.Circuit,
@@ -121,6 +150,7 @@ class SimulationPipeline:
     ) -> SimulationStats:
         """Custom sampling loop with post-selection (single or multi-process)."""
         decoder_name = self.config.decoder.name
+        self._warn_dem_flags(circuit, decoder_name)
         start = time.perf_counter()
         reporter = self._make_progress_reporter()
         has_post_selection = (len(post_select_indices) > 0 or

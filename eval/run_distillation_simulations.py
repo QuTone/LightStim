@@ -100,7 +100,7 @@ def make_pipeline(ps_idx, target_idx, max_shots, max_errors, batch_size, num_wor
         batch_size=batch_size,
         post_select_corrected_observable_indices=ps_idx,
         target_observable_indices=[target_idx],
-        print_progress=False,
+        print_progress=True,
         num_workers=num_workers,
     )
 
@@ -367,12 +367,12 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     # parser.add_argument("--type", choices=["tg", "ls", "all"], default="all",
     #                     help="Which distillation experiment to run (default: all)")
-    parser.add_argument("--type", choices=["tg", "ls", "all"], default="ls",
+    parser.add_argument("--type", choices=["tg", "ls", "all"], default="tg",
                     help="Which distillation experiment to run (default: all)")
     parser.add_argument("--noise", choices=["injection", "full", "both", "all"], default="full",
                         help="Which noise model(s) to simulate (default: both)")
 
-    parser.add_argument("-d", type=int, default=7, help="Code distance (default: 3)")
+    parser.add_argument("-d", type=int, default=3, help="Code distance (default: 3)")
     parser.add_argument("--rounds", type=int, default=1,
                         help="SE rounds per cycle (default: 1)")
     parser.add_argument("--r", type=int, default=1,
@@ -387,7 +387,7 @@ def main():
     parser.add_argument("--max-shots", type=int, default=100_000_000)
     parser.add_argument("--max-errors", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=5_000)
-    parser.add_argument("--num-workers", type=int, default=4,
+    parser.add_argument("--num-workers", type=int, default=1,
                         help="Number of parallel decoder workers (default: 1)")
     args = parser.parse_args()
 
