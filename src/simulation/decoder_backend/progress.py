@@ -98,7 +98,10 @@ class ProgressReporter:
 
         line = self._format_line(snapshot=snapshot, final=final)
         if self.output in ("print", "both"):
-            print(line, flush=True)
+            if final:
+                print(f"\r{line}", flush=True)
+            else:
+                print(f"\r{line}", end="", flush=True)
         if self.output in ("logging", "both") and self._logger is not None:
             self._logger.info(line)
 
