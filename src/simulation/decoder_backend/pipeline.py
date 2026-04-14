@@ -125,7 +125,14 @@ class SimulationPipeline:
             )
             return
 
-        # Check the actual circuit DEM for hyperedges regardless of decoder flags.
+        # Decoders that approximate hyperedges as edges (can inflate LER).
+        # BPOSD and MWPF handle hyperedges natively — no warning needed for them.
+        _EDGE_ONLY_DECODERS = {"pymatching"}
+
+        if decoder_name not in _EDGE_ONLY_DECODERS:
+            return
+
+        # Check the actual circuit DEM for hyperedges.
         dem = circuit.detector_error_model(decompose_errors=False)
         n_hyperedges = sum(
             1 for inst in dem.flattened()
@@ -136,8 +143,8 @@ class SimulationPipeline:
             n_total = sum(1 for inst in dem.flattened() if inst.type == "error")
             warnings.warn(
                 f"Circuit DEM contains {n_hyperedges}/{n_total} hyperedges "
-                f"({100*n_hyperedges/n_total:.0f}%). Decoder '{decoder_name}' may "
-                f"approximate these as edges, which can inflate LER. "
+                f"({100*n_hyperedges/n_total:.0f}%). Decoder '{decoder_name}' approximates "
+                f"these as edges, which can inflate LER. "
                 f"Consider using BPOSD for exact decoding.",
                 stacklevel=4,
             )

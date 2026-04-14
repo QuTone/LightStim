@@ -94,7 +94,7 @@ def bake_observable_transform(circuit, T):
 
 def make_pipeline(ps_idx, target_idx, max_shots, max_errors, batch_size, num_workers=1):
     return SimulationPipeline(
-        decoder_config=DecoderConfig("pymatching"),
+        decoder_config=DecoderConfig("bposd"),
         max_shots=max_shots,
         max_errors=max_errors,
         batch_size=batch_size,
@@ -372,13 +372,13 @@ def main():
     parser.add_argument("--noise", choices=["injection", "full", "both", "all"], default="full",
                         help="Which noise model(s) to simulate (default: both)")
 
-    parser.add_argument("-d", type=int, default=3, help="Code distance (default: 3)")
+    parser.add_argument("-d", type=int, default=5, help="Code distance (default: 3)")
     parser.add_argument("--rounds", type=int, default=1,
                         help="SE rounds per cycle (default: 1)")
     parser.add_argument("--r", type=int, default=1,
                         help="TG: SE rounds between transversal gate layers (default: 1)")
     parser.add_argument("--p-values", type=float, nargs="+",
-                        default=np.logspace(-5, -1, 6),
+                        default=np.logspace(-5, -3, 6),
                         help="Circuit-level error rates (default: 1e-3)")
     parser.add_argument("--p-injected", type=float, nargs="+",
                         default=np.logspace(-3, -1, 5),
@@ -387,7 +387,7 @@ def main():
     parser.add_argument("--max-shots", type=int, default=100_000_000)
     parser.add_argument("--max-errors", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=5_000)
-    parser.add_argument("--num-workers", type=int, default=1,
+    parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of parallel decoder workers (default: 1)")
     args = parser.parse_args()
 
