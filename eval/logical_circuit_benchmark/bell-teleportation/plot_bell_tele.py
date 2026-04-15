@@ -47,7 +47,7 @@ DATASETS = [
 dfs = {key: pd.read_csv(RESULTS / fname) for key, fname, _ in DATASETS}
 
 # ── Figure ────────────────────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 3, figsize=(7.0, 4.2),
+fig, axes = plt.subplots(1, 3, figsize=(5.5, 4.2),
                          sharey=True, constrained_layout=True)
 
 for ax, (key, _, title) in zip(axes, DATASETS):
@@ -87,8 +87,7 @@ state_proxy = [
 
 axes[-1].legend(handles=dist_proxy + state_proxy,
                 fontsize=FS_LEGEND,
-                loc="center left",
-                bbox_to_anchor=(1.02, 0.5),
+                loc="lower right",
                 frameon=True)
 
 fig.suptitle("Bell Teleportation Circuit", fontweight="bold", fontsize=FS_TITLE + 1)

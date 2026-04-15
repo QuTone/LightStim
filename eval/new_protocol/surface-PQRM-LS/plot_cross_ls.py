@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # project root
 
+import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -76,6 +77,11 @@ def plot_fig1():
                       marker=PQRM_MARKER[pqrm],
                       lw=LW, ms=MS, markeredgecolor="none")
 
+    # y = x reference line (PER) — drawn after data so xlim is set
+    xlim = ax.get_xlim()
+    p_ref = np.logspace(np.log10(xlim[0]), np.log10(xlim[1]), 200)
+    ax.loglog(p_ref, p_ref, color="crimson", ls="--", lw=2.2, zorder=0)
+
     ax.set_xlabel("Physical Error Rate $p$", fontsize=FS_LABEL)
     ax.set_ylabel("LER", fontsize=FS_LABEL)
     ax.set_title("CrossLS — $|Z\\rangle$ State", fontsize=FS_TITLE)
@@ -95,9 +101,10 @@ def plot_fig1():
                label=PQRM_LABEL[p])
         for p in PQRM_CODES
     ]
-    ax.legend(handles=dist_proxy + pqrm_proxy,
+    per_proxy = [Line2D([], [], color="crimson", ls="--", lw=2.2, label="LER $= p$")]
+    ax.legend(handles=dist_proxy + pqrm_proxy + per_proxy,
               fontsize=FS_LEGEND,
-              loc="upper left",
+              loc="lower right",
               frameon=True,
               framealpha=0.6)
 

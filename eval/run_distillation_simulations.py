@@ -92,9 +92,10 @@ def bake_observable_transform(circuit, T):
 # Pipeline factory
 # ---------------------------------------------------------------------------
 
-def make_pipeline(ps_idx, target_idx, max_shots, max_errors, batch_size, num_workers=1):
+def make_pipeline(ps_idx, target_idx, max_shots, max_errors, batch_size, num_workers=1,
+                  decoder="bposd"):
     return SimulationPipeline(
-        decoder_config=DecoderConfig("bposd"),
+        decoder_config=DecoderConfig(decoder),
         max_shots=max_shots,
         max_errors=max_errors,
         batch_size=batch_size,
@@ -208,7 +209,7 @@ LS_DATA_COLS = ["p_in", "ler_ps", "post_selection_rate", "shots", "errors"]
 # ---------------------------------------------------------------------------
 
 def run_tg(d, rounds, r, p_values, p_injected_values, max_shots, max_errors, batch_size,
-           noise_models, num_workers=1):
+           noise_models, num_workers=1, decoder="bposd"):
     print(f"\n=== TG 7-to-1 distillation  d={d}  rounds={rounds}  r={r} ===")
     key_prefix = {"d": d, "rounds": rounds, "r": r}
 
@@ -219,7 +220,8 @@ def run_tg(d, rounds, r, p_values, p_injected_values, max_shots, max_errors, bat
     circuit_T = bake_observable_transform(circuit, T)
     magic_qubits = {q for q, owner in system.index_to_owner_map.items()
                     if owner in _TG_MAGIC_NAMES}
-    pipeline = make_pipeline(ps, tgt[0], max_shots, max_errors, batch_size, num_workers)
+    pipeline = make_pipeline(ps, tgt[0], max_shots, max_errors, batch_size, num_workers,
+                             decoder=decoder)
 
     # Pre-compute p_in calibrations.
     # injection mode: p_background=0 (corner qubit Z_ERROR only)
@@ -283,7 +285,7 @@ def run_tg(d, rounds, r, p_values, p_injected_values, max_shots, max_errors, bat
 # ---------------------------------------------------------------------------
 
 def run_ls(d, rounds, p_values, p_injected_values, max_shots, max_errors, batch_size,
-           noise_models, num_workers=1):
+           noise_models, num_workers=1, decoder="bposd"):
     print(f"\n=== LS 7-to-1 distillation  d={d}  rounds={rounds} ===")
     key_prefix = {"d": d, "rounds": rounds}
 
@@ -295,7 +297,8 @@ def run_ls(d, rounds, p_values, p_injected_values, max_shots, max_errors, batch_
     # Data qubits only — injection noise targets these, matching the paper's model
     # (Z_ERROR on magic state data qubits; ancilla resets in SE rounds are excluded).
     magic_data_qubits = magic_qubits & system.data_indices
-    pipeline = make_pipeline(ps, tgt[0], max_shots, max_errors, batch_size, num_workers)
+    pipeline = make_pipeline(ps, tgt[0], max_shots, max_errors, batch_size, num_workers,
+                             decoder=decoder)
 
     # Pre-compute p_in (logical input infidelity) for each p_injected value.
     # Pre-compute p_in calibrations.
@@ -389,6 +392,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=5_000)
     parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of parallel decoder workers (default: 1)")
+    parser.add_argument("--decoder", choices=["pymatching", "bposd", "mwpf"],
+                        default="bposd",
+                        help="Decoder backend (default: bposd)")
     args = parser.parse_args()
 
     noise_models = (["injection", "full", "both"] if args.noise == "all"
@@ -399,12 +405,12 @@ def main():
     if args.type in ("tg", "all"):
         run_tg(args.d, args.rounds, args.r, p_values, p_injected_values,
                args.max_shots, args.max_errors, args.batch_size, noise_models,
-               args.num_workers)
+               args.num_workers, decoder=args.decoder)
 
     if args.type in ("ls", "all"):
         run_ls(args.d, args.rounds, p_values, p_injected_values,
                args.max_shots, args.max_errors, args.batch_size, noise_models,
-               args.num_workers)
+               args.num_workers, decoder=args.decoder)
 
     print("\nDone.")
 

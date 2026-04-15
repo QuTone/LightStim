@@ -159,15 +159,15 @@ plot_subexps(df_h_avg,
              x_min_override=3e-4,
              subplot_title_override={"H": ""})
 
-# ── S gate: per-round conversion 1-(1-LER)^(1/2) ────────────────────────────
-df_s = pd.read_csv(RESULTS / "fig1_s_raw.csv")
+# ── S gate: one-way (noiseless S†), LER = single-gate error rate directly ────
+df_s = pd.read_csv(RESULTS / "fig1_s_oneway_raw.csv")
 df_s = df_s.copy()
-df_s["logical_error_rate"] = 1 - (1 - df_s["logical_error_rate"]) ** 0.5
+df_s["sub_experiment"] = "S_oneway"
 plot_subexps(df_s,
              "Transversal S",
              RESULTS / "fig1_s_subexp.png",
-             drop_p={"S_roundtrip": {3: [1e-4], 5: [1e-4]}},
+             drop_p={"S_oneway": {3: [1e-4], 5: [1e-4]}},
              x_min_override=3e-4,
-             subplot_title_override={"S_roundtrip": ""})
+             subplot_title_override={"S_oneway": ""})
 
 print("Done.")

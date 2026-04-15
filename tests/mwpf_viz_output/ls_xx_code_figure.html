@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>LS XX Circuit — Stim code figure</title>
+<style>
+  body {
+    background: #ffffff;
+    margin: 40px;
+    font-family: sans-serif;
+  }
+  .stim-code {
+    font-family: 'JetBrains Mono', 'Fira Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 14px;
+    line-height: 1.55;
+    background: #f8f8f8;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 16px 20px;
+    display: inline-block;
+    min-width: 640px;
+  }
+  pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.stim-code .hll { background-color: #ffffcc }
+.stim-code { background: #f8f8f8; }
+.stim-code .c { color: #3D7B7B; font-style: italic } /* Comment */
+.stim-code .err { border: 1px solid #F00 } /* Error */
+.stim-code .k { color: #008000; font-weight: bold } /* Keyword */
+.stim-code .o { color: #666 } /* Operator */
+.stim-code .ch { color: #3D7B7B; font-style: italic } /* Comment.Hashbang */
+.stim-code .cm { color: #3D7B7B; font-style: italic } /* Comment.Multiline */
+.stim-code .cp { color: #9C6500 } /* Comment.Preproc */
+.stim-code .cpf { color: #3D7B7B; font-style: italic } /* Comment.PreprocFile */
+.stim-code .c1 { color: #3D7B7B; font-style: italic } /* Comment.Single */
+.stim-code .cs { color: #3D7B7B; font-style: italic } /* Comment.Special */
+.stim-code .gd { color: #A00000 } /* Generic.Deleted */
+.stim-code .ge { font-style: italic } /* Generic.Emph */
+.stim-code .ges { font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.stim-code .gr { color: #E40000 } /* Generic.Error */
+.stim-code .gh { color: #000080; font-weight: bold } /* Generic.Heading */
+.stim-code .gi { color: #008400 } /* Generic.Inserted */
+.stim-code .go { color: #717171 } /* Generic.Output */
+.stim-code .gp { color: #000080; font-weight: bold } /* Generic.Prompt */
+.stim-code .gs { font-weight: bold } /* Generic.Strong */
+.stim-code .gu { color: #800080; font-weight: bold } /* Generic.Subheading */
+.stim-code .gt { color: #04D } /* Generic.Traceback */
+.stim-code .kc { color: #008000; font-weight: bold } /* Keyword.Constant */
+.stim-code .kd { color: #008000; font-weight: bold } /* Keyword.Declaration */
+.stim-code .kn { color: #008000; font-weight: bold } /* Keyword.Namespace */
+.stim-code .kp { color: #008000 } /* Keyword.Pseudo */
+.stim-code .kr { color: #008000; font-weight: bold } /* Keyword.Reserved */
+.stim-code .kt { color: #B00040 } /* Keyword.Type */
+.stim-code .m { color: #666 } /* Literal.Number */
+.stim-code .s { color: #BA2121 } /* Literal.String */
+.stim-code .na { color: #687822 } /* Name.Attribute */
+.stim-code .nb { color: #008000 } /* Name.Builtin */
+.stim-code .nc { color: #00F; font-weight: bold } /* Name.Class */
+.stim-code .no { color: #800 } /* Name.Constant */
+.stim-code .nd { color: #A2F } /* Name.Decorator */
+.stim-code .ni { color: #717171; font-weight: bold } /* Name.Entity */
+.stim-code .ne { color: #CB3F38; font-weight: bold } /* Name.Exception */
+.stim-code .nf { color: #00F } /* Name.Function */
+.stim-code .nl { color: #767600 } /* Name.Label */
+.stim-code .nn { color: #00F; font-weight: bold } /* Name.Namespace */
+.stim-code .nt { color: #008000; font-weight: bold } /* Name.Tag */
+.stim-code .nv { color: #19177C } /* Name.Variable */
+.stim-code .ow { color: #A2F; font-weight: bold } /* Operator.Word */
+.stim-code .w { color: #BBB } /* Text.Whitespace */
+.stim-code .mb { color: #666 } /* Literal.Number.Bin */
+.stim-code .mf { color: #666 } /* Literal.Number.Float */
+.stim-code .mh { color: #666 } /* Literal.Number.Hex */
+.stim-code .mi { color: #666 } /* Literal.Number.Integer */
+.stim-code .mo { color: #666 } /* Literal.Number.Oct */
+.stim-code .sa { color: #BA2121 } /* Literal.String.Affix */
+.stim-code .sb { color: #BA2121 } /* Literal.String.Backtick */
+.stim-code .sc { color: #BA2121 } /* Literal.String.Char */
+.stim-code .dl { color: #BA2121 } /* Literal.String.Delimiter */
+.stim-code .sd { color: #BA2121; font-style: italic } /* Literal.String.Doc */
+.stim-code .s2 { color: #BA2121 } /* Literal.String.Double */
+.stim-code .se { color: #AA5D1F; font-weight: bold } /* Literal.String.Escape */
+.stim-code .sh { color: #BA2121 } /* Literal.String.Heredoc */
+.stim-code .si { color: #A45A77; font-weight: bold } /* Literal.String.Interpol */
+.stim-code .sx { color: #008000 } /* Literal.String.Other */
+.stim-code .sr { color: #A45A77 } /* Literal.String.Regex */
+.stim-code .s1 { color: #BA2121 } /* Literal.String.Single */
+.stim-code .ss { color: #19177C } /* Literal.String.Symbol */
+.stim-code .bp { color: #008000 } /* Name.Builtin.Pseudo */
+.stim-code .fm { color: #00F } /* Name.Function.Magic */
+.stim-code .vc { color: #19177C } /* Name.Variable.Class */
+.stim-code .vg { color: #19177C } /* Name.Variable.Global */
+.stim-code .vi { color: #19177C } /* Name.Variable.Instance */
+.stim-code .vm { color: #19177C } /* Name.Variable.Magic */
+.stim-code .il { color: #666 } /* Literal.Number.Integer.Long */
+  
+/* noise instructions → red */
+.stim-code .ge  { color: #cc0000; font-weight: bold; }
+/* logical observable → purple bold */
+.stim-code .gs  { color: #7b00cc; font-weight: bold; font-size: 1.05em; }
+/* gate keywords → blue */
+.stim-code .k   { color: #0055aa; font-weight: bold; }
+/* measurement/reset → teal */
+.stim-code .kd  { color: #006666; font-weight: bold; }
+/* DETECTOR → green */
+.stim-code .nf  { color: #228822; font-weight: bold; }
+/* rec[..] → dark orange */
+.stim-code .nv  { color: #cc5500; }
+/* TICK etc → grey */
+.stim-code .nb  { color: #888888; }
+/* comments → light grey italic */
+.stim-code .c1  { color: #aaaaaa; font-style: italic; }
+
+</style>
+</head>
+<body>
+<div class="stim-code"><table class="stim-codetable"><tr><td class="linenos"><div class="linenodiv"><pre><span class="normal"> 1</span>
+<span class="normal"> 2</span>
+<span class="normal"> 3</span>
+<span class="normal"> 4</span>
+<span class="normal"> 5</span>
+<span class="normal"> 6</span>
+<span class="normal"> 7</span>
+<span class="normal"> 8</span>
+<span class="normal"> 9</span>
+<span class="normal">10</span>
+<span class="normal">11</span>
+<span class="normal">12</span>
+<span class="normal">13</span>
+<span class="normal">14</span>
+<span class="normal">15</span>
+<span class="normal">16</span>
+<span class="normal">17</span>
+<span class="normal">18</span>
+<span class="normal">19</span>
+<span class="normal">20</span>
+<span class="normal">21</span>
+<span class="normal">22</span>
+<span class="normal">23</span>
+<span class="normal">24</span>
+<span class="normal">25</span>
+<span class="normal">26</span>
+<span class="normal">27</span>
+<span class="normal">28</span>
+<span class="normal">29</span>
+<span class="normal">30</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="kd">R</span> <span class="mi">2</span> <span class="mi">3</span> <span class="mi">4</span> <span class="mi">8</span> <span class="mi">9</span> <span class="mi">12</span> <span class="c">...</span>
+<span class="gr">X_ERROR</span><span class="mf">(0.001)</span> <span class="mi">2</span> <span class="mi">3</span> <span class="mi">4</span> <span class="mi">8</span> <span class="mi">9</span> <span class="mi">12</span> <span class="c">...</span>
+
+<span class="nb">TICK</span><span class="p">[</span><span class="err">SE_start</span><span class="p">]</span>
+<span class="gr">DEPOLARIZE1</span><span class="mf">(0.001)</span> <span class="mi">0</span> <span class="mi">1</span> <span class="mi">2</span> <span class="mi">3</span> <span class="mi">4</span> <span class="mi">5</span> <span class="c">...</span>
+<span class="k">H</span> <span class="mi">0</span> <span class="mi">1</span> <span class="mi">10</span> <span class="mi">11</span> <span class="mi">20</span> <span class="mi">21</span> <span class="c">...</span>
+<span class="gr">DEPOLARIZE1</span><span class="mf">(0.001)</span> <span class="mi">0</span> <span class="mi">1</span> <span class="mi">10</span> <span class="mi">11</span> <span class="mi">20</span> <span class="mi">21</span> <span class="c">...</span>
+<span class="nb">TICK</span>
+<span class="k">CX</span> <span class="mi">8</span> <span class="mi">5</span> <span class="mi">9</span> <span class="mi">6</span> <span class="mi">18</span> <span class="mi">15</span> <span class="c">...</span>
+<span class="gr">DEPOLARIZE2</span><span class="mf">(0.001)</span> <span class="mi">8</span> <span class="mi">5</span> <span class="mi">9</span> <span class="mi">6</span> <span class="mi">18</span> <span class="mi">15</span> <span class="c">...</span>
+<span class="nb">TICK</span>
+<span class="c">...</span>
+<span class="k">CX</span> <span class="mi">0</span> <span class="mi">2</span> <span class="mi">1</span> <span class="mi">3</span> <span class="mi">10</span> <span class="mi">12</span> <span class="c">...</span>
+<span class="gr">DEPOLARIZE2</span><span class="mf">(0.001)</span> <span class="mi">0</span> <span class="mi">2</span> <span class="mi">1</span> <span class="mi">3</span> <span class="mi">10</span> <span class="mi">12</span> <span class="c">...</span>
+<span class="nb">TICK</span>
+<span class="k">H</span> <span class="mi">0</span> <span class="mi">1</span> <span class="mi">10</span> <span class="mi">11</span> <span class="mi">20</span> <span class="mi">21</span> <span class="c">...</span>
+<span class="gr">DEPOLARIZE1</span><span class="mf">(0.001)</span> <span class="mi">0</span> <span class="mi">1</span> <span class="mi">10</span> <span class="mi">11</span> <span class="mi">20</span> <span class="mi">21</span> <span class="c">...</span>
+<span class="nb">TICK</span>
+
+<span class="gr">X_ERROR</span><span class="mf">(0.001)</span> <span class="mi">0</span> <span class="mi">1</span> <span class="mi">5</span> <span class="mi">6</span> <span class="mi">7</span> <span class="mi">10</span> <span class="c">...</span>
+<span class="kd">M</span> <span class="mi">0</span> <span class="mi">1</span> <span class="mi">5</span> <span class="mi">6</span> <span class="mi">7</span> <span class="mi">10</span> <span class="c">...</span>
+<span class="nf">DETECTOR</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span> <span class="nv">rec[-22]</span>
+<span class="nf">DETECTOR</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span> <span class="nv">rec[-21]</span>
+<span class="c">...</span>
+
+<span class="nf">DETECTOR</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span> <span class="nv">rec[-24]</span> <span class="nv">rec[-48]</span>
+<span class="nf">DETECTOR</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span> <span class="nv">rec[-23]</span> <span class="nv">rec[-47]</span>
+<span class="c">...</span>
+
+<span class="gs">OBSERVABLE_INCLUDE</span><span class="mf">(0)</span> <span class="nv">rec[-13]</span> <span class="nv">rec[-26]</span> <span class="nv">rec[-15]</span> <span class="nv">rec[-28]</span> <span class="nv">rec[-2]</span> <span class="c">...</span>
+</code></pre></div></td></tr></table></div>
+
+</body>
+</html>
