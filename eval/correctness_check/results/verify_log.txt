@@ -10,14 +10,14 @@ Applying rest rounds of syndrome extraction...
 Measuring data qubits...
 Injecting noise...
   Stim:    detectors=24, observables=1, noise_instr=30
-  AutoDEM: detectors=24, observables=1, noise_instr=25
+  AutoDEM: detectors=24, observables=1, noise_instr=28
   Detector match: True
   Observable match: True
   Noise instruction count match: False
   Running 200000 shots LER comparison...
     Stim: LER = 6.6000e-04 (132/200000 errors)
-    AutoDEM: LER = 3.8500e-04 (77/200000 errors)
-    LER ratio (AutoDEM/Stim) = 0.583
+    AutoDEM: LER = 7.1000e-04 (142/200000 errors)
+    LER ratio (AutoDEM/Stim) = 1.076
 
 ==================================================
 d = 5
@@ -30,14 +30,14 @@ Applying rest rounds of syndrome extraction...
 Measuring data qubits...
 Injecting noise...
   Stim:    detectors=120, observables=1, noise_instr=48
-  AutoDEM: detectors=120, observables=1, noise_instr=41
+  AutoDEM: detectors=120, observables=1, noise_instr=46
   Detector match: True
   Observable match: True
   Noise instruction count match: False
   Running 200000 shots LER comparison...
     Stim: LER = 9.5000e-05 (19/200000 errors)
-    AutoDEM: LER = 4.5000e-05 (9/200000 errors)
-    LER ratio (AutoDEM/Stim) = 0.474
+    AutoDEM: LER = 1.2500e-04 (25/200000 errors)
+    LER ratio (AutoDEM/Stim) = 1.316
 
 ==================================================
 d = 7
@@ -50,13 +50,13 @@ Applying rest rounds of syndrome extraction...
 Measuring data qubits...
 Injecting noise...
   Stim:    detectors=336, observables=1, noise_instr=66
-  AutoDEM: detectors=336, observables=1, noise_instr=57
+  AutoDEM: detectors=336, observables=1, noise_instr=64
   Detector match: True
   Observable match: True
   Noise instruction count match: False
   Running 200000 shots LER comparison...
     Stim: LER = 2.5000e-05 (5/200000 errors)
-    AutoDEM: LER = 0.0000e+00 (0/200000 errors)
+    AutoDEM: LER = 1.0000e-05 (2/200000 errors)
+    LER ratio (AutoDEM/Stim) = 0.400
 
 Saved to /home/xiang/workspace/LightStim/eval/correctness_check/results/surface_code_correctness.json
-DONE

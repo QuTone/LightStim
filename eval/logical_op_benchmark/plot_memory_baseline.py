@@ -24,15 +24,15 @@ df = df[df["code"] == "unrotated_sc"].copy()
 # Average Z and X basis LER per (distance, p)
 df = df.groupby(["distance", "p"])["logical_error_rate"].mean().reset_index()
 
-# Single-panel font sizes — match fig1_s_subexp.png / fig1_h_subexp.png
-FS_TITLE  = 12
-FS_LABEL  = 10
-FS_TICK   = 11
-FS_LEGEND = 10
+# Single-panel font sizes
+FS_TITLE  = 16
+FS_LABEL  = 12
+FS_TICK   = 12
+FS_LEGEND = 11
 LW        = 2.2
 MS        = 8
 
-fig, ax = plt.subplots(figsize=(2.7, 3.4), constrained_layout=True)
+fig, ax = plt.subplots(figsize=(4.5, 4.2))
 
 handles, labels = [], []
 
@@ -68,6 +68,7 @@ ax.legend(handles, labels,
           loc="lower right",
           frameon=True)
 
+fig.tight_layout()
 fig.savefig(OUTPUT, dpi=150, bbox_inches="tight")
 plt.close(fig)
 print(f"Saved: {OUTPUT}")

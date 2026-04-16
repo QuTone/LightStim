@@ -86,20 +86,21 @@ PAPER_RC: Dict[str, object] = {
     "font.weight":        "bold",
     "font.size":          14,
     # Axes labels & title
-    "axes.labelsize":     17,
+    "axes.labelsize":     14,
     "axes.labelweight":   "bold",
     "axes.titlesize":     18,
     "axes.titleweight":   "bold",
     "axes.linewidth":     1.3,
     # Ticks
-    "xtick.labelsize":    13,
-    "ytick.labelsize":    13,
+    "xtick.labelsize":    12,
+    "ytick.labelsize":    12,
     "xtick.major.width":  1.2,
     "ytick.major.width":  1.2,
     # Legend
-    "legend.fontsize":    12,
-    "legend.title_fontsize": 12,
+    "legend.fontsize":    10,
+    "legend.title_fontsize": 10,
     "legend.frameon":     True,
+    "legend.framealpha":  0.7,
     "legend.edgecolor":   "0.7",
     # Lines & markers
     "lines.linewidth":    2.2,

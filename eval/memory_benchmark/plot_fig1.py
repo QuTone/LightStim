@@ -31,7 +31,7 @@ def plot(df):
     apply_paper_style()
 
     # ── Change figsize here ───────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(4.8, 4.2))
+    fig, ax = plt.subplots(figsize=(3.9, 4.2))
     # ─────────────────────────────────────────────────────────────────
 
     code_proxy = []
@@ -74,8 +74,8 @@ def plot(df):
 
     # Two-part legend — both lower right, code above distance, no titles
     # Draw distance first so we can get its height to position code above it
-    leg2 = ax.legend(handles=dist_proxy, fontsize=10.5,
-                     loc="lower right", frameon=True, framealpha=0.9)
+    leg2 = ax.legend(handles=dist_proxy, fontsize=10,
+                     loc="lower right", frameon=True, framealpha=0.7)
     ax.add_artist(leg2)
 
     fig.canvas.draw()
@@ -83,8 +83,8 @@ def plot(df):
     bb2_ax = bb2.transformed(ax.transAxes.inverted())
     gap = 0.015  # axes fraction gap between the two boxes
 
-    leg1 = ax.legend(handles=code_proxy, fontsize=10.5,
-                     loc="lower right", frameon=True, framealpha=0.9,
+    leg1 = ax.legend(handles=code_proxy, fontsize=10,
+                     loc="lower right", frameon=True, framealpha=0.7,
                      bbox_to_anchor=(1, bb2_ax.y1 + gap),
                      bbox_transform=ax.transAxes)
 

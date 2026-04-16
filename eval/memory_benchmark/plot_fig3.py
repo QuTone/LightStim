@@ -53,11 +53,13 @@ BB_STYLE = {
 def load_all():
     dfs = []
 
-    # Surface codes (fig1)
+    # Surface codes (fig1) — Z basis only to avoid duplicate points
     f = RESULTS / "fig1_surface_codes.csv"
     if f.exists():
         df = pd.read_csv(f)
         df = df[np.isclose(df["p"], 1e-3)].copy()
+        if "basis" in df.columns:
+            df = df[df["basis"] == "Z"]
         if "rounds" not in df.columns:
             df["rounds"] = df["distance"]
         dfs.append(df)
@@ -95,7 +97,7 @@ def load_all():
 
 def plot(df):
     apply_paper_style()
-    fig, ax = plt.subplots(figsize=(5.7, 4.8))
+    fig, ax = plt.subplots(figsize=(5.7, 4.2))
 
     sc_legend_handles = []
     bb_legend_handles = []
@@ -122,7 +124,7 @@ def plot(df):
             if di is not None and not np.isnan(float(di)):
                 ax.annotate(f"d={int(di)}", xy=(xi, yi),
                             xytext=(5, 3), textcoords="offset points",
-                            fontsize=8, color=style["color"])
+                            fontsize=9, color=style["color"])
 
         handle = mlines.Line2D([], [],
                                color=style["color"], linestyle=style["ls"],
@@ -153,24 +155,24 @@ def plot(df):
         bb_legend_handles.append(handle)
 
     # ── Axes ──────────────────────────────────────────────────────────
-    ax.set_xlabel("Physical Qubits per LogQ ($n/k$)", fontsize=16, fontweight="bold")
-    ax.set_ylabel("LER per Round per LogQ", fontsize=16, fontweight="bold")
-    ax.set_title(r"Code Comparison ($p = 10^{-3}$)", fontsize=17, fontweight="bold")
+    ax.set_xlabel("Physical Qubits per LogQ ($n/k$)", fontsize=14, fontweight="bold")
+    ax.set_ylabel("LER per Round per LogQ", fontsize=14, fontweight="bold")
+    ax.set_title(r"Code Comparison ($p = 10^{-3}$)", fontsize=18, fontweight="bold")
     ax.set_xlim(left=0)
     ax.grid(True, which="both", ls="--", linewidth=0.5, alpha=0.5)
     bold_ticks(ax)
 
     # ── Two legend boxes ──────────────────────────────────────────────
     leg1 = ax.legend(handles=sc_legend_handles, title="Surface Codes",
-                     title_fontsize=9, fontsize=8.5,
-                     loc="upper right", frameon=True, framealpha=0.9)
+                     title_fontsize=10, fontsize=10,
+                     loc="upper right", frameon=True, framealpha=0.7)
     leg1.get_title().set_fontweight("bold")
     leg1.set_zorder(2)
     ax.add_artist(leg1)
 
     leg2 = ax.legend(handles=bb_legend_handles, title="BB Codes",
-                     title_fontsize=9, fontsize=8.5,
-                     loc="lower right", frameon=True, framealpha=0.9)
+                     title_fontsize=10, fontsize=10,
+                     loc="lower right", frameon=True, framealpha=0.7)
     leg2.get_title().set_fontweight("bold")
     leg2.set_zorder(2)
 

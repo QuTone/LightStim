@@ -1,0 +1,42 @@
+
+=== Surface Memory d=31 ===
+  Surface Mem d=31 — ALREADY DONE (skipping)
+
+=== TG CNOT d=15 ===
+  TG CNOT d=15 — ALREADY DONE (skipping)
+
+=== LS CNOT d=15 ===
+  LS CNOT d=15 — ALREADY DONE (skipping)
+
+=== Bell Teleportation TG d=15 ===
+  Bell Tele.(TG) d=15 — ALREADY DONE (skipping)
+
+=== Bell Teleportation LS-ZZ d=15 ===
+  Bell Tele.(LS-ZZ) d=15 — ALREADY DONE (skipping)
+
+=== TG Distillation d=7 (no timeout) ===
+  TG Distill. d=7 — ALREADY DONE (skipping)
+
+=== LS Distillation d=9 ===
+  LS Distill. d=9...
+Applying first round of syndrome extraction...
+Applying rest rounds of syndrome extraction...
+Applying first round of syndrome extraction...
+Applying rest rounds of syndrome extraction...
+Applying first round of syndrome extraction...
+Applying rest rounds of syndrome extraction...
+Applying first round of syndrome extraction...
+Applying rest rounds of syndrome extraction...
+Applying first round of syndrome extraction...
+Applying rest rounds of syndrome extraction...
+    trial 1: 522101ms
+  => 2528q, 51760det, 522101ms
+
+=== Done ===
+  sc_mem_d31: 1921q 29760det 15262ms
+  tg_cnot_d15: 1682q 13440det 44478ms
+  ls_cnot_d15: 4205q 69272det 221009ms
+  bell_tg_d15: 2523q 21420det 381148ms
+  bell_ls_zz_d15: 2581q 57136det 83666ms
+  tg_dist_d7: 2535q 15078det 876569ms
+  ls_dist_d9: 2528q 51760det 522101ms

@@ -49,7 +49,8 @@ for d in [3, 5, 7]:
     patch = RotatedSurfaceCode(distance=d)
     system = QECSystem()
     system.add_patch(patch)
-    noise_cfg = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p)
+    # p_idle matches Stim's before_round_data_depolarization (DEPOLARIZE1 on data qubits at TICK["SE_start"])
+    noise_cfg = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p, p_idle=p)
     exp = MemoryExperiment(
         qec_system=system,
         extraction_block_class=RotatedSEBlock,

@@ -19,9 +19,10 @@ RESULTS = Path("eval/logical_op_benchmark/results")
 MARKERS  = {3: "o", 5: "s", 7: "^"}
 
 # ── Figure sizes ─────────────────────────────────────────────────────────────
-SINGLE_W  = 2.4   # inches — H and S (1 subplot)
+SINGLE_W  = 4.5   # inches — H and S (1 subplot)
 MULTI_W   = 8.0   # inches — CNOT LS / trans (5 subplots)
-UNIFIED_H = 3.4   # inches — same height for all
+SINGLE_H  = 4.2   # inches — single-panel height
+UNIFIED_H = 3.4   # inches — multi-panel height
 
 
 def plot_subexps(df, title, out_path, drop_p=None, x_min_override=None,
@@ -32,19 +33,19 @@ def plot_subexps(df, title, out_path, drop_p=None, x_min_override=None,
     ncols   = len(subexps)
     compact = ncols > 1   # 5-panel figures use multi width
     fig_w   = MULTI_W if compact else SINGLE_W
+    fig_h   = UNIFIED_H if compact else SINGLE_H
 
     fig, axes = plt.subplots(1, ncols,
-                             figsize=(fig_w, UNIFIED_H),
-                             sharey=True,
-                             constrained_layout=True)
+                             figsize=(fig_w, fig_h),
+                             sharey=True)
     if ncols == 1:
         axes = [axes]
 
     # Compact mode: slightly smaller text for 5 subplots
-    fs_title  = 9  if compact else 12
-    fs_label  = 9  if compact else 10
-    fs_tick   = 8  if compact else 11
-    fs_legend = 8  if compact else 10
+    fs_title  = 9  if compact else 16
+    fs_label  = 9  if compact else 12
+    fs_tick   = 8  if compact else 12
+    fs_legend = 8  if compact else 11
     lw        = 1.6 if compact else 2.2
     ms        = 6   if compact else 8
 
@@ -90,8 +91,9 @@ def plot_subexps(df, title, out_path, drop_p=None, x_min_override=None,
 
         ax.set_xlim(x_min, x_max)
         ax.set_xlabel("$p$", fontsize=fs_label)
-        sp_title = (subplot_title_override or {}).get(subexp, subexp)
-        ax.set_title(sp_title, fontsize=fs_title)
+        if compact:
+            sp_title = (subplot_title_override or {}).get(subexp, subexp)
+            ax.set_title(sp_title, fontsize=fs_title)
         ax.tick_params(labelsize=fs_tick)
         bold_ticks(ax)
 
@@ -105,6 +107,7 @@ def plot_subexps(df, title, out_path, drop_p=None, x_min_override=None,
                         loc="center left",
                         bbox_to_anchor=(1.02, 0.5),
                         frameon=True)
+        fig.suptitle(title, fontweight="bold", fontsize=fs_title)
     else:
         axes[-1].legend(handles, labels,
                         title="Distance",
@@ -112,9 +115,9 @@ def plot_subexps(df, title, out_path, drop_p=None, x_min_override=None,
                         fontsize=fs_legend,
                         loc="lower right",
                         frameon=True)
+        axes[0].set_title(title, fontweight="bold", fontsize=fs_title)
 
-    fig.suptitle(title, fontweight="bold",
-                 fontsize=fs_title + 1)
+    fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")

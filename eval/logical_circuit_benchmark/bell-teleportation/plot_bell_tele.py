@@ -30,7 +30,7 @@ OUTPUT  = RESULTS / "fig_bell_tele.png"
 FS_TITLE  = 9
 FS_LABEL  = 9
 FS_TICK   = 8
-FS_LEGEND = 8
+FS_LEGEND = 9
 LW        = 1.6
 MS        = 6
 
@@ -46,12 +46,28 @@ DATASETS = [
 # ── Load data ─────────────────────────────────────────────────────────────────
 dfs = {key: pd.read_csv(RESULTS / fname) for key, fname, _ in DATASETS}
 
-# ── Figure ────────────────────────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 3, figsize=(5.5, 4.2),
-                         sharey=True, constrained_layout=True)
+# ── Legend proxies ────────────────────────────────────────────────────────────
+dist_proxy = [
+    Line2D([], [], color=PALETTE_DISTANCE[d], ls="-", lw=LW,
+           marker="o", ms=MS, markeredgecolor="none", label=f"d={d}")
+    for d in [3, 5, 7]
+]
+state_proxy = [
+    Line2D([], [], color="black", ls="-",  lw=LW, marker="o", ms=MS,
+           markeredgecolor="none", label="Z state"),
+    Line2D([], [], color="black", ls="--", lw=LW, marker="s", ms=MS,
+           markeredgecolor="none", label="X state"),
+]
 
-for ax, (key, _, title) in zip(axes, DATASETS):
+# ── One independent figure per protocol ──────────────────────────────────────
+out_names = {"TG": "fig_bell_tele_tg.png",
+             "LS-XX": "fig_bell_tele_ls_xx.png",
+             "LS-ZZ": "fig_bell_tele_ls_zz.png"}
+
+for key, _, title in DATASETS:
     df = dfs[key]
+    fig, ax = plt.subplots(figsize=(2.5, 4))
+
     for d in [3, 5, 7]:
         color = PALETTE_DISTANCE[d]
         for state in ["Z", "X"]:
@@ -65,32 +81,19 @@ for ax, (key, _, title) in zip(axes, DATASETS):
                       lw=LW, ms=MS, markeredgecolor="none")
 
     ax.set_xlabel("$p$", fontsize=FS_LABEL)
-    ax.set_title(title, fontsize=FS_TITLE)
+    ax.set_ylabel("LER", fontsize=FS_LABEL)
+    ax.set_title(title, fontsize=FS_TITLE, fontweight="bold")
     ax.tick_params(labelsize=FS_TICK)
     ax.grid(True, which="major", ls="--", alpha=0.5)
     bold_ticks(ax)
 
-axes[0].set_ylabel("LER", fontsize=FS_LABEL)
+    ax.legend(handles=dist_proxy + state_proxy,
+              fontsize=FS_LEGEND,
+              loc="lower right",
+              frameon=True)
 
-# ── Legend: distance (color) + state (linestyle) ─────────────────────────────
-dist_proxy = [
-    Line2D([], [], color=PALETTE_DISTANCE[d], ls="-", lw=LW,
-           marker="o", ms=MS, markeredgecolor="none", label=f"d={d}")
-    for d in [3, 5, 7]
-]
-state_proxy = [
-    Line2D([], [], color="black", ls="-",  lw=LW, marker="o", ms=MS,
-           markeredgecolor="none", label="Z state"),
-    Line2D([], [], color="black", ls="--", lw=LW, marker="s", ms=MS,
-           markeredgecolor="none", label="X state"),
-]
-
-axes[-1].legend(handles=dist_proxy + state_proxy,
-                fontsize=FS_LEGEND,
-                loc="lower right",
-                frameon=True)
-
-fig.suptitle("Bell Teleportation Circuit", fontweight="bold", fontsize=FS_TITLE + 1)
-fig.savefig(OUTPUT, dpi=150, bbox_inches="tight")
-plt.close(fig)
-print(f"Saved: {OUTPUT}")
+    out = RESULTS / out_names[key]
+    fig.tight_layout()
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {out}")

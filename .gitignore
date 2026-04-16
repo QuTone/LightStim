@@ -32,6 +32,7 @@ ENV/
 
 # Claude Code
 CLAUDE.md
+.claude/
 
 # IDE
 .vscode/
@@ -52,9 +53,12 @@ archive/
 
 # Local planning docs
 plan/
+AutoDEM_*Plan*.md
+AutoDEM_*Revision*.md
 
 # Paper (synced with Overleaf separately)
 paper/
+arxiv/paper_backup*/
 
 # Quantinuum (shared separately, not part of repo)
 quantinuum/
