@@ -1,15 +1,9 @@
 import stim
-import sinter
 import pandas as pd
-import multiprocessing as mp
-import time
 from typing import List, Dict, Any, Literal, Optional
-from dataclasses import dataclass
-from datetime import datetime
 
-from .decoder import BaseDecoder, SinterMWPMDecoder, NvidiaBpOsdDecoder
+from .decoder import BaseDecoder, SinterMWPMDecoder
 from .decoder_backend import SimulationPipeline, ExperimentTask as PipelineExperimentTask, DecoderConfig
-from .gpu_worker import _gpu_decode_worker_process
 
 
 class ExperimentTask:
@@ -34,7 +28,7 @@ class QECSimulator:
                   max_shots: int = 1_000_000,
                   max_errors: int = 1000,
                   decoder: BaseDecoder = None,
-                  gpu_ids: List[int] = [0],
+                  gpu_ids: Optional[List[int]] = None,
                   output_dir: Optional[str] = None,
                   post_select_detector_indices: Optional[List[int]] = None) -> pd.DataFrame:
         
@@ -50,7 +44,11 @@ class QECSimulator:
                 post_select_detector_indices=post_select_detector_indices,
             )
         elif self.backend == 'nvidia_gpu':
-            return self._run_gpu(tasks, max_shots, max_errors, decoder, gpu_ids)
+            raise NotImplementedError(
+                "QECSimulator backend='nvidia_gpu' used a placeholder decoder and "
+                "has been disabled. Use SimulationPipeline with "
+                "DecoderConfig(name='bposd' or 'nv-qldpc-decoder', backend='gpu') instead."
+            )
         else:
             raise ValueError(f"Unknown backend: {self.backend}")
 
@@ -84,57 +82,8 @@ class QECSimulator:
     # Backend 2: Custom GPU (NVIDIA)
     # ==========================================================================
     def _run_gpu(self, tasks, max_shots, max_errors, decoder, gpu_ids) -> pd.DataFrame:
-        results = []
-        
-        for i, task in enumerate(tasks):
-            print(f"Processing GPU Task {i+1}/{len(tasks)}: {task.json_metadata}")
-            
-            # Setup Managers
-            manager = mp.Manager()
-            shared_sim_counter = manager.Value('i', 0)
-            shared_fail_counter = manager.Value('i', 0)
-            lock = manager.Lock()
-            
-            # Distribute Processes
-            procs_per_gpu = max(1, self.num_workers // len(gpu_ids))
-            workers = []
-            dem_str = task.circuit.detector_error_model().__str__()
-            
-            start_time = time.time()
-            
-            for rank in range(len(gpu_ids) * procs_per_gpu):
-                gpu_id = gpu_ids[rank % len(gpu_ids)]
-                p = mp.Process(
-                    target=_gpu_decode_worker_process,
-                    args=(
-                        dem_str,
-                        decoder.params, # 传入参数字典
-                        max_shots,
-                        max_errors,
-                        gpu_id,
-                        shared_sim_counter,
-                        shared_fail_counter,
-                        lock
-                    )
-                )
-                p.start()
-                workers.append(p)
-                
-            for p in workers:
-                p.join()
-                
-            duration = time.time() - start_time
-            
-            # Collect Stats
-            row = {
-                "shots": shared_sim_counter.value,
-                "errors": shared_fail_counter.value,
-                "decoder": decoder.name,
-                "seconds": duration,
-                **task.json_metadata
-            }
-            if row["shots"] > 0:
-                row["logical_error_rate"] = row["errors"] / row["shots"]
-            results.append(row)
-            
-        return pd.DataFrame(results)
+        raise NotImplementedError(
+            "The legacy QECSimulator NVIDIA backend is disabled because it did "
+            "not perform real decoding. Use SimulationPipeline with a GPU "
+            "DecoderConfig instead."
+        )

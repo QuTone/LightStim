@@ -83,7 +83,7 @@ def _unique_decoder_names() -> list[str]:
     for names in cls_to_names.values():
         chosen = next((n for n in canonical_order if n in names), names[0])
         result.append(chosen)
-    return sorted(result)
+    return sorted(set(result))
 
 
 def list_decoders() -> list[str]:

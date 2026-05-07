@@ -5,8 +5,9 @@ Used when post-selection is required; otherwise sinter.collect handles paralleli
 """
 
 import os
-from multiprocessing import Manager
-from typing import Any, Callable, Dict, List, Optional
+import traceback
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import stim
@@ -28,6 +29,64 @@ def _decode_worker_cpu(
     post_counter,
     errors_counter,
     lock,
+    allow_gauge_detectors: bool,
+    error_path: Optional[str] = None,
+    worker_id: int = 0,
+    gpu_id: Optional[int] = None,
+) -> None:
+    try:
+        _decode_worker_cpu_impl(
+            circuit=circuit,
+            decoder_name=decoder_name,
+            decoder_params=decoder_params,
+            decoder_backend=decoder_backend,
+            batch_size=batch_size,
+            max_shots=max_shots,
+            max_errors=max_errors,
+            post_select_indices=post_select_indices,
+            post_select_observable_indices=post_select_observable_indices,
+            post_select_corrected_observable_indices=post_select_corrected_observable_indices,
+            target_observable_indices=target_observable_indices,
+            shots_counter=shots_counter,
+            post_counter=post_counter,
+            errors_counter=errors_counter,
+            lock=lock,
+            allow_gauge_detectors=allow_gauge_detectors,
+            worker_id=worker_id,
+            gpu_id=gpu_id,
+        )
+    except BaseException as exc:
+        if error_path is not None:
+            Path(error_path).write_text(
+                "\n".join(
+                    [
+                        f"worker_id={worker_id}",
+                        f"type={type(exc).__name__}",
+                        f"message={exc}",
+                        traceback.format_exc(),
+                    ]
+                )
+            )
+        raise
+
+
+def _decode_worker_cpu_impl(
+    circuit: stim.Circuit,
+    decoder_name: str,
+    decoder_params: Dict[str, Any],
+    decoder_backend: str,
+    batch_size: int,
+    max_shots: int,
+    max_errors: int,
+    post_select_indices: List[int],
+    post_select_observable_indices: Optional[List[int]],
+    post_select_corrected_observable_indices: Optional[List[int]],
+    target_observable_indices: Optional[List[int]],
+    shots_counter,
+    post_counter,
+    errors_counter,
+    lock,
+    allow_gauge_detectors: bool,
     worker_id: int = 0,
     gpu_id: Optional[int] = None,
 ) -> None:
@@ -45,7 +104,9 @@ def _decode_worker_cpu(
 
     decoder = get_decoder(decoder_name, backend=decoder_backend, **decoder_params)
     dem = circuit.detector_error_model(
-        decompose_errors=getattr(decoder, "decompose_errors", False),
+        decompose_errors=getattr(decoder, "decompose_errors", False) or allow_gauge_detectors,
+        allow_gauge_detectors=allow_gauge_detectors,
+        ignore_decomposition_failures=allow_gauge_detectors,
     )
     compiled = decoder.compile_decoder_for_dem(dem=dem)
     sampler = dem.compile_sampler(seed=os.getpid() + worker_id * 10000)

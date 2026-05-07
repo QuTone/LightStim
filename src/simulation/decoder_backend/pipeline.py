@@ -1,6 +1,8 @@
 """Simulation pipeline: sample -> post-select -> decode -> stats."""
 
 import multiprocessing as mp
+import shutil
+import tempfile
 import time
 import warnings
 from datetime import datetime
@@ -158,6 +160,11 @@ class SimulationPipeline:
         """Custom sampling loop with post-selection (single or multi-process)."""
         decoder_name = self.config.decoder.name
         self._warn_dem_flags(circuit, decoder_name)
+        get_decoder(
+            decoder_name,
+            backend=self.config.decoder.backend,
+            **self.config.decoder.params,
+        )
         start = time.perf_counter()
         reporter = self._make_progress_reporter()
         has_post_selection = (len(post_select_indices) > 0 or
@@ -182,47 +189,80 @@ class SimulationPipeline:
         post_counter = mp.Value("q", 0)
         errors_counter = mp.Value("q", 0)
         lock = mp.Lock()
+        error_dir = Path(tempfile.mkdtemp(prefix="lightstim-workers-"))
 
         procs = []
-        for wid in range(self.config.num_workers):
-            p = mp.Process(
-                target=_decode_worker_cpu,
-                args=(
-                    circuit,
-                    decoder_name,
-                    self.config.decoder.params,
-                    self.config.decoder.backend,
-                    self.config.batch_size,
-                    self.config.max_shots,
-                    self.config.max_errors,
-                    post_select_indices,
-                    self.config.post_select_observable_indices,
-                    self.config.post_select_corrected_observable_indices,
-                    self.config.target_observable_indices,
-                    shots_counter,
-                    post_counter,
-                    errors_counter,
-                    lock,
-                    wid,
-                    wid if self.config.decoder.backend != "cpu" else None,
-                ),
-            )
-            p.start()
-            procs.append(p)
+        try:
+            for wid in range(self.config.num_workers):
+                p = mp.Process(
+                    target=_decode_worker_cpu,
+                    args=(
+                        circuit,
+                        decoder_name,
+                        self.config.decoder.params,
+                        self.config.decoder.backend,
+                        self.config.batch_size,
+                        self.config.max_shots,
+                        self.config.max_errors,
+                        post_select_indices,
+                        self.config.post_select_observable_indices,
+                        self.config.post_select_corrected_observable_indices,
+                        self.config.target_observable_indices,
+                        shots_counter,
+                        post_counter,
+                        errors_counter,
+                        lock,
+                        self.config.allow_gauge_detectors,
+                        str(error_dir / f"worker_{wid}.err"),
+                        wid,
+                        wid if self.config.decoder.backend != "cpu" else None,
+                    ),
+                )
+                try:
+                    p.start()
+                except OSError as exc:
+                    for started in procs:
+                        if started.is_alive():
+                            started.terminate()
+                    for started in procs:
+                        started.join()
+                    warnings.warn(
+                        "Multiprocessing workers could not be started; falling back "
+                        f"to single-process simulation. Original error: {exc}",
+                        RuntimeWarning,
+                        stacklevel=3,
+                    )
+                    return self._run_custom_single(
+                        circuit,
+                        json_metadata,
+                        post_select_indices,
+                        decoder_name,
+                        start,
+                        reporter,
+                        has_post_selection,
+                    )
+                procs.append(p)
 
-        while any(p.is_alive() for p in procs):
-            snapshot = self._build_snapshot(
-                shots=shots_counter.value,
-                kept=post_counter.value,
-                errors=errors_counter.value,
-                start=start,
-                has_post_selection=has_post_selection,
-            )
-            reporter.emit(snapshot)
-            time.sleep(self.config.progress_poll_interval_sec)
+            while any(p.is_alive() for p in procs):
+                snapshot = self._build_snapshot(
+                    shots=shots_counter.value,
+                    kept=post_counter.value,
+                    errors=errors_counter.value,
+                    start=start,
+                    has_post_selection=has_post_selection,
+                )
+                reporter.emit(snapshot)
+                self._raise_worker_exception_if_any(error_dir, procs)
+                time.sleep(self.config.progress_poll_interval_sec)
 
-        for p in procs:
-            p.join()
+            for p in procs:
+                p.join()
+            self._raise_worker_exception_if_any(error_dir, procs)
+            failed = [p.exitcode for p in procs if p.exitcode not in (0, None)]
+            if failed:
+                raise RuntimeError(f"Simulation worker process failed with exit code(s): {failed}")
+        finally:
+            shutil.rmtree(error_dir, ignore_errors=True)
 
         elapsed = time.perf_counter() - start
         final_snapshot = self._build_snapshot(
@@ -241,6 +281,19 @@ class SimulationPipeline:
             decoder=decoder_name,
             json_metadata=json_metadata,
         )
+
+    @staticmethod
+    def _raise_worker_exception_if_any(error_dir: Path, procs) -> None:
+        error_files = sorted(error_dir.glob("worker_*.err"))
+        if not error_files:
+            return
+        details = error_files[0].read_text()
+        for proc in procs:
+            if proc.is_alive():
+                proc.terminate()
+        for proc in procs:
+            proc.join()
+        raise RuntimeError(f"Simulation worker failed:\n{details}")
 
     def _run_custom_single(
         self,
