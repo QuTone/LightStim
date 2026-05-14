@@ -34,4 +34,4 @@ gpu = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["lightstim*"]

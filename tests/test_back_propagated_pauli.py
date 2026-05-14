@@ -12,10 +12,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import stim
 import numpy as np
-from src.qec_code.surface_code.unrotated import (
+from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock, UnrotatedMultiPatchCoupler
 )
-from src.ir.qec_system import QECSystem
+from lightstim.ir.qec_system import QECSystem
 
 
 def check_no_crosstalk(system, label):
@@ -82,9 +82,3 @@ def test_four_patch_coupler():
     assert check_no_crosstalk(system, "4-patch ZZZZ coupler (distillation layout)")
 
 
-if __name__ == '__main__':
-    print("=== Syndrome Cross-Talk Verification ===\n")
-    test_single_patch()
-    test_two_patch_coupler()
-    test_four_patch_coupler()
-    print("\nAll tests passed — no syndrome cross-talk in any configuration.")

@@ -15,9 +15,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from experiments.two_patch_LS_unrotated import TwoPatchLSExperiment
-from src.noise.config import NoiseConfig
-from src.noise.injector import NoiseInjector
+from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
+from lightstim.noise.config import NoiseConfig
+from lightstim.noise.injector import NoiseInjector
 
 try:
     import mwpf

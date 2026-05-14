@@ -17,26 +17,26 @@ import pytest
 import stim
 
 # ── Code imports ──────────────────────────────────────────────────────────────
-from src.qec_code.surface_code.rotated import (
+from lightstim.qec_code.surface_code.rotated import (
     RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock,
 )
-from src.qec_code.surface_code.unrotated import (
+from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock,
 )
-from src.qec_code.surface_code.toric import ToricCode, ToricCodeExtractionBlock
-from src.qec_code.color_code import ColorCode, ColorCodeExtractionBlock
-from src.qec_code.BB_code import BBCode, BBCodeExtractionBlock
-from src.ir.qec_system import QECSystem
-from src.noise.config import NoiseConfig
+from lightstim.qec_code.surface_code.toric import ToricCode, ToricCodeExtractionBlock
+from lightstim.qec_code.color_code import ColorCode, ColorCodeExtractionBlock
+from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
+from lightstim.ir.qec_system import QECSystem
+from lightstim.noise.config import NoiseConfig
 
 # ── Experiment imports ────────────────────────────────────────────────────────
-from experiments.memory import MemoryExperiment
-from experiments.CNOT_trans import CNOTTransExperiment
-from experiments.CNOT_LS import CNOTLSExperiment
-from experiments.state_injection import StateInjectionExperiment
-from experiments.ghz import GHZExperiment
-from experiments.two_patch_LS_unrotated import TwoPatchLSExperiment
-from experiments.fold_transversal import build_gate_verification_circuit
+from lightstim.protocols.memory import MemoryExperiment
+from lightstim.protocols.cnot_trans import CNOTTransExperiment
+from lightstim.protocols.cnot_ls import CNOTLSExperiment
+from lightstim.protocols.state_injection import StateInjectionExperiment
+from lightstim.protocols.ghz import GHZExperiment
+from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
+from lightstim.protocols.fold_transversal import build_gate_verification_circuit
 
 SHOTS = 200  # noiseless shots — fast but catches any stray detection events
 

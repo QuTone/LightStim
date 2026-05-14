@@ -1,8 +1,8 @@
 import pytest
 import stim
 
-from src.simulation.decoder_backend import DecoderConfig, SimulationPipeline, list_decoders
-from src.simulation.simulator import ExperimentTask, QECSimulator
+from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeline, list_decoders
+from lightstim.simulation.simulator import ExperimentTask, QECSimulator
 
 
 def _simple_observable_circuit(error_probability: float = 0.0) -> stim.Circuit:

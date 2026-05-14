@@ -24,9 +24,9 @@ PROJECT_ROOT = SCRIPT_DIR.parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from experiments.state_Y_injection import StateInjectionExperiment
-from src.noise.config import NoiseConfig
-from src.simulation.decoder_backend.post_select import (
+from lightstim.protocols.state_Y_injection import StateInjectionExperiment
+from lightstim.noise.config import NoiseConfig
+from lightstim.simulation.decoder_backend.post_select import (
     get_post_select_detector_indices,
     apply_post_selection,
 )
