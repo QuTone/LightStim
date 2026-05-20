@@ -283,83 +283,71 @@ class BBCode(QECPatch):
                 self.create_stim_logical(targets, 'X')
 
     def _build_logical_operators_numerical(self):
-        """Compute logical X and Z operators from parity check matrices.
-        Uses SlidingWindowDecoder-style kernel via M.T (faster than RREF+backsub)."""
-        l, m = self.l, self.m
-        n2 = l * m  # half the data qubits
-        n = 2 * n2  # total data qubits
+        """Compute Z/X logical operators via GF(2) Gaussian elimination.
 
-        # Build check matrices
+        Z-logicals: ker(Hx) / row(Hz).  X-logicals: ker(Hz) / row(Hx).
+        """
+        l, m = self.l, self.m
+        n2, n = l * m, 2 * l * m
+
         A_mat = self._build_polynomial_matrix(self.A)
         B_mat = self._build_polynomial_matrix(self.B)
 
-        Hx = np.hstack([A_mat, B_mat]) % 2  # shape: n2 x n
-        Hz = np.hstack([B_mat.T, A_mat.T]) % 2  # shape: n2 x n
+        # CSS parity check matrices (n2 × n).
+        # np.kron(x_shift, y_shift) assigns column index j the qubit at
+        # (x_idx = j//m, y_idx = j%m); columns j >= n2 are right-type.
+        Hx = np.hstack([A_mat, B_mat]) % 2
+        Hz = np.hstack([B_mat.T, A_mat.T]) % 2
 
-        # Kernel via M.T (codes_q style): row_echelon(M.T), ker = transform[rank:, :]
-        def _kernel_and_basis(M):
-            Mt = M.T.astype(bool)
-            _, rank, transform, pivot_cols = row_echelon(Mt)
-            ker = transform[rank:, :].astype(np.uint8)
-            basis = M[np.array(pivot_cols)].astype(np.uint8)
-            return ker, basis
+        def _null_space(M):
+            """Basis for ker(M) over GF(2), returned as rows."""
+            _, rank, transform, _ = row_echelon(M.T.astype(np.uint8))
+            return np.array(transform[rank:]) % 2
 
-        # compute_lz(ker, im_basis): quotient ker / rowspace(im_basis)
-        def _quotient_logicals(ker_rows, im_basis):
-            log_stack = np.vstack([im_basis, ker_rows]) % 2
-            _, _, _, pivots = row_echelon(log_stack.T)
-            n_im = im_basis.shape[0]
-            log_op_indices = [i for i in range(n_im, log_stack.shape[0]) if i in pivots]
-            return log_stack[log_op_indices] if log_op_indices else np.zeros((0, ker_rows.shape[1]), dtype=np.uint8)
+        def _row_basis(M):
+            """Independent rows of M over GF(2)."""
+            rref, rank, _, _ = row_echelon(M.astype(np.uint8))
+            return np.array(rref[:rank]) % 2
 
-        hx_perp, hx_basis = _kernel_and_basis(Hx)
-        hz_perp, hz_basis = _kernel_and_basis(Hz)
+        def _quotient(ker_vecs, im_vecs, k):
+            """k representatives of ker_vecs / im_vecs over GF(2)."""
+            stack = np.vstack([im_vecs, ker_vecs]) % 2
+            _, _, _, pivots = row_echelon(stack.T.astype(np.uint8))
+            n_im = len(im_vecs)
+            reps = [i for i in range(n_im, len(stack)) if i in pivots]
+            assert len(reps) == k, f"Expected {k} logicals, found {len(reps)}"
+            return stack[reps]
 
-        k = n - hx_basis.shape[0] - hz_basis.shape[0]
+        hz_basis = _row_basis(Hz)
+        hx_basis = _row_basis(Hx)
+        k = n - len(hx_basis) - len(hz_basis)
         self.num_logicals = k
 
-        # lz in ker(Hx) / rowspace(Hz),  lx in ker(Hz) / rowspace(Hx)
-        lz_basis = _quotient_logicals(hx_perp, hz_basis)
-        lx_basis = _quotient_logicals(hz_perp, hx_basis)
+        lz_basis = _quotient(_null_space(Hx), hz_basis, k)
+        lx_basis = _quotient(_null_space(Hz), hx_basis, k)
 
-        # Build the data qubit index mapping: column index in H -> qubit index in patch
-        left_type_data = []
-        right_type_data = []
+        # Map polynomial column index → patch qubit index.
+        # Kronecker block ordering: col j → qubit at (x_idx = j//m, y_idx = j%m).
+        # Left-type qubits have even x (x_idx = x//2), right-type have odd x.
+        def _poly_sorted(is_left_type: bool) -> list:
+            qubits = [
+                idx for idx in self.data_indices
+                if (int(round(self.qubit_coords[idx][0])) % 2 == 0) == is_left_type
+            ]
+            return sorted(qubits, key=lambda idx:
+                int(round(self.qubit_coords[idx][0])) // 2 * m
+                + int(round(self.qubit_coords[idx][1])) // 2
+            )
 
-        for idx in sorted(self.data_indices):
-            coord = self.qubit_coords[idx]
-            x, y = coord
-            if int(round(x)) % 2 == 0 and int(round(y)) % 2 == 1:
-                left_type_data.append(idx)
-            elif int(round(x)) % 2 == 1 and int(round(y)) % 2 == 0:
-                right_type_data.append(idx)
-
-        left_type_data.sort(key=lambda idx: (
-            int(round(self.qubit_coords[idx][1])) // 2,
-            int(round(self.qubit_coords[idx][0])) // 2
-        ))
-        right_type_data.sort(key=lambda idx: (
-            int(round(self.qubit_coords[idx][1])) // 2,
-            int(round(self.qubit_coords[idx][0])) // 2
-        ))
-
-        col_to_qubit_idx = left_type_data + right_type_data
+        col_to_qubit = _poly_sorted(True) + _poly_sorted(False)
 
         for row in lz_basis:
-            targets = {}
-            for col in range(n):
-                if row[col] == 1:
-                    qubit_idx = col_to_qubit_idx[col]
-                    targets[self.qubit_coords[qubit_idx]] = 'Z'
+            targets = {self.qubit_coords[col_to_qubit[j]]: 'Z' for j in np.where(row)[0]}
             if targets:
                 self.create_stim_logical(targets, 'Z')
 
         for row in lx_basis:
-            targets = {}
-            for col in range(n):
-                if row[col] == 1:
-                    qubit_idx = col_to_qubit_idx[col]
-                    targets[self.qubit_coords[qubit_idx]] = 'X'
+            targets = {self.qubit_coords[col_to_qubit[j]]: 'X' for j in np.where(row)[0]}
             if targets:
                 self.create_stim_logical(targets, 'X')
 

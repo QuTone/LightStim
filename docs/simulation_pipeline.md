@@ -13,7 +13,7 @@ Stim Circuit → DEM → Sampling → Post-Selection → Decoding → LER Stats
 ## Quick Start
 
 ```python
-from src.simulation.decoder_backend import SimulationPipeline, DecoderConfig
+from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 
 # 1. Configure decoder
 decoder_config = DecoderConfig(
@@ -32,7 +32,7 @@ pipeline = SimulationPipeline(
 
 # 3. Run
 stats = pipeline.run(circuit)  # circuit: stim.Circuit (with noise)
-print(f"LER: {stats.logical_error_rate:.2e}")
+print(f"LER: {stats.logical_error_rate:.2e} ± {stats.ler_error_bar():.2e}")  # 95% CI
 ```
 
 ## Environment
@@ -43,7 +43,7 @@ print(f"LER: {stats.logical_error_rate:.2e}")
 python -c "import cudaq_qec"  # ImportError
 
 # Use the project venv
-/home/xiang/workspace/LightStim/venv/bin/python -c "import cudaq_qec"  # OK
+venv/bin/python -c "import cudaq_qec"  # OK
 ```
 
 Always use `venv/bin/python` when running GPU decoder experiments.
@@ -164,7 +164,7 @@ pipeline = SimulationPipeline(
 Run multiple circuits (e.g., distance sweep) in sequence:
 
 ```python
-from src.simulation.decoder_backend import ExperimentTask
+from lightstim.simulation.decoder_backend import ExperimentTask
 
 tasks = []
 for d in [3, 5, 7]:
@@ -216,11 +216,11 @@ pipeline = SimulationPipeline(
 ## Complete Example: 4D Hadamard GPU
 
 ```python
-from src.qec_code.four_d_geo_code import FourDGeoCode, FourDGeoCodeExtractionBlock
-from src.ir.qec_system import QECSystem
-from src.noise.config import NoiseConfig
-from experiments.memory import MemoryExperiment
-from src.simulation.decoder_backend import SimulationPipeline, DecoderConfig
+from lightstim.qec_code.four_d_geo_code import FourDGeoCode, FourDGeoCodeExtractionBlock
+from lightstim.ir.qec_system import QECSystem
+from lightstim.noise.config import NoiseConfig
+from lightstim.protocols.memory import MemoryExperiment
+from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 
 # Build circuit
 code = FourDGeoCode(
@@ -267,5 +267,5 @@ print(f"LER: {stats.logical_error_rate:.2e}")  # expect ~6e-05
 
 **Run with venv:**
 ```bash
-/home/xiang/workspace/LightStim/venv/bin/python my_script.py
+venv/bin/python my_script.py
 ```

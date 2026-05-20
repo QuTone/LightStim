@@ -29,6 +29,15 @@ class ProgressSnapshot:
         return self.errors_total / self.shots_kept
 
     @property
+    def ler_error_bar(self) -> float:
+        """95% Wilson CI half-width."""
+        n = self.shots_kept
+        if n == 0:
+            return 0.0
+        p = self.ler
+        return 1.96 * (p * (1 - p) / n) ** 0.5
+
+    @property
     def eta_sec(self) -> Optional[float]:
         """Estimate time-to-finish using both stop conditions."""
         if self.elapsed_sec <= 0:
@@ -126,11 +135,13 @@ class ProgressReporter:
     def _format_line(*, snapshot: ProgressSnapshot, final: bool) -> str:
         prefix = "final " if final else ""
         eta = _format_eta(snapshot.eta_sec)
+        eb = snapshot.ler_error_bar
+        eb_str = f"±{eb:.2e}" if eb > 0 else "±--"
         return (
             f"{prefix}shots={snapshot.shots_total:,} "
             f"kept={snapshot.shots_kept:,} "
             f"errors={snapshot.errors_total:,} "
-            f"LER={snapshot.ler:.2e} "
+            f"LER={snapshot.ler:.2e}{eb_str} "
             f"elapsed={snapshot.elapsed_sec:.1f}s "
             f"ETA={eta}"
         )

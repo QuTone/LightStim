@@ -39,9 +39,11 @@ pipeline = SimulationPipeline(
     print_progress=False,
 )
 stats = pipeline.run(circuit)
-print(stats.logical_error_rate)  # errors / post_selected_shots
+print(stats.logical_error_rate)       # errors / post_selected_shots
+print(stats.ler_error_bar())          # 95% Wilson CI half-width (z=1.96)
+print(stats.ler_error_bar(z=1.0))     # 1-sigma half-width
 print(stats.shots)
-print(stats.post_selected_shots) # shots that survived post-selection (if any)
+print(stats.post_selected_shots)      # shots that survived post-selection (if any)
 ```
 
 ## Decoder options

@@ -90,3 +90,15 @@ class SimulationStats:
         if self.post_selected_shots == 0:
             return 0.0
         return self.errors / self.post_selected_shots
+
+    def ler_error_bar(self, z: float = 1.96) -> float:
+        """Half-width of a z-sigma Wilson confidence interval on the LER.
+
+        For small error counts (< ~5), prefer a Poisson-based interval instead;
+        this formula undercovers in that regime.
+        """
+        n = self.post_selected_shots
+        if n == 0:
+            return 0.0
+        p = self.logical_error_rate
+        return z * (p * (1 - p) / n) ** 0.5

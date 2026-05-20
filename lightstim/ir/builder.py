@@ -51,6 +51,10 @@ class CircuitBuilder:
         self.system = system_config
         self.circuit = stim.Circuit()
         self.if_detector = if_detector
+        # State set by apply_syndrome_extraction(z_only=True) for use by apply_data_readout
+        self._z_only_syn_qubit_indices = None
+        self._z_only_no_detector_mask  = None
+        self._z_only_n_meas_per_round  = None
 
     # --------------------------------------------------------------------------
     # A. Setup & Initialization
@@ -150,7 +154,8 @@ class CircuitBuilder:
     def apply_syndrome_extraction(self,
                                   circuit_chunk: stim.Circuit,
                                   rounds: int = 1,
-                                  noiseless: bool = False):
+                                  noiseless: bool = False,
+                                  z_only: bool = False):
         """
         Applies syndrome extraction with automated Tracker integration.
 
@@ -160,6 +165,9 @@ class CircuitBuilder:
             rounds: Number of times to repeat.
             noiseless: If True, tag all gate instructions in circuit_chunk as 'noiseless'
                 so the noise injector skips them. Useful for injection-stabilization rounds.
+            z_only: If True, only Z-ancilla measurements emit DETECTOR instructions.
+                X-ancilla are still measured (so the tableau update is correct) but
+                suppressed from the DEM. State is stored for apply_data_readout(z_only=True).
         """
         if rounds < 1: return
         if noiseless:
@@ -172,6 +180,15 @@ class CircuitBuilder:
         # Analyze Ideal Basis for the Tracker
         back_propagated_paulis, syn_qubit_indices = self._get_back_propagated_pauli(circuit_chunk, self.tracker.num_qubits)
         syn_coords = [self.system.qubit_coords[i] for i in syn_qubit_indices] # extract from circuit_chunk, more robust
+
+        # Build Z-only mask: True for X-ancilla (suppress their DETECTORs)
+        no_detector_mask = None
+        if z_only:
+            x_anc_set = set(self.system.active_syndrome_indices_x)
+            no_detector_mask = np.array([q in x_anc_set for q in syn_qubit_indices], dtype=bool)
+            self._z_only_syn_qubit_indices = syn_qubit_indices
+            self._z_only_no_detector_mask  = no_detector_mask
+            self._z_only_n_meas_per_round  = len(syn_qubit_indices)
 
         # Append chunk to actual circuit (optionally tagging all instructions as noiseless)
         if noiseless:
@@ -199,6 +216,7 @@ class CircuitBuilder:
                 circuit=self.circuit,
                 back_propagated_paulis=back_propagated_paulis,
                 syn_coords=syn_coords,
+                no_detector_mask=no_detector_mask,
             )
 
         # ======================================================================
@@ -227,6 +245,8 @@ class CircuitBuilder:
 
                 # Construct Repeated Detectors: rec[-k] ^ rec[-k-num_syn]
                 for i in range(num_syn):
+                    if no_detector_mask is not None and no_detector_mask[i]:
+                        continue  # z_only: skip X-ancilla detectors
                     # Stim record indices are relative to the current moment in the loop
                     rec_current = -num_syn + i
                     rec_prev = -num_syn + i - num_syn
@@ -324,7 +344,8 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # E. Data Qubit Measurement
     # --------------------------------------------------------------------------
-    def apply_data_readout(self, final_measurements: Dict[int, str] = None, noiseless: bool = False):
+    def apply_data_readout(self, final_measurements: Dict[int, str] = None, noiseless: bool = False,
+                           z_only: bool = False):
         """
         Applies destructive measurement on data qubits and calls Tracker to
         resolve remaining stabilizers into Detectors/Observables.
@@ -333,6 +354,9 @@ class CircuitBuilder:
             final_measurements: Dict mapping qubit index to measurement basis ('X', 'Y', 'Z').
             noiseless: If True, tag measurement instructions with 'noiseless' so that
                        noise injection rules skip them.
+            z_only: If True, bypass tracker.process_data_measurement and construct
+                DETECTOR / OBSERVABLE_INCLUDE manually from Z-stabilizers and Z-logicals.
+                Requires apply_syndrome_extraction to have been called with z_only=True.
         """
         if final_measurements is None:
             final_measurements = {q: 'Z' for q in self.system.data_indices}
@@ -363,14 +387,35 @@ class CircuitBuilder:
             else:
                 final_paulis[i, n + q] = 1
 
-        # Call Tracker
+        # Call Tracker — or, for z_only, build DETECTORs/OBSERVABLEs manually
         if self.if_detector:
-            self.tracker.process_data_measurement(
-                circuit=self.circuit,
-                final_paulis=final_paulis,
-                idx_to_coord_map=self.system.qubit_coords,
-                syndrome_qubit_indices=self.system.syndrome_indices,
-            )
+            if z_only:
+                syn_qubit_indices = self._z_only_syn_qubit_indices
+                no_detector_mask  = self._z_only_no_detector_mask
+                n_meas_per_round  = self._z_only_n_meas_per_round
+                x_anc_set = {q for q, masked in zip(syn_qubit_indices, no_detector_mask) if masked}
+
+                data_indices = sorted_indices  # already M'd above in Z basis
+                data_pos     = {q: i for i, q in enumerate(data_indices)}
+                n_data       = len(data_indices)
+                z_anc_pos    = {q: i for i, q in enumerate(syn_qubit_indices) if q not in x_anc_set}
+
+                for stab in self.system.active_stabilizers_z:
+                    recs = [stim.target_rec(-n_data + data_pos[q]) for q in stab['data_indices']]
+                    recs.append(stim.target_rec(-n_data - n_meas_per_round + z_anc_pos[stab['syn_idx']]))
+                    self.circuit.append("DETECTOR", recs)
+
+                z_log_ops = [op for op in self.system.logical_ops if op['type'] == 'Z']
+                for idx, op in enumerate(z_log_ops):
+                    recs = [stim.target_rec(-n_data + data_pos[q]) for q in op['data_indices']]
+                    self.circuit.append("OBSERVABLE_INCLUDE", recs, idx)
+            else:
+                self.tracker.process_data_measurement(
+                    circuit=self.circuit,
+                    final_paulis=final_paulis,
+                    idx_to_coord_map=self.system.qubit_coords,
+                    syndrome_qubit_indices=self.system.syndrome_indices,
+                )
 
         # Remove measured qubits from active set (ready for reuse)
         self.system.active_qubit_indices.difference_update(final_measurements.keys())

@@ -259,7 +259,7 @@ class SimulationPipeline:
             **self.config.decoder.params,
         )
 
-        dem = circuit.detector_error_model(
+        dem = circuit.flattened().detector_error_model(
             decompose_errors=getattr(decoder_instance, "decompose_errors", False) or self.config.allow_gauge_detectors,
             allow_gauge_detectors=self.config.allow_gauge_detectors,
             ignore_decomposition_failures=self.config.allow_gauge_detectors,

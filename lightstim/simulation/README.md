@@ -66,12 +66,17 @@ Both CPU and GPU bposd backends accept the same parameter names:
 - `num_workers` — parallel processes
 - `decoder`: DecoderConfig
 - `post_select_detector_indices`: Optional[List[int]] — if None, infer from circuit tags
+- `post_select_observable_indices`: Optional[List[int]] — discard shots where any listed observable is wrong (pre-decode)
+- `post_select_corrected_observable_indices`: Optional[List[int]] — discard shots where corrected observable is non-zero (post-decode)
+- `target_observable_indices`: Optional[List[int]] — count errors only on these observables (None = all)
 - `output_dir`, `output_filename`, `output_format` — optional CSV/JSON/Parquet output
 - `progress_enabled`, `progress_output`, `progress_interval_sec`, `progress_min_delta_shots` — unified progress controls
 - `progress_file_path` (+ rotating options) — optional file logging sink
 
-**Output stats** (per task):
-- `shots`, `post_selected_shots`, `post_selection_rate`, `errors`, `logical_error_rate`, `seconds`, `json_metadata`
+**Output stats** (`SimulationStats`):
+- `shots`, `post_selected_shots`, `post_selection_rate`, `errors`, `seconds`, `json_metadata`
+- `logical_error_rate` — `errors / post_selected_shots`
+- `ler_error_bar(z=1.96)` — half-width of a z-sigma Wilson confidence interval (95% CI by default)
 
 ---
 
@@ -97,7 +102,7 @@ Both CPU and GPU bposd backends accept the same parameter names:
 ```
 simulation/
 ├── decoder_backend/
-│   ├── __init__.py
+│   ├── __init__.py        # public exports: SimulationPipeline, DecoderConfig, SimulationStats, ExperimentTask, dem_to_check_matrices, ...
 │   ├── config.py          # DecoderConfig, PipelineConfig, SimulationStats
 │   ├── registry.py        # backend-keyed decoder registry
 │   ├── decoders/
@@ -106,8 +111,10 @@ simulation/
 │   │   ├── bposd.py       # BpOsdCpuDecoder + unified param translation (CPU)
 │   │   ├── cudaqx.py      # CudaQxDecoder + CudaQxCompiledDecoder (GPU)
 │   │   └── mwpf.py        # MWPF decoder (CPU)
-│   ├── pipeline.py        # SimulationPipeline
+│   ├── pipeline.py        # SimulationPipeline, ExperimentTask
 │   ├── post_select.py     # apply_post_selection, get_post_select_detector_indices
+│   ├── progress.py        # ProgressReporter, ProgressSnapshot
+│   ├── pcm.py             # dem_to_check_matrices (DEM → sparse PCM + priors)
 │   └── worker.py          # _decode_worker_cpu (multiprocessing)
 ```
 
@@ -127,7 +134,7 @@ simulation/
 ## 10. Usage
 
 ```python
-from src.simulation.decoder_backend import SimulationPipeline, ExperimentTask, DecoderConfig
+from lightstim.simulation.decoder_backend import SimulationPipeline, ExperimentTask, DecoderConfig
 
 # CPU PyMatching
 pipeline = SimulationPipeline(

@@ -25,7 +25,8 @@ class MemoryExperiment:
                  noise_model: Optional[str] = 'circuit_level',
                  basis: Literal['X', 'Z'] = 'Z',
                  if_detector: bool = True,
-                 se_block_kwargs: Optional[dict] = None):
+                 se_block_kwargs: Optional[dict] = None,
+                 z_only: bool = False):
         """
         Args:
             qec_patch: The system configuration object (contains coords, indices, map).
@@ -37,6 +38,8 @@ class MemoryExperiment:
             if_detector: If True, emit DETECTOR and OBSERVABLE_INCLUDE instructions.
             se_block_kwargs: Extra keyword arguments passed to extraction_block_class constructor.
                 e.g. {'scheduling': 'parallel'} for RotatedSurfaceCodeExtractionBlock.
+            z_only: If True, only Z-ancilla measurements emit DETECTOR instructions.
+                Produces a smaller DEM matching Z-basis-only decoding (e.g. gong_circuit style).
         """
         self.system = qec_system
         self.block_class = extraction_block_class
@@ -45,6 +48,7 @@ class MemoryExperiment:
         self.noise_model = noise_model
         self.basis = basis.upper()
         self.se_block_kwargs = se_block_kwargs or {}
+        self.z_only = z_only
 
         # Internal state
         self.builder: Optional[CircuitBuilder] = None
@@ -87,6 +91,7 @@ class MemoryExperiment:
         self.builder.apply_syndrome_extraction(
             circuit_chunk=se_block.circuit,
             rounds=self.rounds,
+            z_only=self.z_only,
         )
 
         # 5. Final Readout
@@ -94,7 +99,7 @@ class MemoryExperiment:
         # Measure data qubits in the memory basis. Construct detectors and logical observables.
         print("Measuring data qubits...")
         measurements = {q: self.basis for q in data_indices}
-        self.builder.apply_data_readout(final_measurements=measurements)
+        self.builder.apply_data_readout(final_measurements=measurements, z_only=self.z_only)
 
         # 6. Noise Injection
         # ----------------------------------------------------------------------

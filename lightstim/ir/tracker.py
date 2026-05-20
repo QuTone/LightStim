@@ -429,9 +429,17 @@ class SyndromeTracker:
     def process_mid_measurement(self,
                                 circuit: stim.Circuit,
                                 back_propagated_paulis: np.ndarray,
-                                syn_coords: list):
+                                syn_coords: list,
+                                no_detector_mask: Optional[np.ndarray] = None):
         """
         Handles Mid-circuit measurements (assumed to be on syndrome qubits).
+
+        Args:
+            no_detector_mask: Optional boolean array of length num_meas. When
+                no_detector_mask[i] is True the measurement still updates the
+                stabilizer tableau (Step 3) but no DETECTOR instruction is
+                emitted for it (Step 2). Useful for Z-only / X-only memory
+                experiments where one ancilla type is measured without detectors.
         """
         num_meas = back_propagated_paulis.shape[0]
         current_base_idx = self.total_measurements
@@ -531,11 +539,12 @@ class SyndromeTracker:
                         for r in full_records[row_idx]:
                             if r >= 0:
                                 args.append(stim.target_rec(r - self.total_measurements))
-                        coords = list(syn_coords[i]) + [0]
-                        _append_detector(
-                            circuit, args, coords,
-                            post_select=tuple(coords) in self.post_select_detector_coords,
-                        )
+                        if no_detector_mask is None or not no_detector_mask[i]:
+                            coords = list(syn_coords[i]) + [0]
+                            _append_detector(
+                                circuit, args, coords,
+                                post_select=tuple(coords) in self.post_select_detector_coords,
+                            )
                     else: # meas_row is not exactly one row in curr_stab_matrix, but a linear combination of rows in the full matrix
                         # decompose meas_row into existing stabilizers
                         coeffs, is_dependent, _ = solve_linear_decomposition(
@@ -579,11 +588,12 @@ class SyndromeTracker:
                                         args_set.add(rec_to_append)  # addition modulo 2
                             args = list(args_set)
 
-                            coords = list(syn_coords[i]) + [0]
-                            _append_detector(
-                                circuit, args, coords,
-                                post_select=tuple(coords) in self.post_select_detector_coords,
-                            )
+                            if no_detector_mask is None or not no_detector_mask[i]:
+                                coords = list(syn_coords[i]) + [0]
+                                _append_detector(
+                                    circuit, args, coords,
+                                    post_select=tuple(coords) in self.post_select_detector_coords,
+                                )
                         else:
                             # Measurement row commute but is independent of the current full tableau,
                             # but this should never happen in a well-defined full tableau, unless there are degrees of freedom missing.
