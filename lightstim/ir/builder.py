@@ -405,10 +405,25 @@ class CircuitBuilder:
                     recs.append(stim.target_rec(-n_data - n_meas_per_round + z_anc_pos[stab['syn_idx']]))
                     self.circuit.append("DETECTOR", recs)
 
-                z_log_ops = [op for op in self.system.logical_ops if op['type'] == 'Z']
-                for idx, op in enumerate(z_log_ops):
-                    recs = [stim.target_rec(-n_data + data_pos[q]) for q in op['data_indices']]
-                    self.circuit.append("OBSERVABLE_INCLUDE", recs, idx)
+                # Delegate observable generation to the tracker so it handles
+                # periodic-boundary codes (e.g. toric) correctly. We snapshot
+                # the circuit length, let the tracker append both DETECTORs and
+                # OBSERVABLE_INCLUDEs, then keep only the OBSERVABLE_INCLUDEs.
+                n_before = len(self.circuit)
+                self.tracker.process_data_measurement(
+                    circuit=self.circuit,
+                    final_paulis=final_paulis,
+                    idx_to_coord_map=self.system.qubit_coords,
+                    syndrome_qubit_indices=self.system.syndrome_indices,
+                )
+                obs_insts = [
+                    inst for inst in list(self.circuit)[n_before:]
+                    if not isinstance(inst, stim.CircuitRepeatBlock)
+                    and inst.name == "OBSERVABLE_INCLUDE"
+                ]
+                self.circuit = self.circuit[:n_before]
+                for inst in obs_insts:
+                    self.circuit.append(inst.name, inst.targets_copy(), inst.gate_args_copy())
             else:
                 self.tracker.process_data_measurement(
                     circuit=self.circuit,
