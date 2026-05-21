@@ -4,10 +4,10 @@ import pytest
 import numpy as np
 import stim
 
-from src.qec_code.color_code import ColorCode, ColorCodeExtractionBlock
-from src.ir.qec_system import QECSystem
-from experiments.memory import MemoryExperiment
-from src.noise.config import NoiseConfig
+from lightstim.qec_code.color_code import ColorCode, ColorCodeExtractionBlock
+from lightstim.ir.qec_system import QECSystem
+from lightstim.protocols.memory import MemoryExperiment
+from lightstim.noise.config import NoiseConfig
 
 
 # ---- Geometry Tests ----

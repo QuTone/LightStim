@@ -54,7 +54,7 @@ Convenience aliases:
 
 ### Basic (surface code)
 ```python
-from src.simulation.decoder_backend import DecoderConfig
+from lightstim.simulation.decoder_backend import DecoderConfig
 
 decoder_config = DecoderConfig(
     name="mwpf",

@@ -107,8 +107,8 @@ sys.path.insert(0, ".")
 
 import stim
 import numpy as np
-from experiments.memory import MemoryExperiment
-from src.qec_code.surface_code.rotated import (
+from lightstim.protocols.memory import MemoryExperiment
+from lightstim.qec_code.surface_code.rotated import (
     RotatedSurfaceCode,
     RotatedSurfaceCodeExtractionBlock,
 )
@@ -140,9 +140,9 @@ print(f"Verification passed: {circuit.num_detectors} detectors, "
 ### Adding noise and decoding
 
 ```python
-from src.noise.config import NoiseConfig
-from src.simulation.decoder_backend.pipeline import SimulationPipeline
-from src.simulation.decoder_backend.config import DecoderConfig
+from lightstim.noise.config import NoiseConfig
+from lightstim.simulation.decoder_backend.pipeline import SimulationPipeline
+from lightstim.simulation.decoder_backend.config import DecoderConfig
 
 # Build a noisy circuit
 experiment = MemoryExperiment(
@@ -227,7 +227,7 @@ All QEC codes inherit from `QECPatch` and are instantiated with keyword argument
 The most commonly used code. Uses a rotated lattice for better qubit efficiency.
 
 ```python
-from src.qec_code.surface_code.rotated import RotatedSurfaceCode
+from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
 
 # Square code (distance_z = distance_x = d)
 code = RotatedSurfaceCode(distance=5)
@@ -246,7 +246,7 @@ code = RotatedSurfaceCode(distance=3, shift=(10, 0))
 The standard planar surface code. Used for lattice surgery experiments.
 
 ```python
-from src.qec_code.surface_code.unrotated import UnrotatedSurfaceCode
+from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode
 
 code = UnrotatedSurfaceCode(distance=3)
 code = UnrotatedSurfaceCode(distance_z=5, distance_x=3)
@@ -259,7 +259,7 @@ code = UnrotatedSurfaceCode(distance_z=5, distance_x=3)
 Surface code with periodic boundary conditions (on a torus). Encodes 2 logical qubits.
 
 ```python
-from src.qec_code.surface_code.toric import ToricCode
+from lightstim.qec_code.surface_code.toric import ToricCode
 
 # Square toric code
 code = ToricCode(distance=4)
@@ -275,7 +275,7 @@ code = ToricCode(l_z=4, l_x=3)
 The simplest QEC code -- a 1D chain of data qubits with Z-stabilizers.
 
 ```python
-from src.qec_code.repetition.repetition import RepetitionCode
+from lightstim.qec_code.repetition.repetition import RepetitionCode
 
 code = RepetitionCode(distance=5)
 ```
@@ -287,7 +287,7 @@ code = RepetitionCode(distance=5)
 High-rate quantum LDPC codes defined by two 3-term polynomials over cyclic groups.
 
 ```python
-from src.qec_code.BB_code import BBCode
+from lightstim.qec_code.BB_code import BBCode
 
 # The [[144,12,12]] Gross code
 code = BBCode(
@@ -324,11 +324,11 @@ LightStim provides six experiment classes covering memory, transversal gates, la
 Single-patch quantum memory: initialize, run SE rounds, measure.
 
 ```python
-from experiments.memory import MemoryExperiment
-from src.qec_code.surface_code.rotated import (
+from lightstim.protocols.memory import MemoryExperiment
+from lightstim.qec_code.surface_code.rotated import (
     RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock
 )
-from src.noise.config import NoiseConfig
+from lightstim.noise.config import NoiseConfig
 
 experiment = MemoryExperiment(
     qec_system=RotatedSurfaceCode(distance=5),
@@ -357,8 +357,8 @@ circuit = experiment.build()
 Transversal CNOT between two CSS code patches.
 
 ```python
-from experiments.CNOT_trans import CNOTTransExperiment
-from src.qec_code.surface_code.unrotated import (
+from lightstim.protocols.cnot_trans import CNOTTransExperiment
+from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock
 )
 
@@ -396,7 +396,7 @@ circuit = experiment.build()
 Two-patch lattice surgery with unrotated surface codes.
 
 ```python
-from experiments.two_patch_LS_unrotated import TwoPatchLSExperiment
+from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
 
 experiment = TwoPatchLSExperiment(
     patch1_config={"distance": 3},
@@ -428,7 +428,7 @@ circuit = experiment.build()
 Three-patch lattice surgery CNOT using Control, Target, and Ancilla patches.
 
 ```python
-from experiments.CNOT_LS import CNOTLSExperiment
+from lightstim.protocols.cnot_ls import CNOTLSExperiment
 
 experiment = CNOTLSExperiment(
     patch_configs={
@@ -460,7 +460,7 @@ circuit = experiment.build()
 GHZ state preparation using transversal CNOT gates on three surface code patches: `|+>|0>|0>` -> CNOT(1,2) -> CNOT(1,3).
 
 ```python
-from experiments.ghz import GHZExperiment
+from lightstim.protocols.ghz import GHZExperiment
 
 experiment = GHZExperiment(
     distance=3,                    # or (d1, d2, d3) tuple
@@ -491,7 +491,7 @@ circuit = experiment.build()
 State injection for rotated surface code using corner or middle protocols.
 
 ```python
-from experiments.state_injection import StateInjectionExperiment
+from lightstim.protocols.state_injection import StateInjectionExperiment
 
 experiment = StateInjectionExperiment(
     distance=5,
@@ -518,8 +518,8 @@ For experiments involving more than one code patch (transversal gates, lattice s
 #### Creating a system and adding patches
 
 ```python
-from src.ir.qec_system import QECSystem
-from src.qec_code.surface_code.unrotated import UnrotatedSurfaceCode
+from lightstim.ir.qec_system import QECSystem
+from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode
 
 system = QECSystem()
 
@@ -558,7 +558,7 @@ patch.shift_coords(5, 5)
 #### Coupler registration (lattice surgery)
 
 ```python
-from src.qec_code.surface_code.unrotated import UnrotatedTwoPatchCoupler
+from lightstim.qec_code.surface_code.unrotated import UnrotatedTwoPatchCoupler
 
 coupler_protocol = UnrotatedTwoPatchCoupler()
 system.register_coupler(
@@ -598,7 +598,7 @@ Noise is specified via a `NoiseConfig` dataclass and a model name string.
 #### NoiseConfig fields
 
 ```python
-from src.noise.config import NoiseConfig
+from lightstim.noise.config import NoiseConfig
 
 noise = NoiseConfig(
     p_1q=0.001,         # depolarizing after 1-qubit gates (H, S, ...)
@@ -657,8 +657,8 @@ The `SimulationPipeline` handles sampling, optional post-selection, decoding, an
 #### Basic single-circuit simulation
 
 ```python
-from src.simulation.decoder_backend.pipeline import SimulationPipeline
-from src.simulation.decoder_backend.config import DecoderConfig
+from lightstim.simulation.decoder_backend.pipeline import SimulationPipeline
+from lightstim.simulation.decoder_backend.config import DecoderConfig
 
 pipeline = SimulationPipeline(
     decoder_config=DecoderConfig("pymatching"),
@@ -678,7 +678,7 @@ print(f"Time: {stats.seconds:.1f}s")
 Run multiple circuits (e.g., sweeping distance or error rate) and collect results into a DataFrame:
 
 ```python
-from src.simulation.decoder_backend.pipeline import ExperimentTask
+from lightstim.simulation.decoder_backend.pipeline import ExperimentTask
 
 tasks = []
 for d in [3, 5, 7]:
@@ -789,7 +789,7 @@ The plot module provides preset and configurable plotting functions. Input is a 
 #### LER vs. physical error rate
 
 ```python
-from src.plot import plot_ler_vs_p
+from lightstim.plot import plot_ler_vs_p
 
 plot_ler_vs_p(df, hue="d", x_col="p1")  # falls back to "p" if "p1" is absent
 ```
@@ -797,7 +797,7 @@ plot_ler_vs_p(df, hue="d", x_col="p1")  # falls back to "p" if "p1" is absent
 #### LER vs. code distance
 
 ```python
-from src.plot import plot_ler_vs_distance
+from lightstim.plot import plot_ler_vs_distance
 
 plot_ler_vs_distance(df, hue="decoder", x_col="d")
 ```
@@ -805,7 +805,7 @@ plot_ler_vs_distance(df, hue="decoder", x_col="d")
 #### Generic simulation results plot
 
 ```python
-from src.plot.plotter import plot_simulation_results
+from lightstim.plot.plotter import plot_simulation_results
 
 plot_simulation_results(
     df,
@@ -821,8 +821,8 @@ plot_simulation_results(
 #### Custom plot with PlotConfig
 
 ```python
-from src.plot.plotter import plot_custom
-from src.plot.config import PlotConfig
+from lightstim.plot.plotter import plot_custom
+from lightstim.plot.config import PlotConfig
 
 cfg = PlotConfig(
     x="p",
@@ -1525,7 +1525,7 @@ class StateInjectionExperiment:
 
 ```python
 # src/qec_code/my_code/code_patch.py
-from src.ir.qec_patch import QECPatch
+from lightstim.ir.qec_patch import QECPatch
 
 class MyCode(QECPatch):
     def _process_params(self):
@@ -1581,7 +1581,7 @@ experiment = MemoryExperiment(
 Inherit from `QECExperiment` and implement `build()`:
 
 ```python
-from src.ir.experiment import QECExperiment
+from lightstim.ir.experiment import QECExperiment
 
 class MyExperiment(QECExperiment):
     def __init__(self, my_params, **kwargs):
@@ -1632,7 +1632,7 @@ The decoder will then be available via `DecoderConfig("my_decoder")`.
 Subclass `LogicalCouplerProtocol`:
 
 ```python
-from src.ir.coupler import LogicalCouplerProtocol
+from lightstim.ir.coupler import LogicalCouplerProtocol
 
 class MyCoupler(LogicalCouplerProtocol):
     EXPECTED_PATCH_COUNT = 2  # or None for variable
