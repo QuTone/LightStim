@@ -6,7 +6,7 @@ Each subplot: d=3,5,7 (color) × state=Z/X (solid/dashed)
 Usage:
     venv/bin/python -m eval.logical_circuit_benchmark.bell-teleportation.plot_bell_tele
     # or from project root:
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/plot_bell_tele.py
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_bell_tele.py
 """
 import sys
 from pathlib import Path as _P

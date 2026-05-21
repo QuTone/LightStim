@@ -13,8 +13,8 @@ routing_mult=8: patch2–patch3 gap = 8× normal  → coupler_23 spans 8 patch-w
 Sub-experiments: teleport state |Z⟩ and |X⟩.
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/run_ls_zz_dist.py --build-only
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/run_ls_zz_dist.py \\
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/run_ls_zz_dist.py --build-only
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/run_ls_zz_dist.py \\
         -d 3 5 7 -p 5e-4 1e-3 2e-3 5e-3 1e-2 --mults 2 4 8
 """
 import argparse

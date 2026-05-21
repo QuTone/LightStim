@@ -8,18 +8,18 @@ Noise modes:
 
 Usage:
     # Default full noise sweep:
-    python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_7_to_1.py
+    python benchmarks/logical_circuits/distillation/ls_7to1/LS_distillation_7_to_1.py
 
     # Injection-only noise:
-    python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_7_to_1.py --noise-mode injection --p-injected 1e-3 5e-3
+    python benchmarks/logical_circuits/distillation/ls_7to1/LS_distillation_7_to_1.py --noise-mode injection --p-injected 1e-3 5e-3
 
     # Both modes:
-    python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_7_to_1.py --noise-mode both -p 1e-3 --p-injected 5e-3
+    python benchmarks/logical_circuits/distillation/ls_7to1/LS_distillation_7_to_1.py --noise-mode both -p 1e-3 --p-injected 5e-3
 
     # Custom sweep:
-    python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_7_to_1.py -d 3 5 -p 1e-3 1e-4 1e-5
+    python benchmarks/logical_circuits/distillation/ls_7to1/LS_distillation_7_to_1.py -d 3 5 -p 1e-3 1e-4 1e-5
 
-Outputs detailed CSV + JSON results to eval/logical_circuit_benchmark/distillation/ls_7to1/
+Outputs detailed CSV + JSON results to benchmarks/logical_circuits/distillation/ls_7to1/
 """
 import argparse
 import sys, os, json, time
@@ -406,7 +406,7 @@ if __name__ == "__main__":
     parser.add_argument("--build-only", action="store_true",
                         help="Only build the circuit (no simulation)")
     parser.add_argument("--load-circuits", action="store_true",
-                        help="Load pre-built circuits from eval/logical_circuit_benchmark/distillation/ls_7to1/circuits/ "
+                        help="Load pre-built circuits from benchmarks/logical_circuits/distillation/ls_7to1/circuits/ "
                              "instead of building")
     args = parser.parse_args()
 

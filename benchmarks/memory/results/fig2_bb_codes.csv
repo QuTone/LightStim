@@ -1,0 +1,6 @@
+code,p,n_data,n_total,k,figure,decoder_label,shots,errors,logical_error_rate,seconds,decoder
+bb_72_12_6,0.001,72,144,12,2,gpu_bposd,100000,41,0.00041,129.62878037500195,nv-qldpc-decoder
+bb_72_12_6,0.005,72,144,12,2,gpu_bposd,100000,32569,0.32569,295.45204254589044,nv-qldpc-decoder
+bb_108_8_10,0.001,108,216,8,2,gpu_bposd,100000,0,0.0,362.45819559390657,nv-qldpc-decoder
+bb_108_8_10,0.005,108,216,8,2,gpu_bposd,100000,38547,0.38547,1093.4022621701006,nv-qldpc-decoder
+bb_144_12_12,0.001,144,288,12,2,gpu_bposd,100000,1,1e-05,662.7628920590505,nv-qldpc-decoder

@@ -22,12 +22,12 @@ Key structural comparison (d=3, rounds=3):
     → Detector count and observable count are identical.
 
 Output:
-    eval/memory_benchmark/results/stim_rotated_sc.csv
+    benchmarks/memory/results/stim_rotated_sc.csv
 
 Usage:
-    venv/bin/python eval/memory_benchmark/benchmark_stim_rotated.py
-    venv/bin/python eval/memory_benchmark/benchmark_stim_rotated.py --build-only
-    venv/bin/python eval/memory_benchmark/benchmark_stim_rotated.py -d 3 5 -p 1e-3 5e-3
+    venv/bin/python benchmarks/memory/benchmark_stim_rotated.py
+    venv/bin/python benchmarks/memory/benchmark_stim_rotated.py --build-only
+    venv/bin/python benchmarks/memory/benchmark_stim_rotated.py -d 3 5 -p 1e-3 5e-3
 """
 import argparse
 import csv

@@ -5,7 +5,7 @@ Computes Wilson score confidence intervals at 95% for each data point,
 then reports per-(d,p) LER ratio and overlap statistics.
 
 Usage:
-    venv/bin/python eval/memory_benchmark/compare_stim_lightstim.py
+    venv/bin/python benchmarks/memory/compare_stim_lightstim.py
 """
 import numpy as np
 import pandas as pd
@@ -20,9 +20,9 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-STIM_CSV = Path("eval/memory_benchmark/results/stim_rotated_sc.csv")
-LS_CSV   = Path("eval/memory_benchmark/results/fig1_surface_codes.csv")
-OUT_PNG  = Path("eval/memory_benchmark/results/stim_comparison_v2.png")
+STIM_CSV = Path("benchmarks/memory/results/stim_rotated_sc.csv")
+LS_CSV   = Path("benchmarks/memory/results/fig1_surface_codes.csv")
+OUT_PNG  = Path("benchmarks/memory/results/stim_comparison_v2.png")
 DISTS    = [3, 5, 7]
 
 

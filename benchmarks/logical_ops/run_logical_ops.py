@@ -12,7 +12,7 @@ Records raw per-sub-experiment data for:
 All averaging / per-gate LER is computed in post-processing — not here.
 
 Usage:
-    python eval/logical_op_benchmark/run_logical_ops.py [--quick] [--gate GATE]
+    python benchmarks/logical_ops/run_logical_ops.py [--quick] [--gate GATE]
 
     --quick       Reduced sweep for fast iteration
     --gate GATE   Run only one gate: H | S | CNOT_trans | CNOT_LS | memory
@@ -21,7 +21,7 @@ Usage:
     --num-workers N
 
 Output:
-    eval/logical_op_benchmark/results/fig1_{gate}_raw.csv
+    benchmarks/logical_ops/results/fig1_{gate}_raw.csv
 """
 
 import sys
@@ -251,7 +251,7 @@ def build_memory_tasks(sweep: dict) -> List[ExperimentTask]:
     Z-basis memory experiment — baseline for comparison with gate LER.
     rounds = d (code distance), matching the standard memory benchmark convention.
 
-    Note: the existing eval/memory_benchmark/ runs at p in [1e-3, 1.5e-2].
+    Note: the existing benchmarks/memory/ runs at p in [1e-3, 1.5e-2].
     This run covers the lower p range needed for Fig 1 comparison.
     """
     tasks = []

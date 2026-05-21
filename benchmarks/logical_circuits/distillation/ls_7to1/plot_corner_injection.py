@@ -9,7 +9,7 @@ from lightstim.plot.styles import apply_paper_style, bold_ticks
 
 apply_paper_style()
 
-RESULTS = Path("eval/logical_circuit_benchmark/distillation/ls_7to1")
+RESULTS = Path("benchmarks/logical_circuits/distillation/ls_7to1")
 df_all = pd.read_csv(RESULTS / "LS_distillation_corner_injection_results.csv")
 
 # Keep only the p range we want to plot

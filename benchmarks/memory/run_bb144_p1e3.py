@@ -1,5 +1,5 @@
 """bb_144_12_12 at p=1e-3 — GPU BP+OSD, high-statistics run.
-Output: eval/memory_benchmark/results/fig2_bb_codes_bb_144_p1e3.csv
+Output: benchmarks/memory/results/fig2_bb_codes_bb_144_p1e3.csv
 Merge into fig2_bb_codes_bb_144_12_12_gpu_bposd.csv after verification.
 """
 import contextlib, io, os, sys
@@ -12,7 +12,7 @@ from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 
-OUTPUT    = Path("eval/memory_benchmark/results/fig2_bb_codes_bb_144_p1e3.csv")
+OUTPUT    = Path("benchmarks/memory/results/fig2_bb_codes_bb_144_p1e3.csv")
 CODE_NAME = "bb_144_12_12"
 BB_CFG    = {"l": 12, "m": 6, "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]]}
 D         = 12

@@ -8,7 +8,7 @@ Lines:  d=3,5,7  ×  p=5e-4, 1e-3, 5e-3  → 9 lines total
 Output: results/bell_routing_overhead.png
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/plot_bell_routing_overhead.py
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_bell_routing_overhead.py
 """
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
@@ -25,9 +25,9 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-DIST_CSV = Path("eval/logical_circuit_benchmark/bell-teleportation/results/ls_zz_dist_results.csv")
-BASE_CSV = Path("eval/logical_circuit_benchmark/bell-teleportation/results/ls_zz_results.csv")
-OUT      = Path("eval/logical_circuit_benchmark/bell-teleportation/results/bell_routing_overhead.png")
+DIST_CSV = Path("benchmarks/logical_circuits/bell-teleportation/results/ls_zz_dist_results.csv")
+BASE_CSV = Path("benchmarks/logical_circuits/bell-teleportation/results/ls_zz_results.csv")
+OUT      = Path("benchmarks/logical_circuits/bell-teleportation/results/bell_routing_overhead.png")
 
 DISTS   = [3, 5, 7]
 MULTS   = [1, 2, 4, 8]

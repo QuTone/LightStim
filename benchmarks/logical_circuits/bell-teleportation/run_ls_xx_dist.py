@@ -19,8 +19,8 @@ Sub-experiments: teleport state |X⟩ and |Z⟩.
 Expected: |X⟩ LER grows ~linearly with r, |Z⟩ LER grows sub-linearly.
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/run_ls_xx_dist.py --build-only
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/run_ls_xx_dist.py \\
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/run_ls_xx_dist.py --build-only
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/run_ls_xx_dist.py \\
         -d 3 5 7 -p 5e-4 1e-3 2e-3 5e-3 --mults 2 4 8
 """
 import argparse

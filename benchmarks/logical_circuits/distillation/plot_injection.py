@@ -11,7 +11,7 @@ Outputs (saved to results/):
     fig_injection_both.png        — TG + LS side-by-side (publication figure)
 
 Usage (from repo root):
-    venv/bin/python eval/logical_circuit_benchmark/distillation/plot_injection.py
+    venv/bin/python benchmarks/logical_circuits/distillation/plot_injection.py
 """
 import os
 import sys

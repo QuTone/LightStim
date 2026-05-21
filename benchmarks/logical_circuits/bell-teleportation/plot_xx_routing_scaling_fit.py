@@ -7,7 +7,7 @@ Expected behavior (X↔Z dual of ZZ-LS):
   Teleport |Z⟩ — LER grows sub-linearly with r (Z errors detected by XX coupler)
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/plot_xx_routing_scaling_fit.py
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_xx_routing_scaling_fit.py
 """
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
@@ -24,9 +24,9 @@ from lightstim.plot.styles import apply_paper_style, bold_ticks
 
 apply_paper_style()
 
-DIST_CSV = Path("eval/logical_circuit_benchmark/bell-teleportation/results/ls_xx_dist_results.csv")
-BASE_CSV = Path("eval/logical_circuit_benchmark/bell-teleportation/results/ls_xx_results.csv")
-OUT      = Path("eval/logical_circuit_benchmark/bell-teleportation/results/xx_routing_scaling_fit.png")
+DIST_CSV = Path("benchmarks/logical_circuits/bell-teleportation/results/ls_xx_dist_results.csv")
+BASE_CSV = Path("benchmarks/logical_circuits/bell-teleportation/results/ls_xx_results.csv")
+OUT      = Path("benchmarks/logical_circuits/bell-teleportation/results/xx_routing_scaling_fit.png")
 
 P_FIX = 1e-3
 D     = 7

@@ -8,7 +8,7 @@ logical error rate directly — no post-hoc division by 2 needed.
 Circuit:  |+⟩ → SE → S_L (noisy) → SE → S†_L (noiseless) → SE → MX
 
 Usage:
-    venv/bin/python eval/logical_op_benchmark/run_s_oneway.py [options]
+    venv/bin/python benchmarks/logical_ops/run_s_oneway.py [options]
 
     --quick              Reduced sweep for fast iteration
     --distances N [N ...]  Override distance list (e.g. --distances 3 5 7)
@@ -18,7 +18,7 @@ Usage:
     --decoder NAME       bposd (default) | pymatching | mwpf | nv-qldpc-decoder
 
 Output:
-    eval/logical_op_benchmark/results/fig1_s_oneway_raw.csv
+    benchmarks/logical_ops/results/fig1_s_oneway_raw.csv
 """
 
 import sys

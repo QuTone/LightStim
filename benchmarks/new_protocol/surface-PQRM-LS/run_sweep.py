@@ -3,15 +3,15 @@
 CrossLS sweep: PQRM × d_surf × state × p × decoder.
 
 Usage examples:
-  python eval/new_protocol/surface-PQRM-LS/run_sweep.py \\
+  python benchmarks/new_protocol/surface-PQRM-LS/run_sweep.py \\
     --pqrm 1,2,4 --decoder mwpf --workers 32 \\
     --p 2e-3 --max-shots 2000000 --max-errors 200 \\
-    --output eval/new_protocol/surface-PQRM-LS/results/sweep_mwpf_p2e-3_pqrm124.csv
+    --output benchmarks/new_protocol/surface-PQRM-LS/results/sweep_mwpf_p2e-3_pqrm124.csv
 
-  python eval/new_protocol/surface-PQRM-LS/run_sweep.py \\
+  python benchmarks/new_protocol/surface-PQRM-LS/run_sweep.py \\
     --pqrm 1,2,4 1,3,5 --decoder bposd --backend gpu --gpu-id 0 \\
     --p 2e-3 --max-shots 2000000 --max-errors 200 \\
-    --output eval/new_protocol/surface-PQRM-LS/results/sweep_gpu_p2e-3.csv
+    --output benchmarks/new_protocol/surface-PQRM-LS/results/sweep_gpu_p2e-3.csv
 
 Supports resume: existing rows in the output CSV are skipped.
 """

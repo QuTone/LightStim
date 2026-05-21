@@ -22,7 +22,7 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-RESULTS = Path("eval/logical_op_benchmark/results")
+RESULTS = Path("benchmarks/logical_ops/results")
 MARKERS = {3: "o", 5: "s", 7: "^"}
 LW, MS = 2.2, 8
 FS_TITLE, FS_LABEL, FS_TICK, FS_LEGEND = 16, 12, 12, 11

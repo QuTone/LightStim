@@ -7,7 +7,7 @@ fig2_middle_modes.png:   middle injection, Z state, 2 rounds, full_PS/full_qec/h
 fig2_middle_states.png:  middle injection, full_PS, 2 rounds, Z/X/Y states
 fig2_corner_modes.png:   corner injection, Z state, 2 rounds, full_PS/full_qec/hybrid
 
-Output: eval/logical_op_benchmark/results/
+Output: benchmarks/logical_ops/results/
 
 Usage:
     venv/bin/python -m eval.logical_op_benchmark.plot_state_injection
@@ -24,8 +24,8 @@ from lightstim.plot.styles import apply_paper_style, PALETTE, bold_ticks
 
 apply_paper_style()
 
-CSV   = Path("eval/logical_op_benchmark/state_injection/results_rotated/state_injection_eval.csv")
-OUT   = Path("eval/logical_op_benchmark/results")
+CSV   = Path("benchmarks/logical_ops/state_injection/results_rotated/state_injection_eval.csv")
+OUT   = Path("benchmarks/logical_ops/results")
 DISTS = [3, 5, 7]
 
 # Compact 3-panel font sizes — same as plot_logical_op.py compact mode

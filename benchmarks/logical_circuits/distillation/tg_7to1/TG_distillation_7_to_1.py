@@ -18,11 +18,11 @@ Noise modes:
     both        p on all channels + p_injected extra on magic-patch resets independently.
 
 Usage:
-    python eval/logical_circuit_benchmark/distillation/tg_7to1/TG_distillation_7_to_1.py --build-only
-    python eval/logical_circuit_benchmark/distillation/tg_7to1/TG_distillation_7_to_1.py -d 3 5 7 -p 1e-3
-    python eval/logical_circuit_benchmark/distillation/tg_7to1/TG_distillation_7_to_1.py -d 3 --noise-mode injection --p-injected 1e-3 5e-3
-    python eval/logical_circuit_benchmark/distillation/tg_7to1/TG_distillation_7_to_1.py -d 3 --noise-mode both -p 1e-3 --p-injected 5e-3
-    python eval/logical_circuit_benchmark/distillation/tg_7to1/TG_distillation_7_to_1.py -d 3 -r 2 --decoder bposd
+    python benchmarks/logical_circuits/distillation/tg_7to1/TG_distillation_7_to_1.py --build-only
+    python benchmarks/logical_circuits/distillation/tg_7to1/TG_distillation_7_to_1.py -d 3 5 7 -p 1e-3
+    python benchmarks/logical_circuits/distillation/tg_7to1/TG_distillation_7_to_1.py -d 3 --noise-mode injection --p-injected 1e-3 5e-3
+    python benchmarks/logical_circuits/distillation/tg_7to1/TG_distillation_7_to_1.py -d 3 --noise-mode both -p 1e-3 --p-injected 5e-3
+    python benchmarks/logical_circuits/distillation/tg_7to1/TG_distillation_7_to_1.py -d 3 -r 2 --decoder bposd
 """
 import argparse
 import sys, os, json, time
@@ -543,7 +543,7 @@ if __name__ == "__main__":
     parser.add_argument("--build-only", action="store_true",
                         help="Only build the circuit (no simulation)")
     parser.add_argument("--load-circuits", action="store_true",
-                        help="Load pre-built circuits from eval/logical_circuit_benchmark/distillation/tg_7to1/circuits/ "
+                        help="Load pre-built circuits from benchmarks/logical_circuits/distillation/tg_7to1/circuits/ "
                              "instead of building")
     args = parser.parse_args()
 

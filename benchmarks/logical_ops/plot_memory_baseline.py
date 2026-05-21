@@ -1,7 +1,7 @@
 """
 Plot Unrotated SC Z/X memory LER / 2 at matching p values.
 Size: 3.0 x 4.2 inches, same style as H/S figures.
-Output: eval/logical_op_benchmark/results/fig1_memory_baseline.png
+Output: benchmarks/logical_ops/results/fig1_memory_baseline.png
 
 Usage:
     venv/bin/python -m eval.logical_op_benchmark.plot_memory_baseline
@@ -15,8 +15,8 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-MEMORY_CSV = Path("eval/memory_benchmark/results/fig1_surface_codes.csv")
-OUTPUT     = Path("eval/logical_op_benchmark/results/fig1_memory_baseline.png")
+MEMORY_CSV = Path("benchmarks/memory/results/fig1_surface_codes.csv")
+OUTPUT     = Path("benchmarks/logical_ops/results/fig1_memory_baseline.png")
 MARKERS    = {3: "o", 5: "s", 7: "^"}
 
 df = pd.read_csv(MEMORY_CSV)

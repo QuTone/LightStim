@@ -1,7 +1,7 @@
 """
 Plot Memory Z and Memory X separately for unrotated SC.
 Same format as fig1_memory_baseline.png.
-Output: eval/logical_op_benchmark/results/fig1_memory_Z.png / fig1_memory_X.png
+Output: benchmarks/logical_ops/results/fig1_memory_Z.png / fig1_memory_X.png
 
 Usage:
     venv/bin/python -m eval.memory_benchmark.plot_memory_zx
@@ -14,8 +14,8 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-MEMORY_CSV = Path("eval/memory_benchmark/results/fig1_surface_codes.csv")
-OUT        = Path("eval/logical_op_benchmark/results")
+MEMORY_CSV = Path("benchmarks/memory/results/fig1_surface_codes.csv")
+OUT        = Path("benchmarks/logical_ops/results")
 MARKERS    = {3: "o", 5: "s", 7: "^"}
 
 FS_TITLE  = 12

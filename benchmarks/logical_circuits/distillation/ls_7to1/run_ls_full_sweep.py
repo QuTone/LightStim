@@ -7,13 +7,13 @@ Builds circuits on first run, caches to circuits/LS_7to1_d{d}_rnd{rounds}.stim
 Saves results to LS_full_noise_results.csv with append-on-complete
 checkpointing (one row written per task completion).
 
-CSV schema matches eval/distillation_results.ipynb (run_distillation_simulations.py):
+CSV schema matches benchmarks/distillation_results.ipynb (run_distillation_simulations.py):
     KEY : d, rounds, p, p_injected
     DATA: p_in, ler_ps, post_selection_rate, shots, errors
 
 Usage (from repo root):
-    venv/bin/python eval/logical_circuit_benchmark/distillation/ls_7to1/run_ls_full_sweep.py
-    venv/bin/python eval/logical_circuit_benchmark/distillation/ls_7to1/run_ls_full_sweep.py \\
+    venv/bin/python benchmarks/logical_circuits/distillation/ls_7to1/run_ls_full_sweep.py
+    venv/bin/python benchmarks/logical_circuits/distillation/ls_7to1/run_ls_full_sweep.py \\
         -d 3 5 7 --p-values 1e-5 6e-5 4e-4 3e-3 2e-2 1e-1 --num-workers 8
 """
 import argparse

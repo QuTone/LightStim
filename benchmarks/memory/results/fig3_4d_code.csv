@@ -1,0 +1,2 @@
+code,distance,p,n_data,n_total,k,rounds,shots,errors,logical_error_rate,seconds,decoder
+4d_geo_det3,3,0.001,18,42,6,3,320000,3641,0.011378125,54.12417615111917,bposd

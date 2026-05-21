@@ -1,0 +1,127 @@
+[
+  {
+    "d": 3,
+    "rounds": 3,
+    "r": 1,
+    "p": 0.0005,
+    "decoder": "mwpf",
+    "num_qubits": 375,
+    "num_detectors": 1246,
+    "num_observables": 4,
+    "post_select_obs": [
+      1,
+      2,
+      3
+    ],
+    "target_obs": [
+      0
+    ],
+    "shots": 500000,
+    "post_selected_shots": 322278,
+    "post_selection_rate": 0.644556,
+    "errors": 3235,
+    "logical_error_rate": 0.010037917574268179,
+    "decoding_time_sec": 204.77102088928223,
+    "build_time_sec": 0.0
+  },
+  {
+    "d": 5,
+    "rounds": 5,
+    "r": 1,
+    "p": 0.0002,
+    "decoder": "mwpf",
+    "num_qubits": 1215,
+    "num_detectors": 5372,
+    "num_observables": 4,
+    "post_select_obs": [
+      1,
+      2,
+      3
+    ],
+    "target_obs": [
+      0
+    ],
+    "shots": 500000,
+    "post_selected_shots": 333780,
+    "post_selection_rate": 0.66756,
+    "errors": 1117,
+    "logical_error_rate": 0.0033465156690035353,
+    "decoding_time_sec": 342.43436572374776,
+    "build_time_sec": 0.01
+  },
+  {
+    "d": 5,
+    "rounds": 5,
+    "r": 1,
+    "p": 0.0005,
+    "decoder": "mwpf",
+    "num_qubits": 1215,
+    "num_detectors": 5372,
+    "num_observables": 4,
+    "post_select_obs": [
+      1,
+      2,
+      3
+    ],
+    "target_obs": [
+      0
+    ],
+    "shots": 500000,
+    "post_selected_shots": 196794,
+    "post_selection_rate": 0.393588,
+    "errors": 2058,
+    "logical_error_rate": 0.010457635903533644,
+    "decoding_time_sec": 744.4538550688885,
+    "build_time_sec": 0.01
+  },
+  {
+    "d": 7,
+    "rounds": 7,
+    "r": 1,
+    "p": 0.0002,
+    "decoder": "mwpf",
+    "num_qubits": 2535,
+    "num_detectors": 15078,
+    "num_observables": 4,
+    "post_select_obs": [
+      1,
+      2,
+      3
+    ],
+    "target_obs": [
+      0
+    ],
+    "shots": 500000,
+    "post_selected_shots": 391033,
+    "post_selection_rate": 0.782066,
+    "errors": 0,
+    "logical_error_rate": 0.0,
+    "decoding_time_sec": 1646.98419211898,
+    "build_time_sec": 0.02
+  },
+  {
+    "d": 7,
+    "rounds": 7,
+    "r": 1,
+    "p": 0.0005,
+    "decoder": "mwpf",
+    "num_qubits": 2535,
+    "num_detectors": 15078,
+    "num_observables": 4,
+    "post_select_obs": [
+      1,
+      2,
+      3
+    ],
+    "target_obs": [
+      0
+    ],
+    "shots": 500000,
+    "post_selected_shots": 277687,
+    "post_selection_rate": 0.555374,
+    "errors": 0,
+    "logical_error_rate": 0.0,
+    "decoding_time_sec": 3559.2098484821618,
+    "build_time_sec": 0.02
+  }
+]

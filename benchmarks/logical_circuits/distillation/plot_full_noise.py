@@ -14,7 +14,7 @@ Upper-bound rows (errors == 0 or shots >= max_shots with errors < 5)
 are plotted as downward triangles with dashed stems.
 
 Usage (from repo root):
-    venv/bin/python eval/logical_circuit_benchmark/distillation/plot_full_noise.py
+    venv/bin/python benchmarks/logical_circuits/distillation/plot_full_noise.py
 """
 import os
 import sys

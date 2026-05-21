@@ -3,7 +3,7 @@ Save distillation simulation results to CSV.
 
 Runs injection-only, full circuit-level, and/or both noise models for TG and LS
 distillation protocols, then appends results to CSV files under their respective
-eval/ subdirectories.
+benchmarks/ subdirectories.
 
 Noise modes
 -----------
@@ -12,19 +12,19 @@ full        p applied uniformly to all noise channels.
 both        p on all channels + p_injected extra on magic resets independently.
 
 Usage (from repo root):
-    python eval/run_distillation_simulations.py                        # all
-    python eval/run_distillation_simulations.py --notebook tg          # TG only
-    python eval/run_distillation_simulations.py --noise full           # full noise only
-    python eval/run_distillation_simulations.py --noise both           # both modes
-    python eval/run_distillation_simulations.py -d 3 --rounds 1 --max-errors 100
+    python benchmarks/run_distillation_simulations.py                        # all
+    python benchmarks/run_distillation_simulations.py --notebook tg          # TG only
+    python benchmarks/run_distillation_simulations.py --noise full           # full noise only
+    python benchmarks/run_distillation_simulations.py --noise both           # both modes
+    python benchmarks/run_distillation_simulations.py -d 3 --rounds 1 --max-errors 100
 
 Output files:
-    eval/logical_circuit_benchmark/distillation/tg_7to1/TG_injection_results.csv
-    eval/logical_circuit_benchmark/distillation/tg_7to1/TG_full_noise_results.csv
-    eval/logical_circuit_benchmark/distillation/tg_7to1/TG_both_results.csv
-    eval/logical_circuit_benchmark/distillation/ls_7to1/LS_injection_results.csv
-    eval/logical_circuit_benchmark/distillation/ls_7to1/LS_full_noise_results.csv
-    eval/logical_circuit_benchmark/distillation/ls_7to1/LS_both_results.csv
+    benchmarks/logical_circuits/distillation/tg_7to1/TG_injection_results.csv
+    benchmarks/logical_circuits/distillation/tg_7to1/TG_full_noise_results.csv
+    benchmarks/logical_circuits/distillation/tg_7to1/TG_both_results.csv
+    benchmarks/logical_circuits/distillation/ls_7to1/LS_injection_results.csv
+    benchmarks/logical_circuits/distillation/ls_7to1/LS_full_noise_results.csv
+    benchmarks/logical_circuits/distillation/ls_7to1/LS_both_results.csv
 """
 import argparse
 import csv
@@ -251,7 +251,7 @@ def run_tg(d, rounds, r, p_values, p_injected_values, max_shots, max_errors, bat
         rows = _add_p_in(sweep(pipeline, noisy_inj, p_injected_values,
                                "p_injected", {**key_prefix, "p": 0.0}, "injection"),
                          p_in_map_inj)
-        write_csv("eval/logical_circuit_benchmark/distillation/tg_7to1/TG_injection_results.csv",
+        write_csv("benchmarks/logical_circuits/distillation/tg_7to1/TG_injection_results.csv",
                   TG_KEY_COLS, TG_DATA_COLS, rows)
 
     if "full" in noise_models:
@@ -261,7 +261,7 @@ def run_tg(d, rounds, r, p_values, p_injected_values, max_shots, max_errors, bat
                                    p_injected=0.0, mode="full")
         rows = [dict(r, p_in=0.0) for r in sweep(pipeline, noisy_full, p_values,
                                                    "p", {**key_prefix, "p_injected": 0.0}, "full")]
-        write_csv("eval/logical_circuit_benchmark/distillation/tg_7to1/TG_full_noise_results.csv",
+        write_csv("benchmarks/logical_circuits/distillation/tg_7to1/TG_full_noise_results.csv",
                   TG_KEY_COLS, TG_DATA_COLS, rows)
 
     if "both" in noise_models:
@@ -274,7 +274,7 @@ def run_tg(d, rounds, r, p_values, p_injected_values, max_shots, max_errors, bat
             rows = _add_p_in(sweep(pipeline, noisy_both, p_injected_values,
                                    "p_injected", {**key_prefix, "p": p}, "both"),
                              p_in_map_both)
-            write_csv("eval/logical_circuit_benchmark/distillation/tg_7to1/TG_both_results.csv",
+            write_csv("benchmarks/logical_circuits/distillation/tg_7to1/TG_both_results.csv",
                       TG_KEY_COLS, TG_DATA_COLS, rows)
 
 
@@ -330,7 +330,7 @@ def run_ls(d, rounds, p_values, p_injected_values, max_shots, max_errors, batch_
         rows = _add_p_in(sweep(pipeline, noisy_inj, p_injected_values,
                                "p_injected", {**key_prefix, "p": 0.0}, "injection"),
                          p_in_map_inj)
-        write_csv("eval/logical_circuit_benchmark/distillation/ls_7to1/LS_injection_results.csv",
+        write_csv("benchmarks/logical_circuits/distillation/ls_7to1/LS_injection_results.csv",
                   LS_KEY_COLS, LS_DATA_COLS, rows)
 
     if "full" in noise_models:
@@ -340,7 +340,7 @@ def run_ls(d, rounds, p_values, p_injected_values, max_shots, max_errors, batch_
                                    p_injected=0.0, mode="full")
         rows = [dict(r, p_in=0.0) for r in sweep(pipeline, noisy_full, p_values,
                                                    "p", {**key_prefix, "p_injected": 0.0}, "full")]
-        write_csv("eval/logical_circuit_benchmark/distillation/ls_7to1/LS_full_noise_results.csv",
+        write_csv("benchmarks/logical_circuits/distillation/ls_7to1/LS_full_noise_results.csv",
                   LS_KEY_COLS, LS_DATA_COLS, rows)
 
     if "both" in noise_models:
@@ -354,7 +354,7 @@ def run_ls(d, rounds, p_values, p_injected_values, max_shots, max_errors, batch_
             rows = _add_p_in(sweep(pipeline, noisy_both, p_injected_values,
                                    "p_injected", {**key_prefix, "p": p}, "both"),
                              p_in_map_both)
-            write_csv("eval/logical_circuit_benchmark/distillation/ls_7to1/LS_both_results.csv",
+            write_csv("benchmarks/logical_circuits/distillation/ls_7to1/LS_both_results.csv",
                       LS_KEY_COLS, LS_DATA_COLS, rows)
 
 

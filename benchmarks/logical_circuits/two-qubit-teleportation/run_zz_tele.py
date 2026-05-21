@@ -17,8 +17,8 @@ The strong Z/X LER asymmetry is expected here because:
 Layout: patch1 at (0,0) rotated π, patch2 at (0, 2d) — vertical ZZ coupling.
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/two-qubit-teleportation/run_zz_tele.py
-    venv/bin/python eval/logical_circuit_benchmark/two-qubit-teleportation/run_zz_tele.py -d 3 5 -p 5e-4 1e-3 2e-3 5e-3 1e-2
+    venv/bin/python benchmarks/logical_circuits/two-qubit-teleportation/run_zz_tele.py
+    venv/bin/python benchmarks/logical_circuits/two-qubit-teleportation/run_zz_tele.py -d 3 5 -p 5e-4 1e-3 2e-3 5e-3 1e-2
 """
 import argparse
 import csv

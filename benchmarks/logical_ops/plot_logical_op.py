@@ -15,7 +15,7 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-RESULTS = Path("eval/logical_op_benchmark/results")
+RESULTS = Path("benchmarks/logical_ops/results")
 MARKERS  = {3: "o", 5: "s", 7: "^"}
 
 # ── Figure sizes ─────────────────────────────────────────────────────────────

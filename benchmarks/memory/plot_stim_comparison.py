@@ -5,10 +5,10 @@ Two panels:
   Left:  LER vs p for both frameworks (log-log, d=3,5,7)
   Right: LER ratio (LightStim / Stim) vs p (semi-log)
 
-Output: eval/memory_benchmark/results/stim_comparison.png
+Output: benchmarks/memory/results/stim_comparison.png
 
 Usage:
-    venv/bin/python eval/memory_benchmark/plot_stim_comparison.py
+    venv/bin/python benchmarks/memory/plot_stim_comparison.py
 """
 import numpy as np
 import pandas as pd
@@ -24,9 +24,9 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-STIM_CSV = Path("eval/memory_benchmark/results/stim_rotated_sc.csv")
-LS_CSV   = Path("eval/memory_benchmark/results/fig1_surface_codes.csv")
-OUT      = Path("eval/memory_benchmark/results/stim_comparison.png")
+STIM_CSV = Path("benchmarks/memory/results/stim_rotated_sc.csv")
+LS_CSV   = Path("benchmarks/memory/results/fig1_surface_codes.csv")
+OUT      = Path("benchmarks/memory/results/stim_comparison.png")
 DISTS    = [3, 5, 7]
 MARKERS  = {3: "o", 5: "s", 7: "^"}
 LW, MS   = 1.8, 6

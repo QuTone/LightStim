@@ -25,8 +25,8 @@ from lightstim.plot.styles import apply_paper_style, PALETTE, bold_ticks
 
 apply_paper_style()
 
-CSV = Path("eval/logical_op_benchmark/state_injection/results_rotated/state_injection_eval.csv")
-OUT = Path("eval/logical_op_benchmark/results")
+CSV = Path("benchmarks/logical_ops/state_injection/results_rotated/state_injection_eval.csv")
+OUT = Path("benchmarks/logical_ops/results")
 
 # ── Font / line sizes ────────────────────────────────────────────────────────
 FS_TITLE  = 16

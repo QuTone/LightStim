@@ -8,7 +8,7 @@ from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 
-OUTPUT    = Path("eval/memory_benchmark/results/fig2_bb_codes_bb_72_12_6_gpu_bposd.csv")
+OUTPUT    = Path("benchmarks/memory/results/fig2_bb_codes_bb_72_12_6_gpu_bposd.csv")
 CODE_NAME = "bb_72_12_6"
 BB_CFG    = {"l": 6, "m": 6, "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]]}
 D         = 6

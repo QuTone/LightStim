@@ -3,7 +3,7 @@ Routing scaling: LER vs routing multiplier for d=7, p=1e-3.
 Z and X teleportation on same axes, linear LER scale.
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/plot_routing_scaling_fit.py
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_routing_scaling_fit.py
 """
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
@@ -19,9 +19,9 @@ from lightstim.plot.styles import apply_paper_style, bold_ticks
 
 apply_paper_style()
 
-DIST_CSV = Path("eval/logical_circuit_benchmark/bell-teleportation/results/ls_zz_dist_results.csv")
-BASE_CSV = Path("eval/logical_circuit_benchmark/bell-teleportation/results/ls_zz_results.csv")
-OUT      = Path("eval/logical_circuit_benchmark/bell-teleportation/results/routing_scaling_fit.png")
+DIST_CSV = Path("benchmarks/logical_circuits/bell-teleportation/results/ls_zz_dist_results.csv")
+BASE_CSV = Path("benchmarks/logical_circuits/bell-teleportation/results/ls_zz_results.csv")
+OUT      = Path("benchmarks/logical_circuits/bell-teleportation/results/routing_scaling_fit.png")
 
 P_FIX = 1e-3
 D     = 7

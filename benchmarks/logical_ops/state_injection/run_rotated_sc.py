@@ -6,7 +6,7 @@ Sweeps over injection protocol, inject_state, post_select_mode, distance, rounds
 and physical error rate. Outputs CSV results and publication-quality figures.
 
 Usage:
-    python eval/state_injection/run_rotated_sc.py [--quick]
+    python benchmarks/logical_ops/state_injection/run_rotated_sc.py [--quick]
 
     --quick: reduced sweep for fast iteration (fewer distances, p values)
 """

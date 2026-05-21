@@ -4,7 +4,7 @@ Color = teleported state (blue=|Z⟩, red=|X⟩).
 Linestyle = coupler type (solid=ZZ, dashed=XX).
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/plot_routing_combined.py
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_routing_combined.py
 """
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
@@ -23,7 +23,7 @@ apply_paper_style()
 
 P_FIX = 1e-3
 D     = 7
-OUT   = Path("eval/logical_circuit_benchmark/bell-teleportation/results/routing_scaling_combined.png")
+OUT   = Path("benchmarks/logical_circuits/bell-teleportation/results/routing_scaling_combined.png")
 
 COLOR_Z = '#1f77b4'
 COLOR_X = '#d62728'
@@ -46,12 +46,12 @@ def load_series(dist_csv, base_csv):
 
 
 (r_zz_X, ler_zz_X), (r_zz_Z, ler_zz_Z) = load_series(
-    "eval/logical_circuit_benchmark/bell-teleportation/results/ls_zz_dist_results.csv",
-    "eval/logical_circuit_benchmark/bell-teleportation/results/ls_zz_results.csv",
+    "benchmarks/logical_circuits/bell-teleportation/results/ls_zz_dist_results.csv",
+    "benchmarks/logical_circuits/bell-teleportation/results/ls_zz_results.csv",
 )
 (r_xx_X, ler_xx_X), (r_xx_Z, ler_xx_Z) = load_series(
-    "eval/logical_circuit_benchmark/bell-teleportation/results/ls_xx_dist_results.csv",
-    "eval/logical_circuit_benchmark/bell-teleportation/results/ls_xx_results.csv",
+    "benchmarks/logical_circuits/bell-teleportation/results/ls_xx_dist_results.csv",
+    "benchmarks/logical_circuits/bell-teleportation/results/ls_xx_results.csv",
 )
 
 # Print data for sanity check

@@ -8,10 +8,10 @@ Fig 2: LER vs d_surf — p=5e-4, 3×PQRM × 3×State = 9 lines
         Color = state, linestyle = PQRM code
 
 Data:  MagicCross/log/20260323_sweep/all_sweep_data.csv (bposd only)
-Output: eval/new_protocol/surface-PQRM-LS/results/
+Output: benchmarks/new_protocol/surface-PQRM-LS/results/
 
 Usage:
-    venv/bin/python eval/new_protocol/surface-PQRM-LS/plot_cross_ls.py
+    venv/bin/python benchmarks/new_protocol/surface-PQRM-LS/plot_cross_ls.py
 """
 import sys
 from pathlib import Path

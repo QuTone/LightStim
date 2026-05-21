@@ -16,7 +16,7 @@ readout.  With corner injection the tracker's canonical W4 logical is already X_
 and make W4 unreadable by MX.
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/distillation/ls_7to1/LS_distillation_corner_injection.py
+    venv/bin/python benchmarks/logical_circuits/distillation/ls_7to1/LS_distillation_corner_injection.py
 
     # Custom p_inj sweep:
     venv/bin/python ... --p-injected 1e-3 5e-3 1e-2 5e-2 1e-1 -d 3 5

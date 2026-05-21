@@ -6,7 +6,7 @@ Sweeps over inject_state, post_select_mode, distance, rounds,
 and physical error rate. Corner injection only.
 
 Usage:
-    python eval/state_injection/run_unrotated_sc.py [--quick]
+    python benchmarks/logical_ops/state_injection/run_unrotated_sc.py [--quick]
 
     --quick: reduced sweep for fast iteration
 """

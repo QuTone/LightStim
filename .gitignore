@@ -65,6 +65,7 @@ quantinuum/
 
 # Frontend (developed separately in Lovable)
 front-end/
+qubeats-lightstim-ide/
 
 # Processing (temporary processing files)
 processing/
@@ -72,10 +73,27 @@ external/
 MagicCross/
 scripts/
 
-# Simulation outputs
+# Old eval/ directory (data migrated to benchmarks/*/results/)
+eval/
+
+# Paper artifact scripts (kept locally, archived on Zenodo)
+benchmarks/correctness_check/
+
+# Simulation outputs (gitignored by default; benchmarks/results/ are exceptions below)
 *.csv
 *.json
 !requirements.txt
+
+# Allow benchmark results data (paper artifact data)
+!benchmarks/**/results/*.csv
+!benchmarks/**/results/*.json
+!benchmarks/logical_circuits/distillation/ls_7to1/*.csv
+!benchmarks/logical_circuits/distillation/ls_7to1/*.json
+!benchmarks/logical_circuits/distillation/ls_7to1/circuits/*.json
+!benchmarks/logical_circuits/distillation/tg_7to1/*.csv
+!benchmarks/logical_circuits/distillation/tg_7to1/*.json
+!benchmarks/logical_circuits/distillation/tg_7to1/circuits/*.json
+!benchmarks/logical_circuits/distillation/tg_7to1/circuits_no_inject/*.json
 
 # Logs
 *.log

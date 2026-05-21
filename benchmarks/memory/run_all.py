@@ -6,13 +6,13 @@ Outputs CSV results + generates plots.
 
 Usage:
     # Full run (all figures, GPU for BB codes):
-    /home/xiang/workspace/LightStim/venv/bin/python -m eval.memory_benchmark.run_all
+    venv/bin/python benchmarks/memory/run_all.py
 
     # Specific figure:
-    /home/xiang/workspace/LightStim/venv/bin/python -m eval.memory_benchmark.run_all --figure 1
+    venv/bin/python benchmarks/memory/run_all.py --figure 1
 
     # Quick test (fewer shots):
-    /home/xiang/workspace/LightStim/venv/bin/python -m eval.memory_benchmark.run_all --quick
+    venv/bin/python benchmarks/memory/run_all.py --quick
 """
 
 import argparse

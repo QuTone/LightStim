@@ -16,7 +16,7 @@ Output:
     results/fig_both_noise_combined.png
 
 Usage (from repo root):
-    venv/bin/python eval/logical_circuit_benchmark/distillation/plot_both_noise.py
+    venv/bin/python benchmarks/logical_circuits/distillation/plot_both_noise.py
 """
 import os, sys
 import matplotlib

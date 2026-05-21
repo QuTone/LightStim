@@ -8,14 +8,14 @@ Sweeps:
     p          : 7e-3, 5e-3, 2e-3, 1e-3, 7e-4, 5e-4
 
 Decoder : PyMatching (CPU)
-Output  : eval/memory_benchmark/results/se_scheduling.csv
+Output  : benchmarks/memory/results/se_scheduling.csv
 
 Usage:
     # small distances (d=3,5)
-    venv/bin/python eval/memory_benchmark/run_se_scheduling.py --distances 3,5 --num-workers 30
+    venv/bin/python benchmarks/memory/run_se_scheduling.py --distances 3,5 --num-workers 30
 
     # large distances (d=7,9)
-    venv/bin/python eval/memory_benchmark/run_se_scheduling.py --distances 7,9 --num-workers 16
+    venv/bin/python benchmarks/memory/run_se_scheduling.py --distances 7,9 --num-workers 16
 """
 
 import argparse

@@ -8,7 +8,7 @@ Each panel: LER/r  vs  p (log-log), grouped by d.
 Theory slope (d+1)/2 shown as dashed guide.
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/bell-teleportation/plot_ler_fit.py
+    venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_ler_fit.py
 """
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
@@ -26,7 +26,7 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 apply_paper_style()
 
 P_MAX  = 2e-3   # only fit / plot below this (sub-threshold regime)
-OUT    = Path("eval/logical_circuit_benchmark/bell-teleportation/results/ler_fit.png")
+OUT    = Path("benchmarks/logical_circuits/bell-teleportation/results/ler_fit.png")
 
 DISTANCES = [3, 5, 7]
 MARKERS   = {3: 'o', 5: 's', 7: '^'}
@@ -46,10 +46,10 @@ def load(dist_csv, base_csv, state):
     return df.drop_duplicates(subset=['d', 'routing_mult', 'p'])
 
 
-zz = load("eval/logical_circuit_benchmark/bell-teleportation/results/ls_zz_dist_results.csv",
-          "eval/logical_circuit_benchmark/bell-teleportation/results/ls_zz_results.csv", "Z")
-xx = load("eval/logical_circuit_benchmark/bell-teleportation/results/ls_xx_dist_results.csv",
-          "eval/logical_circuit_benchmark/bell-teleportation/results/ls_xx_results.csv", "X")
+zz = load("benchmarks/logical_circuits/bell-teleportation/results/ls_zz_dist_results.csv",
+          "benchmarks/logical_circuits/bell-teleportation/results/ls_zz_results.csv", "Z")
+xx = load("benchmarks/logical_circuits/bell-teleportation/results/ls_xx_dist_results.csv",
+          "benchmarks/logical_circuits/bell-teleportation/results/ls_xx_results.csv", "X")
 
 fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.5),
                          sharey=False, constrained_layout=True)

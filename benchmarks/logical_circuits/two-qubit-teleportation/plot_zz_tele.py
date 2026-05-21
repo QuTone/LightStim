@@ -8,7 +8,7 @@ A third inset-style panel shows the Z/X ratio vs p.
 Output: results/zz_tele.png
 
 Usage:
-    venv/bin/python eval/logical_circuit_benchmark/two-qubit-teleportation/plot_zz_tele.py
+    venv/bin/python benchmarks/logical_circuits/two-qubit-teleportation/plot_zz_tele.py
 """
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
@@ -24,8 +24,8 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-CSV = Path("eval/logical_circuit_benchmark/two-qubit-teleportation/results/zz_tele_results.csv")
-OUT = Path("eval/logical_circuit_benchmark/two-qubit-teleportation/results/zz_tele.png")
+CSV = Path("benchmarks/logical_circuits/two-qubit-teleportation/results/zz_tele_results.csv")
+OUT = Path("benchmarks/logical_circuits/two-qubit-teleportation/results/zz_tele.png")
 
 DISTS   = [3, 5, 7]
 MARKERS = {3: "o", 5: "s", 7: "^"}
