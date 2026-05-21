@@ -35,3 +35,9 @@ gpu = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["lightstim*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests requiring a CUDA device",
+]

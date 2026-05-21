@@ -15,6 +15,7 @@ Decoders
 --------
     pymatching   CPU MWPM        (default for surface codes)
     mwpf         CPU MWPF        (general purpose)
+    cpu_bposd    CPU BP+OSD      (good for QLDPC codes, requires stimbposd)
     gpu_bposd    GPU BP+OSD      (recommended for BB codes, requires CUDA)
 
 CSV output schema (keys / data)
@@ -75,9 +76,10 @@ from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeli
 
 _BB_CONFIGS = {
     "bb_72_12_6":   {"l": 6,  "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 6},
+    "bb_90_8_10":   {"l": 15, "m": 3,  "A": [[9,0],[0,1],[0,2]], "B": [[0,0],[2,0],[7,0]], "d": 10},
     "bb_108_8_10":  {"l": 9,  "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 10},
     "bb_144_12_12": {"l": 12, "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 12},
-    "bb_288_12_18": {"l": 12, "m": 12, "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 18},
+    "bb_288_12_18": {"l": 12, "m": 12, "A": [[3,0],[0,2],[0,7]], "B": [[0,3],[1,0],[2,0]], "d": 18},  # needs logical_presets entry
 }
 
 _TOPO_CODES = {"rotated_sc", "unrotated_sc", "toric", "color"}
@@ -105,6 +107,12 @@ def _decoder_config(name: str) -> DecoderConfig:
         return DecoderConfig(name="pymatching", backend="cpu")
     if name == "mwpf":
         return DecoderConfig(name="mwpf", backend="cpu", params={"cluster_node_limit": 50})
+    if name == "cpu_bposd":
+        return DecoderConfig(name="bposd", backend="cpu", params={
+            "max_iterations": 1000, "osd_order": 10,
+            "bp_method": "min_sum", "ms_scaling_factor": 0,
+            "osd_method": "osd_cs",
+        })
     if name == "gpu_bposd":
         return DecoderConfig(
             name="nv-qldpc-decoder", backend="gpu",
@@ -114,14 +122,15 @@ def _decoder_config(name: str) -> DecoderConfig:
                 "osd_method": "osd_cs", "use_osd": True,
             },
         )
-    raise ValueError(f"Unknown decoder: {name!r}. Choose: pymatching, mwpf, gpu_bposd")
+    raise ValueError(f"Unknown decoder: {name!r}. Choose: pymatching, mwpf, cpu_bposd, gpu_bposd")
 
 
 # ── Circuit builder ───────────────────────────────────────────────────────────
 
 def build_circuit(code_name: str, distance: int, p: float,
-                  basis: str = "Z", rounds: int = None):
-    """Return (circuit, n_data, n_total, k) for a circuit-level noisy memory experiment."""
+                  basis: str = "Z", rounds: int = None,
+                  noise_model: str = "circuit_level"):
+    """Return (circuit, n_data, n_total, k) for a noisy memory experiment."""
     code, block_cls = _make_code(code_name, distance)
     system = QECSystem()
     system.add_patch(code, name=code_name)
@@ -133,7 +142,7 @@ def build_circuit(code_name: str, distance: int, p: float,
             extraction_block_class=block_cls,
             rounds=r,
             noise_params=noise,
-            noise_model="circuit_level",
+            noise_model=noise_model,
             basis=basis,
         )
         circuit = exp.build()
@@ -204,7 +213,7 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
         t0 = time.perf_counter()
         circuit, n_data, n_total, k = build_circuit(
             task["code"], task["distance"], task["p"],
-            task["basis"], task["rounds"],
+            task["basis"], task["rounds"], task["noise_model"],
         )
         stats   = pipeline.run(circuit, task)
         elapsed = time.perf_counter() - t0
@@ -235,28 +244,32 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--codes", nargs="+", required=True, choices=ALL_CODES,
+    ap.add_argument("--codes", nargs="+", required=True,
                     metavar="CODE",
-                    help=f"QEC code(s) to benchmark. Choices: {', '.join(ALL_CODES)}")
+                    help=f"QEC code(s) to benchmark. Built-in: {', '.join(ALL_CODES)}")
     ap.add_argument("--distances", nargs="+", type=int, default=None,
                     help="Distances to sweep (required for topological codes; "
                          "BB codes use their built-in distance)")
     ap.add_argument("--p-values", nargs="+", type=float,
                     default=np.logspace(-3, -1.5, 6).tolist(),
                     help="Physical error rate values (default: 6 log-spaced points)")
-    ap.add_argument("--basis", choices=["Z", "X", "both"], default="Z",
-                    help="Logical basis (default: Z)")
+    ap.add_argument("--basis", nargs="+", choices=["Z", "X"], default=["Z"],
+                    help="Logical basis to run (default: Z). Use --basis Z X to run both.")
     ap.add_argument("--rounds", type=int, default=None,
                     help="SE rounds per cycle (default: distance)")
-    ap.add_argument("--decoder", choices=["pymatching", "mwpf", "gpu_bposd"],
+    ap.add_argument("--decoder", choices=["pymatching", "mwpf", "cpu_bposd", "gpu_bposd"],
                     default="pymatching",
                     help="Decoder (default: pymatching)")
     ap.add_argument("--max-shots",   type=int, default=1_000_000)
     ap.add_argument("--max-errors",  type=int, default=200)
     ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--batch-size",  type=int, default=1_000)
+    ap.add_argument("--noise-model",
+                    choices=["circuit_level", "phenomenological", "code_capacity"],
+                    default="circuit_level",
+                    help="Noise model (default: circuit_level)")
     ap.add_argument("--output", default=None,
-                    help="Output CSV path (default: results/<codes>_<decoder>.csv)")
+                    help="Output CSV path (auto-computed as results/<codes>_<decoder>.csv if omitted)")
     args = ap.parse_args()
 
     # Validate distances for topological codes
@@ -265,7 +278,6 @@ def main():
         ap.error(f"--distances is required for topological codes: {topo}")
 
     # Build task list
-    bases = ["Z", "X"] if args.basis == "both" else [args.basis]
     tasks = []
     for code in args.codes:
         if code in _BB_CONFIGS:
@@ -275,10 +287,11 @@ def main():
         for d in distances:
             r = args.rounds if args.rounds is not None else d
             for p in args.p_values:
-                for basis in bases:
+                for basis in args.basis:
                     tasks.append({
                         "code": code, "distance": d, "p": p,
                         "basis": basis, "rounds": r,
+                        "noise_model": args.noise_model,
                         "decoder_name": args.decoder,
                     })
 
@@ -289,9 +302,10 @@ def main():
     else:
         output = Path(args.output)
 
-    print(f"Output:  {output}")
-    print(f"Tasks:   {len(tasks)} total")
-    print(f"Decoder: {args.decoder} | max_shots={args.max_shots:.0e} | max_errors={args.max_errors}\n")
+    print(f"Output:      {output}")
+    print(f"Tasks:       {len(tasks)} total")
+    print(f"Decoder:     {args.decoder} | noise_model={args.noise_model}")
+    print(f"max_shots:   {args.max_shots:.0e} | max_errors={args.max_errors}\n")
 
     run(tasks, _decoder_config(args.decoder),
         args.max_shots, args.max_errors,
