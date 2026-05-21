@@ -231,8 +231,8 @@ class BBCode(QECPatch):
             self._build_logical_operators_polynomial()
             return
 
-        # 3. Fallback to numerical for small codes
-        NUMERICAL_THRESHOLD = 72
+        # 3. Fallback to numerical (feasible up to l*m ~200, ~1-5s for l*m=144)
+        NUMERICAL_THRESHOLD = 200
         if self.l * self.m <= NUMERICAL_THRESHOLD:
             self._build_logical_operators_numerical()
             return
@@ -241,7 +241,7 @@ class BBCode(QECPatch):
         raise ValueError(
             f"Logical operators for BB code with l={self.l}, m={self.m} require precomputed "
             "(f,g,h,alpha,beta). Either provide them as params, use a smaller code "
-            "(l*m <= 72 for numerical fallback), or add this (l,m,A,B) to logical_presets."
+            "(l*m <= 200 for numerical fallback), or add this (l,m,A,B) to logical_presets."
         )
 
     def _build_logical_operators_polynomial(self):

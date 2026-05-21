@@ -57,16 +57,8 @@ def test_build_circuit_topo(code, dist):
     assert circuit.num_observables > 0
 
 
-_BB_NEEDS_PRESET = {"bb_288_12_18"}  # requires precomputed logicals in logical_presets.py
-
-
 @pytest.mark.parametrize("code", sorted(_BB_CONFIGS.keys()))
 def test_build_circuit_bb(code):
-    if code in _BB_NEEDS_PRESET:
-        pytest.xfail(
-            f"{code} requires precomputed logical operators — "
-            "add entry to lightstim/qec_code/BB_code/logical_presets.py"
-        )
     d = _BB_CONFIGS[code]["d"]
     circuit, n_data, n_total, k = build_circuit(code, d, p=1e-2)
     assert circuit.num_qubits > 0
