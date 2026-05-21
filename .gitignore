@@ -76,8 +76,8 @@ scripts/
 # Old eval/ directory (data migrated to benchmarks/*/results/)
 eval/
 
-# Paper artifact scripts (kept locally, archived on Zenodo)
-benchmarks/correctness_check/
+# Paper artifact (kept locally, archived on Zenodo)
+paper_artifact/
 
 # Simulation outputs (gitignored by default; benchmarks/results/ are exceptions below)
 *.csv
