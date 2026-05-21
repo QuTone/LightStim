@@ -96,6 +96,7 @@ benchmarks/correctness_check/
 !benchmarks/logical_circuits/distillation/tg_7to1/circuits_no_inject/*.json
 !benchmarks/logical_ops/state_injection/results_rotated/*.csv
 !benchmarks/logical_ops/state_injection/results_unrotated/*.csv
+!benchmarks/new_protocol/surface-PQRM-LS/results/all_sweep_data.csv
 
 # Logs
 *.log

@@ -34,15 +34,21 @@ import sys
 import numpy as np
 import stim
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(_SCRIPT_DIR, "..")))
 
-from eval.logical_circuit_benchmark.distillation.tg_7to1.TG_distillation_7_to_1 import (
+# Import circuit builders from benchmarks/logical_circuits/distillation/
+_DIST_DIR = os.path.join(_SCRIPT_DIR, "logical_circuits", "distillation")
+sys.path.insert(0, os.path.join(_DIST_DIR, "tg_7to1"))
+sys.path.insert(0, os.path.join(_DIST_DIR, "ls_7to1"))
+
+from TG_distillation_7_to_1 import (
     build_distillation_circuit as build_tg,
     inject_noise as inject_noise_tg,
     estimate_p_in as estimate_p_in_tg,
     _TG_MAGIC_NAMES,
 )
-from eval.logical_circuit_benchmark.distillation.ls_7to1.LS_distillation_7_to_1 import (
+from LS_distillation_7_to_1 import (
     build_distillation_circuit as build_ls,
     inject_noise as inject_noise_ls,
     estimate_p_in as estimate_p_in_ls,

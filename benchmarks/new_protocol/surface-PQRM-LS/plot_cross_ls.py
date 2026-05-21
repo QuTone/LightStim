@@ -7,7 +7,8 @@ Fig 1: LER vs PER — Z state, d=3,5,7, 3×PQRM = 9 lines
 Fig 2: LER vs d_surf — p=5e-4, 3×PQRM × 3×State = 9 lines
         Color = state, linestyle = PQRM code
 
-Data:  MagicCross/log/20260323_sweep/all_sweep_data.csv (bposd only)
+Data:  results/all_sweep_data.csv (bposd only)
+       Generate with: venv/bin/python benchmarks/new_protocol/surface-PQRM-LS/run_sweep.py
 Output: benchmarks/new_protocol/surface-PQRM-LS/results/
 
 Usage:
@@ -30,7 +31,7 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, PALETTE, 
 apply_paper_style()
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-CSV    = Path("/home/xiang/workspace/MagicCross/log/20260323_sweep/all_sweep_data.csv")
+CSV    = Path(__file__).parent / "results" / "all_sweep_data.csv"
 OUT    = Path(__file__).parent / "results"
 OUT.mkdir(exist_ok=True)
 
