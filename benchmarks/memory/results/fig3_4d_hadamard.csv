@@ -1,2 +1,0 @@
-code,distance,p,n_data,n_total,k,rounds,shots,errors,logical_error_rate,seconds,decoder
-4d_geo_hadamard,8,0.001,96,224,6,8,3420000,101,2.953216374269006e-05,16183.7,nv-qldpc-decoder

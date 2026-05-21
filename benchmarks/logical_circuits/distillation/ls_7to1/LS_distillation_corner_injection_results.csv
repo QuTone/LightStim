@@ -1,4 +1,0 @@
-d,rounds,p_injected,p_in,y_prep,decoder,num_qubits,num_detectors,num_observables,shots,post_selected_shots,post_selection_rate,errors,logical_error_rate,p_in_cubed_x7,suppression_ratio,decoding_time_sec,build_time_sec
-3,3,0.01,0.0,corner_injection,pymatching,272,1711,4,200000,162646,0.81323,37,0.00022748791854702852,0.0,nan,5.41,0.36
-3,3,0.05,0.0,corner_injection,pymatching,272,1711,4,50000,18496,0.36992,475,0.025681228373702424,0.0,nan,0.45,0.36
-3,3,0.1,0.0,corner_injection,pymatching,272,1711,4,50000,9294,0.18588,1645,0.17699591134064988,0.0,nan,0.47,0.36

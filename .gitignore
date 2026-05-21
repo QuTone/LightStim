@@ -94,6 +94,8 @@ benchmarks/correctness_check/
 !benchmarks/logical_circuits/distillation/tg_7to1/*.json
 !benchmarks/logical_circuits/distillation/tg_7to1/circuits/*.json
 !benchmarks/logical_circuits/distillation/tg_7to1/circuits_no_inject/*.json
+!benchmarks/logical_ops/state_injection/results_rotated/*.csv
+!benchmarks/logical_ops/state_injection/results_unrotated/*.csv
 
 # Logs
 *.log
