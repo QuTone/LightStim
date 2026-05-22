@@ -1,23 +1,43 @@
-"""Decoder implementations."""
+"""Decoder implementations — soft-import optional backends."""
+from __future__ import annotations
 
+import importlib.util
+import logging
+
+_log = logging.getLogger(__name__)
+
+# PyMatching is a hard runtime dependency — always available.
 try:
     from .pymatching import PyMatchingDecoder
-except Exception:
+except ImportError as exc:
     PyMatchingDecoder = None  # type: ignore
+    _log.debug("pymatching not available: %s", exc)
 
-try:
-    from . import bposd  # noqa: F401 - registers bposd decoder
-except Exception:
-    pass
+# stimbposd — optional CPU BP+OSD backend.
+if importlib.util.find_spec("stimbposd") is not None:
+    try:
+        from . import bposd  # noqa: F401 — registers bposd/cpu
+    except ImportError as exc:
+        _log.debug("stimbposd import failed: %s", exc)
+else:
+    _log.debug("stimbposd not installed; skipping CPU BP+OSD decoder")
 
-try:
-    from . import mwpf  # noqa: F401 - registers mwpf decoder
-except Exception:
-    pass
+# mwpf — optional MWPF backend.
+if importlib.util.find_spec("mwpf") is not None:
+    try:
+        from . import mwpf  # noqa: F401 — registers mwpf/cpu
+    except ImportError as exc:
+        _log.debug("mwpf import failed: %s", exc)
+else:
+    _log.debug("mwpf not installed; skipping MWPF decoder")
 
-try:
-    from . import cudaqx  # noqa: F401 - registers nv-qldpc-decoder + bposd gpu
-except Exception:
-    pass
+# cudaq_qec — optional NVIDIA GPU backend.
+if importlib.util.find_spec("cudaq_qec") is not None:
+    try:
+        from . import cudaqx  # noqa: F401 — registers nv-qldpc-decoder + bposd/gpu
+    except ImportError as exc:
+        _log.debug("cudaq_qec import failed: %s", exc)
+else:
+    _log.debug("cudaq_qec not installed; skipping GPU decoder")
 
 __all__ = ["PyMatchingDecoder"]

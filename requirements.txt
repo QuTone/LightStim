@@ -1,22 +1,12 @@
-# Core
+# Runtime dependencies — kept in sync with pyproject.toml [dependencies]
+numpy>=1.20.0
 stim>=1.15.0
 sinter>=1.15.0
-numpy
-scipy
-matplotlib
+PyMatching>=2.0.0
 pandas
-seaborn
 
-# Decoders
-PyMatching
+# Optional decoder back-ends (pyproject.toml extras: decoders, gpu)
 stimbposd
 mwpf
 frozendict
 frozenlist
-
-# GPU decoder (requires NVIDIA GPU + CUDA 12.x)
-cudaq-qec
-
-# Dev / notebooks
-jupyterlab
-ipywidgets

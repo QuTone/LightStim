@@ -1,3 +1,4 @@
+import warnings
 import stim
 import sinter
 import pandas as pd
@@ -21,11 +22,21 @@ class ExperimentTask:
 
 class QECSimulator:
     """
-    Unified entry point for running large-scale QEC simulations.
-    Supports both CPU (via Sinter) and GPU (via Custom Worker) backends.
+    Legacy simulation entry point.
+
+    .. deprecated::
+        Use :class:`lightstim.simulation.decoder_backend.SimulationPipeline` instead.
+        ``QECSimulator`` wraps ``SimulationPipeline`` for the CPU path and retains
+        a separate legacy GPU path; it will be removed in a future release.
     """
 
     def __init__(self, backend: Literal['sinter_cpu', 'nvidia_gpu'] = 'sinter_cpu', num_workers: int = 4):
+        warnings.warn(
+            "QECSimulator is deprecated and will be removed in a future release. "
+            "Use SimulationPipeline from lightstim.simulation.decoder_backend instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.backend = backend
         self.num_workers = num_workers
 
@@ -81,9 +92,14 @@ class QECSimulator:
         return pipeline.run_batch(pipeline_tasks)
 
     # ==========================================================================
-    # Backend 2: Custom GPU (NVIDIA)
+    # Backend 2: Custom GPU (NVIDIA) — placeholder, use SimulationPipeline
     # ==========================================================================
     def _run_gpu(self, tasks, max_shots, max_errors, decoder, gpu_ids) -> pd.DataFrame:
+        raise NotImplementedError(
+            "placeholder decoder: the nvidia_gpu backend in QECSimulator is not "
+            "implemented. Use SimulationPipeline with "
+            "DecoderConfig('bposd', backend='gpu') instead."
+        )
         results = []
         
         for i, task in enumerate(tasks):

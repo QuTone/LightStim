@@ -30,6 +30,11 @@ ENV/
 .ipynb_checkpoints
 *.ipynb_checkpoints/
 
+# Internal review / feedback docs (not for public repo)
+feedback.md
+review.md
+AGENTS.md
+
 # Claude Code
 CLAUDE.md
 .claude/

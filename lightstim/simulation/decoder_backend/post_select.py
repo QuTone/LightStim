@@ -1,4 +1,5 @@
 """Post-selection utilities for detector data."""
+from __future__ import annotations
 
 from typing import List, Optional
 

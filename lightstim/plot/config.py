@@ -1,4 +1,5 @@
 """Configuration for plot module."""
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional

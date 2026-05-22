@@ -298,7 +298,7 @@ class TaggedIdling(NoiseRule):
             tag: The tag string to look for in the TICK instruction, e.g. "SE_start".
             noise_op: The noise operation to apply (default: DEPOLARIZE1).
         """
-        self.target_qubits = set[int](target_qubits)
+        self.target_qubits = set(target_qubits)
         self.param_name = param_name
         self.tag = tag
         self.noise_op = noise_op
