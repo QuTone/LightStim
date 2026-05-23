@@ -77,7 +77,7 @@ scripts/
 eval/
 
 # Paper artifact (kept locally, archived on Zenodo)
-paper_artifact/
+
 
 # Simulation outputs (gitignored by default; benchmarks/results/ are exceptions below)
 *.csv
@@ -104,3 +104,4 @@ paper_artifact/
 # OS
 .DS_Store
 Thumbs.db
+paper_artifact/*/results/

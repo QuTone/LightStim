@@ -130,6 +130,15 @@ builder.apply_syndrome_extraction(circuit_chunk=se_block.circuit, rounds=d)
 builder.apply_data_readout(final_measurements=measurements)
 ```
 
+## Testing
+
+```bash
+# Fast regression (~2 min, no GPU required)
+venv/bin/python -m pytest tests/ -v -k "not slow"
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add tests when contributing new features.
+
 ## More documentation
 
 - Full user guide: `docs/user_guide.md`

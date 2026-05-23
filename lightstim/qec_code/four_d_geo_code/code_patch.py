@@ -73,12 +73,12 @@ class FourDGeoCode(QECPatch):
         # Layout: arrange types in a grid to keep the overall shape near-square.
         #   num_type_cols ≈ sqrt(28 / (D+1)) balances x ≈ y extent.
         num_type_cols = max(1, round((28 / (D + 1)) ** 0.5))
-        col_gap = D + 1  # horizontal spacing between type blocks
+        col_gap = D  # horizontal spacing between type blocks
 
         def _layout(global_type, pid):
             tc = global_type % num_type_cols
             tr = global_type // num_type_cols
-            return float(tc * col_gap + pid), float(tr * 2)
+            return float(tc * col_gap + pid), float(tr)
 
         self._face_qubit_map = {}   # (face_type_idx, point) → qubit_index
         self._edge_qubit_map = {}   # (edge_dir, point) → qubit_index
@@ -110,11 +110,22 @@ class FourDGeoCode(QECPatch):
 
         # --- Phase 2: Build stabilizers ---
         # X-stabilizers from edge coboundary
+        # Use a set to track active faces: adding a face twice cancels it (GF(2)).
+        # On small tori (e.g., Det=2) the same face can appear twice in the
+        # coboundary list because p and p-e_{d'} reduce to the same point mod Λ;
+        # that must be treated as 0 (even weight), not 1.
         for edir in range(4):
             for p in points:
                 support = lattice.x_stabilizer_support(edir, p)
-                target_dict = {}
+                active_faces: set = set()
                 for (ft_idx, fp) in support:
+                    key = (ft_idx, fp)
+                    if key in active_faces:
+                        active_faces.discard(key)   # 1 + 1 = 0 in GF(2)
+                    else:
+                        active_faces.add(key)
+                target_dict = {}
+                for (ft_idx, fp) in active_faces:
                     data_qidx = self._face_qubit_map[(ft_idx, fp)]
                     coord = self.qubit_coords[data_qidx]
                     target_dict[coord] = 'X'
@@ -126,8 +137,15 @@ class FourDGeoCode(QECPatch):
         for cmiss in range(4):
             for p in points:
                 support = lattice.z_stabilizer_support(cmiss, p)
-                target_dict = {}
+                active_faces: set = set()
                 for (ft_idx, fp) in support:
+                    key = (ft_idx, fp)
+                    if key in active_faces:
+                        active_faces.discard(key)   # 1 + 1 = 0 in GF(2)
+                    else:
+                        active_faces.add(key)
+                target_dict = {}
+                for (ft_idx, fp) in active_faces:
                     data_qidx = self._face_qubit_map[(ft_idx, fp)]
                     coord = self.qubit_coords[data_qidx]
                     target_dict[coord] = 'Z'

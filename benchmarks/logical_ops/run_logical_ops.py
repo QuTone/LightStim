@@ -1,41 +1,59 @@
-#!/usr/bin/env python3
 """
-Logical Operation Benchmark — Unrotated Surface Code (Fig 1)
+General logical operations benchmark runner for LightStim.
 
-Records raw per-sub-experiment data for:
-  H gate          2 sub-exps: H|0>→MX, H|+>→MZ
-  S gate          1 sub-exp:  S·S† roundtrip |+>→MX  (LER_per_gate = total/2)
-  Transversal CNOT  5 sub-exps: ZZ→ZZ, ZX→ZX, XZ→XX, XZ→ZZ, XX→XX
-  LS CNOT           5 sub-exps: same basis coverage, ancilla |+> protocol
-  memory          Z-basis memory at d rounds — baseline for comparison
+Sweeps gate types × distances × physical error rates for the unrotated surface code.
+Results are saved to a combined CSV with per-task checkpointing (append-on-complete).
 
-All averaging / per-gate LER is computed in post-processing — not here.
+Supported gates
+---------------
+    H             Fold-transversal Hadamard (2 sub-experiments: Z→X and X→Z)
+    S             Fold-transversal S gate via S·S† roundtrip (1 sub-experiment)
+    CNOT_trans    Transversal CNOT (5 sub-experiments)
+    CNOT_LS_ZZ_XX Lattice Surgery CNOT, ZZ-XX protocol (5 sub-experiments)
+    CNOT_LS_XX_ZZ Lattice Surgery CNOT, XX-ZZ protocol (5 sub-experiments)
+    memory        Z-basis memory baseline (1 sub-experiment, rounds=d)
 
-Usage:
-    python benchmarks/logical_ops/run_logical_ops.py [--quick] [--gate GATE]
+Decoders
+--------
+    bposd         CPU BP+OSD  (default for gates; handles non-CSS correlations)
+    pymatching    CPU MWPM    (default for memory; sufficient for CSS memory)
+    mwpf          CPU MWPF    (general purpose)
 
-    --quick       Reduced sweep for fast iteration
-    --gate GATE   Run only one gate: H | S | CNOT_trans | CNOT_LS | memory
-    --max-shots N
-    --max-errors N
-    --num-workers N
+CSV output schema
+-----------------
+    gate, sub_experiment, init_basis, measure_basis, d, rounds, p,
+    shots, post_selected_shots, post_selection_rate,
+    errors, logical_error_rate, seconds, decoder
 
-Output:
-    benchmarks/logical_ops/results/fig1_{gate}_raw.csv
+Usage
+-----
+    # All gates, default sweep:
+    PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py
+
+    # Single gate, custom sweep:
+    PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \\
+        --gate H --distances 3 5 7 --p-values 5e-4 1e-3 2e-3 5e-3 1e-2
+
+    # Quick test (fewer shots):
+    PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py --quick
+
+    # Custom output path:
+    PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \\
+        --gate CNOT_trans --output benchmarks/logical_ops/results/cnot_trans.csv
 """
 
-import sys
-import io
 import argparse
 import contextlib
-from pathlib import Path
+import io
+import sys
+import time
 from itertools import product
-from typing import List
+from pathlib import Path
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # repo root → lightstim importable
 
 from lightstim.protocols.fold_transversal import (
     build_gate_verification_circuit,
@@ -45,136 +63,80 @@ from lightstim.protocols.cnot_trans import CNOTTransExperiment
 from lightstim.protocols.cnot_ls import CNOTLSExperiment
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.noise.config import NoiseConfig
-from lightstim.simulation.decoder_backend import SimulationPipeline, ExperimentTask, DecoderConfig
+from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 from lightstim.ir.qec_system import QECSystem
 from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode,
     UnrotatedSurfaceCodeExtractionBlock,
 )
 
-# =============================================================================
-# Sweep configuration
-# =============================================================================
+# ── Available gates ───────────────────────────────────────────────────────────
 
-FULL_SWEEP = {
-    "distance": [3, 5, 7],
-    "p": [5e-4, 1e-3, 2e-3, 5e-3, 1e-2],
-    "rounds": 2,
-}
+ALL_GATES = ["H", "S", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "memory"]
 
-QUICK_SWEEP = {
-    "distance": [3, 5],
-    "p": [1e-4, 1e-3, 5e-3],
-    "rounds": 2,
-}
+# CNOT sub-experiments (shared between transversal and LS variants)
+# (label, init_control, init_target, meas_control, meas_target)
+_CNOT_SUB_EXPERIMENTS = [
+    ("ZZ_ZZ", "Z", "Z", "Z", "Z"),
+    ("ZX_ZX", "Z", "X", "Z", "X"),
+    ("XZ_XX", "X", "Z", "X", "X"),
+    ("XZ_ZZ", "X", "Z", "Z", "Z"),
+    ("XX_XX", "X", "X", "X", "X"),
+]
 
-PIPELINE_DEFAULTS = {
-    "max_errors": 100,
-    "max_shots": 1_000_000_000,
-    "num_workers": 32,
-}
+# ── Circuit builders ──────────────────────────────────────────────────────────
 
-# Checkpoint key columns: uniquely identify one simulation task in the CSV.
-CHECKPOINT_KEYS = ["gate", "sub_experiment", "d", "p"]
-
-OUT_DIR = Path(__file__).resolve().parent / "results"
-
-# =============================================================================
-# H gate tasks
-# =============================================================================
-
-def build_h_tasks(sweep: dict) -> List[ExperimentTask]:
-    """
-    Two sub-experiments covering both conjugate bases:
-      H_ZtoX : init Z (|0>_L) -> H_L -> measure X   checks H|0>=|+>
-      H_XtoZ : init X (|+>_L) -> H_L -> measure Z   checks H|+>=|0>
-    LER_H = mean(LER_ZtoX, LER_XtoZ) computed in post.
-    """
+def _build_h_tasks(distances, p_values, rounds):
+    """H gate: 2 sub-experiments (Z→X and X→Z)."""
     tasks = []
     sub_exps = [
         ("H_ZtoX", "Z", "X"),
         ("H_XtoZ", "X", "Z"),
     ]
-    for (sub, init_b, meas_b), d, p in product(sub_exps, sweep["distance"], sweep["p"]):
+    for (sub, init_b, meas_b), d, p in product(sub_exps, distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
             circuit = build_gate_verification_circuit(
                 d, ["fold_transversal_hadamard"], init_b, meas_b,
-                rounds=sweep["rounds"], unencode=False, noise_params=noise,
+                rounds=rounds, unencode=False, noise_params=noise,
             )
-        tasks.append(ExperimentTask(circuit, json_metadata={
+        meta = {
             "gate": "H",
             "sub_experiment": sub,
             "init_basis": init_b,
             "measure_basis": meas_b,
             "d": d,
-            "rounds": sweep["rounds"],
+            "rounds": rounds,
             "p": p,
-        }))
+        }
+        tasks.append((circuit, meta))
     return tasks
 
-# =============================================================================
-# S gate tasks
-# =============================================================================
 
-def build_s_tasks(sweep: dict) -> List[ExperimentTask]:
-    """
-    S·S† roundtrip for fault-tolerant evaluation:
-      init X (|+>_L) -> SE -> S_L -> SE -> S†_L -> SE -> transversal MX
-    S·S† = I so X_L = +1 always. LER_per_gate = LER_total / 2.
-
-    Direct S|+>->MY is avoided: unencode creates weight-0 DEM errors.
-    """
+def _build_s_tasks(distances, p_values, rounds):
+    """S gate: S·S† roundtrip (LER_per_gate = total LER / 2)."""
     tasks = []
-    for d, p in product(sweep["distance"], sweep["p"]):
+    for d, p in product(distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
-            circuit = build_s_roundtrip_circuit(d, rounds=sweep["rounds"], noise_params=noise)
-        tasks.append(ExperimentTask(circuit, json_metadata={
+            circuit = build_s_roundtrip_circuit(d, rounds=rounds, noise_params=noise)
+        meta = {
             "gate": "S",
             "sub_experiment": "S_roundtrip",
             "init_basis": "X",
             "measure_basis": "X",
             "d": d,
-            "rounds": sweep["rounds"],
+            "rounds": rounds,
             "p": p,
-        }))
+        }
+        tasks.append((circuit, meta))
     return tasks
 
-# =============================================================================
-# CNOT sub-experiment definitions (shared between trans and LS)
-# =============================================================================
-#
-# CNOT logical action (ctrl=C, tgt=T):
-#   Z_C -> Z_C x Z_T       X_C -> X_C
-#   Z_T -> Z_T             X_T -> X_C x X_T
-#
-# Sub-exp  init(C,T)  meas(C,T)  observables (noiseless)
-# ZZ_ZZ    Z  Z       Z  Z       Z_C=+1, Z_T=+1   (2 independent)
-# ZX_ZX    Z  X       Z  X       Z_C=+1, X_T=+1   (2 independent)
-# XZ_XX    X  Z       X  X       X_C x X_T=+1     (1 joint)
-# XZ_ZZ    X  Z       Z  Z       Z_C x Z_T=+1     (1 joint)
-# XX_XX    X  X       X  X       X_C=+1, X_T=+1   (2 independent)
-#
-# Average LER: mean over the 5 sub-experiments (after summing XZ_XX + XZ_ZZ).
 
-CNOT_SUB_EXPERIMENTS = [
-    # (label,     init_C, init_T, meas_C, meas_T)
-    ("ZZ_ZZ",    "Z",    "Z",    "Z",    "Z"),
-    ("ZX_ZX",    "Z",    "X",    "Z",    "X"),
-    ("XZ_XX",    "X",    "Z",    "X",    "X"),
-    ("XZ_ZZ",    "X",    "Z",    "Z",    "Z"),
-    ("XX_XX",    "X",    "X",    "X",    "X"),
-]
-
-# =============================================================================
-# Transversal CNOT tasks
-# =============================================================================
-
-def build_cnot_trans_tasks(sweep: dict) -> List[ExperimentTask]:
-    """5 sub-experiments for transversal CNOT via CNOTTransExperiment."""
+def _build_cnot_trans_tasks(distances, p_values, rounds):
+    """Transversal CNOT: 5 sub-experiments."""
     tasks = []
-    for (sub, ic, it, mc, mt), d, p in product(CNOT_SUB_EXPERIMENTS, sweep["distance"], sweep["p"]):
+    for (sub, ic, it, mc, mt), d, p in product(_CNOT_SUB_EXPERIMENTS, distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
             exp = CNOTTransExperiment(
@@ -186,34 +148,34 @@ def build_cnot_trans_tasks(sweep: dict) -> List[ExperimentTask]:
                 initial_basis_target=it,
                 measure_basis_control=mc,
                 measure_basis_target=mt,
-                rounds_before=sweep["rounds"],
-                rounds_after=sweep["rounds"],
+                rounds_before=rounds,
+                rounds_after=rounds,
                 noise_params=noise,
             )
             circuit = exp.build()
-        tasks.append(ExperimentTask(circuit, json_metadata={
+        meta = {
             "gate": "CNOT_trans",
             "sub_experiment": sub,
             "init_basis": f"{ic}{it}",
             "measure_basis": f"{mc}{mt}",
             "d": d,
-            "rounds": sweep["rounds"],
+            "rounds": rounds,
             "p": p,
-        }))
+        }
+        tasks.append((circuit, meta))
     return tasks
 
-# =============================================================================
-# LS CNOT tasks
-# =============================================================================
 
-def build_cnot_ls_tasks(sweep: dict) -> List[ExperimentTask]:
+def _build_cnot_ls_tasks(distances, p_values, rounds, protocol):
     """
-    5 sub-experiments for LS CNOT via CNOTLSExperiment.
-    Protocol A: ancilla init |+> (X), measure Z.
-    Layout: ancilla at origin, target at (+2d, 0), control at (0, +2d).
+    Lattice Surgery CNOT: 5 sub-experiments.
+
+    protocol: 'ZZ_XX' — ancilla init |+> (X), measure Z
+              'XX_ZZ' — ancilla init |0> (Z), measure X
+    Both use the same CNOTLSExperiment; only the gate label differs.
     """
     tasks = []
-    for (sub, ic, it, mc, mt), d, p in product(CNOT_SUB_EXPERIMENTS, sweep["distance"], sweep["p"]):
+    for (sub, ic, it, mc, mt), d, p in product(_CNOT_SUB_EXPERIMENTS, distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
             exp = CNOTLSExperiment(
@@ -227,35 +189,28 @@ def build_cnot_ls_tasks(sweep: dict) -> List[ExperimentTask]:
                 initial_state_dict={"a": "X", "c": ic, "t": it},
                 measure_state_dict={"a": "Z", "c": mc, "t": mt},
                 extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
-                rounds=sweep["rounds"],
+                rounds=rounds,
                 noise_params=noise,
             )
             circuit = exp.build()
-        tasks.append(ExperimentTask(circuit, json_metadata={
-            "gate": "CNOT_LS",
+        gate_label = f"CNOT_LS_{protocol}"
+        meta = {
+            "gate": gate_label,
             "sub_experiment": sub,
             "init_basis": f"{ic}{it}",
             "measure_basis": f"{mc}{mt}",
             "d": d,
-            "rounds": sweep["rounds"],
+            "rounds": rounds,
             "p": p,
-        }))
+        }
+        tasks.append((circuit, meta))
     return tasks
 
-# =============================================================================
-# Memory baseline tasks
-# =============================================================================
 
-def build_memory_tasks(sweep: dict) -> List[ExperimentTask]:
-    """
-    Z-basis memory experiment — baseline for comparison with gate LER.
-    rounds = d (code distance), matching the standard memory benchmark convention.
-
-    Note: the existing benchmarks/memory/ runs at p in [1e-3, 1.5e-2].
-    This run covers the lower p range needed for Fig 1 comparison.
-    """
+def _build_memory_tasks(distances, p_values):
+    """Memory baseline: Z-basis, rounds = d."""
     tasks = []
-    for d, p in product(sweep["distance"], sweep["p"]):
+    for d, p in product(distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
             system = QECSystem()
@@ -269,7 +224,7 @@ def build_memory_tasks(sweep: dict) -> List[ExperimentTask]:
                 basis="Z",
             )
             circuit = exp.build()
-        tasks.append(ExperimentTask(circuit, json_metadata={
+        meta = {
             "gate": "memory",
             "sub_experiment": "memory_Z",
             "init_basis": "Z",
@@ -277,146 +232,223 @@ def build_memory_tasks(sweep: dict) -> List[ExperimentTask]:
             "d": d,
             "rounds": d,
             "p": p,
-        }))
+        }
+        tasks.append((circuit, meta))
     return tasks
 
-# =============================================================================
-# Checkpoint helpers
-# =============================================================================
 
-def load_completed_keys(csv_path: Path) -> set:
-    """Return set of (gate, sub_experiment, d, p) tuples already in the CSV."""
-    if not csv_path.exists():
+def build_tasks(gate: str, distances, p_values, rounds: int):
+    """Dispatch to the appropriate circuit builder for a given gate."""
+    if gate == "H":
+        return _build_h_tasks(distances, p_values, rounds)
+    if gate == "S":
+        return _build_s_tasks(distances, p_values, rounds)
+    if gate == "CNOT_trans":
+        return _build_cnot_trans_tasks(distances, p_values, rounds)
+    if gate == "CNOT_LS_ZZ_XX":
+        return _build_cnot_ls_tasks(distances, p_values, rounds, "ZZ_XX")
+    if gate == "CNOT_LS_XX_ZZ":
+        return _build_cnot_ls_tasks(distances, p_values, rounds, "XX_ZZ")
+    if gate == "memory":
+        return _build_memory_tasks(distances, p_values)
+    raise ValueError(f"Unknown gate: {gate!r}. Available: {ALL_GATES}")
+
+
+# ── Decoder config ────────────────────────────────────────────────────────────
+
+def _decoder_config(name: str) -> DecoderConfig:
+    if name == "pymatching":
+        return DecoderConfig(name="pymatching", backend="cpu")
+    if name == "mwpf":
+        return DecoderConfig(name="mwpf", backend="cpu",
+                             params={"cluster_node_limit": 50})
+    if name == "bposd":
+        return DecoderConfig(name="bposd", backend="cpu")
+    raise ValueError(f"Unknown decoder: {name!r}. Choose: bposd, pymatching, mwpf")
+
+
+# ── Checkpointing ─────────────────────────────────────────────────────────────
+
+_RESULT_COLS = frozenset({
+    "shots", "post_selected_shots", "post_selection_rate",
+    "errors", "logical_error_rate", "seconds", "decoder",
+})
+
+
+def _ck_key(row: dict) -> tuple:
+    """Stable checkpoint key from input-only fields (floats normalized to 6-digit sci)."""
+    return tuple(
+        f"{v:.6e}" if isinstance(v, float) else str(v)
+        for k, v in sorted(row.items()) if k not in _RESULT_COLS
+    )
+
+
+def _load_done_keys(path: Path) -> set:
+    if not path.exists():
         return set()
-    df = pd.read_csv(csv_path)
-    missing = [k for k in CHECKPOINT_KEYS if k not in df.columns]
-    if missing:
-        return set()
-    return set(zip(*(df[k] for k in CHECKPOINT_KEYS)))
+    df = pd.read_csv(path)
+    return {_ck_key(r) for r in df.to_dict("records")}
 
 
-def filter_tasks(tasks: List[ExperimentTask], completed: set) -> List[ExperimentTask]:
-    """Drop tasks whose checkpoint key is already in `completed`."""
-    remaining = []
-    skipped = 0
-    for t in tasks:
-        m = t.json_metadata
-        key = (m["gate"], m["sub_experiment"], m["d"], m["p"])
-        if key in completed:
-            skipped += 1
-        else:
-            remaining.append(t)
-    if skipped:
-        print(f"  Skipping {skipped} already-completed tasks (checkpoint).")
-    return remaining
+# ── Runner ────────────────────────────────────────────────────────────────────
 
+def _run_tasks(task_list, decoder_cfg: DecoderConfig,
+               max_shots: int, max_errors: int,
+               num_workers: int, output_path: Path) -> None:
+    """
+    Run a list of (circuit, metadata) tuples with per-task checkpointing.
+    Already-completed tasks (by checkpoint key) are skipped on resume.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-def append_results(df_new: "pd.DataFrame", csv_path: Path) -> None:
-    """Append new results to CSV, creating it if necessary."""
-    if csv_path.exists():
-        df_new.to_csv(csv_path, mode="a", header=False, index=False)
-    else:
-        df_new.to_csv(csv_path, index=False)
+    done_keys = _load_done_keys(output_path)
+    if done_keys:
+        print(f"  Checkpoint: {len(done_keys)} task(s) already done, skipping.")
 
+    pending = [(c, m) for c, m in task_list if _ck_key(m) not in done_keys]
+    n_skip = len(task_list) - len(pending)
+    if n_skip:
+        print(f"  Skipping {n_skip} completed tasks, {len(pending)} remaining.")
 
-# =============================================================================
-# Registry
-# =============================================================================
+    if not pending:
+        return
 
-GATE_BUILDERS = {
-    "H":          build_h_tasks,
-    "S":          build_s_tasks,
-    "CNOT_trans": build_cnot_trans_tasks,
-    "CNOT_LS":    build_cnot_ls_tasks,
-    "memory":     build_memory_tasks,
-}
-
-# =============================================================================
-# Main
-# =============================================================================
-
-def main():
-    parser = argparse.ArgumentParser(description="Logical Op Benchmark — Unrotated SC")
-    parser.add_argument("--quick", action="store_true",
-                        help="Reduced sweep for fast iteration")
-    parser.add_argument("--gate", choices=list(GATE_BUILDERS), default=None,
-                        help="Run only one gate (default: all)")
-    parser.add_argument("--max-shots", type=int, default=PIPELINE_DEFAULTS["max_shots"])
-    parser.add_argument("--max-errors", type=int, default=PIPELINE_DEFAULTS["max_errors"])
-    parser.add_argument("--num-workers", type=int, default=PIPELINE_DEFAULTS["num_workers"])
-    parser.add_argument("--decoder", type=str, default="bposd",
-                        choices=["bposd", "pymatching", "mwpf", "nv-qldpc-decoder"],
-                        help="Decoder to use (default: bposd)")
-    args = parser.parse_args()
-
-    sweep = QUICK_SWEEP if args.quick else FULL_SWEEP
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    gates_to_run = [args.gate] if args.gate else list(GATE_BUILDERS)
-
-    print("=" * 60)
-    print("Logical Operation Benchmark — Unrotated Surface Code")
-    print(f"Mode       : {'quick' if args.quick else 'full'}")
-    print(f"Gates      : {gates_to_run}")
-    print(f"Distances  : {sweep['distance']}")
-    print(f"p values   : {sweep['p']}")
-    print(f"rounds     : {sweep['rounds']}")
-    print(f"max_shots  : {args.max_shots}")
-    print(f"max_errors : {args.max_errors}")
-    print(f"num_workers: {args.num_workers}")
-    print(f"decoder    : {args.decoder}")
-    print(f"Output     : {OUT_DIR}")
-    print("=" * 60)
-
-    backend = "gpu" if args.decoder == "nv-qldpc-decoder" else "cpu"
     pipeline = SimulationPipeline(
-        decoder_config=DecoderConfig(args.decoder, backend=backend),
-        max_errors=args.max_errors,
-        max_shots=args.max_shots,
-        num_workers=args.num_workers,
+        decoder_config=decoder_cfg,
+        max_shots=max_shots,
+        max_errors=max_errors,
+        batch_size=1_000,
+        num_workers=num_workers,
         print_progress=True,
     )
 
+    for i, (circuit, meta) in enumerate(pending):
+        print(f"  [{i+1}/{len(pending)}] {meta.get('gate')} {meta.get('sub_experiment')} "
+              f"d={meta.get('d')} p={meta.get('p'):.2e}", flush=True)
+
+        t0 = time.perf_counter()
+        stats = pipeline.run(circuit, meta)
+        elapsed = time.perf_counter() - t0
+
+        row = {
+            **meta,
+            "shots": stats.shots,
+            "post_selected_shots": stats.post_selected_shots,
+            "post_selection_rate": stats.post_selection_rate,
+            "errors": stats.errors,
+            "logical_error_rate": stats.logical_error_rate,
+            "seconds": elapsed,
+            "decoder": stats.decoder,
+        }
+        # Persist immediately — a kill/OOM never loses this result
+        pd.DataFrame([row]).to_csv(
+            output_path, mode="a", header=not output_path.exists(), index=False,
+        )
+        print(f"  -> LER={stats.logical_error_rate:.2e} "
+              f"({stats.errors} errors, {stats.shots:,} shots, {elapsed:.1f}s)", flush=True)
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "--gate", nargs="+", choices=ALL_GATES, default=None,
+        metavar="GATE",
+        help=f"Gate(s) to benchmark (default: all). Choices: {', '.join(ALL_GATES)}",
+    )
+    ap.add_argument(
+        "--distances", nargs="+", type=int, default=[3, 5, 7],
+        help="Code distances to sweep (default: 3 5 7)",
+    )
+    ap.add_argument(
+        "--p-values", nargs="+", type=float,
+        default=[5e-4, 1e-3, 2e-3, 5e-3, 1e-2],
+        help="Physical error rate values (default: 5e-4 1e-3 2e-3 5e-3 1e-2)",
+    )
+    ap.add_argument(
+        "--rounds", type=int, default=2,
+        help="SE rounds for gate benchmarks (default: 2). Memory always uses rounds=d.",
+    )
+    ap.add_argument(
+        "--decoder", choices=["bposd", "pymatching", "mwpf"], default=None,
+        help="Decoder to use (default: bposd for gates, pymatching for memory)",
+    )
+    ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
+    ap.add_argument("--max-errors",  type=int, default=100)
+    ap.add_argument("--num-workers", type=int, default=8)
+    ap.add_argument(
+        "--quick", action="store_true",
+        help="Quick mode: distances=[3,5], 2 p-values, max_shots=100k, max_errors=20",
+    )
+    ap.add_argument(
+        "--output", default=None,
+        help="Output CSV path (default: benchmarks/logical_ops/results/logical_ops_results.csv)",
+    )
+    args = ap.parse_args()
+
+    # Quick mode overrides
+    if args.quick:
+        distances = [3, 5]
+        p_values  = [1e-3, 5e-3]
+        max_shots  = 100_000
+        max_errors = 20
+    else:
+        distances  = args.distances
+        p_values   = args.p_values
+        max_shots  = args.max_shots
+        max_errors = args.max_errors
+
+    gates_to_run = args.gate if args.gate else ALL_GATES
+
+    output_path = Path(args.output) if args.output else \
+        SCRIPT_DIR / "results" / "logical_ops_results.csv"
+
+    print("=" * 60)
+    print("Logical Operations Benchmark — Unrotated Surface Code")
+    print(f"Mode       : {'quick' if args.quick else 'full'}")
+    print(f"Gates      : {gates_to_run}")
+    print(f"Distances  : {distances}")
+    print(f"p values   : {p_values}")
+    print(f"rounds     : {args.rounds} (gates); d (memory)")
+    print(f"max_shots  : {max_shots:.0e}")
+    print(f"max_errors : {max_errors}")
+    print(f"num_workers: {args.num_workers}")
+    print(f"Output     : {output_path}")
+    print("=" * 60)
+
     for gate in gates_to_run:
-        print(f"\n{'─'*50}")
-        csv_path = OUT_DIR / f"fig1_{gate.lower()}_raw.csv"
+        print(f"\n{'─' * 50}")
+        print(f"Gate: {gate}")
 
-        print(f"Building {gate} tasks...")
-        all_tasks = GATE_BUILDERS[gate](sweep)
+        # Choose decoder: explicit flag > sensible default per gate
+        if args.decoder is not None:
+            decoder_name = args.decoder
+        elif gate == "memory":
+            decoder_name = "pymatching"
+        else:
+            decoder_name = "bposd"
 
-        completed = load_completed_keys(csv_path)
-        tasks = filter_tasks(all_tasks, completed)
+        print(f"Decoder    : {decoder_name}")
 
-        if not tasks:
-            print(f"  All {len(all_tasks)} tasks already done — skipping.")
-            continue
+        tasks = build_tasks(gate, distances, p_values, args.rounds)
+        print(f"Tasks      : {len(tasks)}")
 
-        n_obs = sum(t.circuit.num_observables for t in tasks)
-        print(f"  {len(tasks)}/{len(all_tasks)} tasks to run, {n_obs} total observables")
+        _run_tasks(
+            tasks,
+            _decoder_config(decoder_name),
+            max_shots, max_errors,
+            args.num_workers,
+            output_path,
+        )
 
-        print(f"Running {gate} ({len(tasks)} tasks)...")
-        for j, task in enumerate(tasks):
-            meta = task.json_metadata
-            print(f"  [{j+1}/{len(tasks)}] {meta.get('gate')} {meta.get('sub_experiment')} "
-                  f"d={meta.get('d')} p={meta.get('p')}", flush=True)
-            stats = pipeline.run(task.circuit, meta)
-            row = {
-                **meta,
-                "shots": stats.shots,
-                "post_selected_shots": stats.post_selected_shots,
-                "post_selection_rate": stats.post_selection_rate,
-                "errors": stats.errors,
-                "logical_error_rate": stats.logical_error_rate,
-                "seconds": stats.seconds,
-                "decoder": stats.decoder,
-            }
-            append_results(pd.DataFrame([row]), csv_path)
-            print(f"    → LER={stats.logical_error_rate:.2e} "
-                  f"({stats.errors}/{stats.shots:,} shots)", flush=True)
-
-        print(f"Saved: {csv_path}")
-
-    print("\nDone. Run post-processing to average sub-experiments into per-gate LER.")
+    print("\n" + "=" * 60)
+    print("BENCHMARK COMPLETE")
+    print(f"Results → {output_path}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
