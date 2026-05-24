@@ -14,13 +14,13 @@ from matplotlib.lines import Line2D
 import pandas as pd
 from pathlib import Path
 
-from lightstim.plot.styles import apply_paper_style, bold_ticks, PALETTE
+from lightstim.plot.styles import apply_paper_style, bold_ticks, PALETTE, CODES
 
 RESULTS     = Path(__file__).resolve().parent / "results"
 PRECOMPUTED = Path(__file__).resolve().parent / "precomputed"
 OUTPUT      = RESULTS / "fig2_middle_d5.png"
 
-STATE_COLORS  = {"Z": PALETTE[2], "X": PALETTE[0], "Y": PALETTE[1]}  # Z=VIOLET(blue), X=RUST(red), Y=TEAL(green)
+STATE_COLORS  = {"Z": CODES["rotated_sc"], "X": PALETTE[0], "Y": PALETTE[1]}  # Z=BLUE, X=RUST(red), Y=TEAL(green)
 STATE_MARKERS = {"Z": "o",        "X": "s",         "Y": "^"}
 
 PROTOCOL = "middle"
