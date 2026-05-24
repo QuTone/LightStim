@@ -6,12 +6,14 @@ Results are saved to a combined CSV with per-task checkpointing (append-on-compl
 
 Supported gates
 ---------------
-    H             Fold-transversal Hadamard (2 sub-experiments: Z→X and X→Z)
-    S             Fold-transversal S gate via S·S† roundtrip (1 sub-experiment)
-    CNOT_trans    Transversal CNOT (5 sub-experiments)
-    CNOT_LS_ZZ_XX Lattice Surgery CNOT, ZZ-XX protocol (5 sub-experiments)
-    CNOT_LS_XX_ZZ Lattice Surgery CNOT, XX-ZZ protocol (5 sub-experiments)
-    memory        Z-basis memory baseline (1 sub-experiment, rounds=d)
+    H               Fold-transversal Hadamard (2 sub-experiments: Z→X and X→Z)
+    S               Fold-transversal S gate via S·S† roundtrip (1 sub-experiment)
+    CNOT_trans      Transversal CNOT (5 sub-experiments)
+    CNOT_LS_ZZ_XX   Lattice Surgery CNOT, ZZ-XX protocol (5 sub-experiments)
+    CNOT_LS_XX_ZZ   Lattice Surgery CNOT, XX-ZZ protocol (5 sub-experiments)
+    memory          Z-basis memory baseline (1 sub-experiment, rounds=d)
+    state_injection State injection benchmark: Z/X/Y states × corner/middle protocols
+                    × full_postselection/full_qec/hybrid modes (configurable via flags)
 
 Decoders
 --------
@@ -21,9 +23,13 @@ Decoders
 
 CSV output schema
 -----------------
-    gate, sub_experiment, init_basis, measure_basis, d, rounds, p,
+    gate, sub_experiment, d, rounds, p,
     shots, post_selected_shots, post_selection_rate,
     errors, logical_error_rate, seconds, decoder
+
+    Gate benchmarks also include: init_basis, measure_basis
+    state_injection also includes: inject_state, injection_protocol, post_select_mode
+    (state_injection writes to state_injection_results.csv by default)
 
 Usage
 -----
@@ -36,6 +42,14 @@ Usage
 
     # Quick test (fewer shots):
     PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py --quick
+
+    # State injection benchmark (all states/protocols/modes):
+    PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \\
+        --gate state_injection
+
+    # State injection — Z state only, corner protocol:
+    PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \\
+        --gate state_injection --inject-states Z --inject-protocols corner
 
     # Custom output path:
     PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \\
@@ -62,17 +76,20 @@ from lightstim.protocols.fold_transversal import (
 from lightstim.protocols.cnot_trans import CNOTTransExperiment
 from lightstim.protocols.cnot_ls import CNOTLSExperiment
 from lightstim.protocols.memory import MemoryExperiment
+from lightstim.protocols.state_injection import StateInjectionExperiment
 from lightstim.noise.config import NoiseConfig
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 from lightstim.ir.qec_system import QECSystem
 from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode,
     UnrotatedSurfaceCodeExtractionBlock,
+    UnrotatedSurfaceCodeLogicalOpSet,
 )
 
 # ── Available gates ───────────────────────────────────────────────────────────
 
-ALL_GATES = ["H", "S", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "memory"]
+ALL_GATES = ["H", "S", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "memory",
+             "state_injection"]
 
 # CNOT sub-experiments (shared between transversal and LS variants)
 # (label, init_control, init_target, meas_control, meas_target)
@@ -237,7 +254,42 @@ def _build_memory_tasks(distances, p_values):
     return tasks
 
 
-def build_tasks(gate: str, distances, p_values, rounds: int):
+def _build_state_injection_tasks(distances, p_values, rounds,
+                                  states, protocols, modes):
+    """State injection: inject_state × protocol × mode × distance × p."""
+    tasks = []
+    for state, protocol, mode, d, p in product(states, protocols, modes, distances, p_values):
+        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        with contextlib.redirect_stdout(io.StringIO()):
+            exp = StateInjectionExperiment(
+                code_patch_class=UnrotatedSurfaceCode,
+                extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
+                op_set_class=UnrotatedSurfaceCodeLogicalOpSet,
+                distance=d,
+                inject_state=state,
+                post_select_mode=mode,
+                rounds=rounds,
+                protocol=protocol,
+                noise_params=noise,
+                noise_model="circuit_level",
+            )
+            circuit = exp.build()
+        meta = {
+            "gate": "state_injection",
+            "sub_experiment": f"{state}_{protocol}_{mode}",
+            "inject_state": state,
+            "injection_protocol": protocol,
+            "post_select_mode": mode,
+            "d": d,
+            "rounds": rounds,
+            "p": p,
+        }
+        tasks.append((circuit, meta))
+    return tasks
+
+
+def build_tasks(gate: str, distances, p_values, rounds: int,
+                inject_states=None, inject_protocols=None, inject_modes=None):
     """Dispatch to the appropriate circuit builder for a given gate."""
     if gate == "H":
         return _build_h_tasks(distances, p_values, rounds)
@@ -251,6 +303,13 @@ def build_tasks(gate: str, distances, p_values, rounds: int):
         return _build_cnot_ls_tasks(distances, p_values, rounds, "XX_ZZ")
     if gate == "memory":
         return _build_memory_tasks(distances, p_values)
+    if gate == "state_injection":
+        return _build_state_injection_tasks(
+            distances, p_values, rounds,
+            states=inject_states or ["Z", "X", "Y"],
+            protocols=inject_protocols or ["corner", "middle"],
+            modes=inject_modes or ["full_postselection", "full_qec", "hybrid"],
+        )
     raise ValueError(f"Unknown gate: {gate!r}. Available: {ALL_GATES}")
 
 
@@ -386,7 +445,26 @@ def main():
     )
     ap.add_argument(
         "--output", default=None,
-        help="Output CSV path (default: benchmarks/logical_ops/results/logical_ops_results.csv)",
+        help="Output CSV path (default: logical_ops_results.csv; "
+             "state_injection writes to state_injection_results.csv by default)",
+    )
+    # State injection specific options
+    inj = ap.add_argument_group("state_injection options")
+    inj.add_argument(
+        "--inject-states", nargs="+", default=["Z", "X", "Y"],
+        choices=["Z", "X", "Y"],
+        help="Inject states to benchmark (default: Z X Y)",
+    )
+    inj.add_argument(
+        "--inject-protocols", nargs="+", default=["corner", "middle"],
+        choices=["corner", "middle"],
+        help="Injection protocols to benchmark (default: corner middle)",
+    )
+    inj.add_argument(
+        "--inject-modes", nargs="+",
+        default=["full_postselection", "full_qec", "hybrid"],
+        choices=["full_postselection", "full_qec", "hybrid"],
+        help="Post-selection modes to benchmark (default: all three)",
     )
     args = ap.parse_args()
 
@@ -404,8 +482,8 @@ def main():
 
     gates_to_run = args.gate if args.gate else ALL_GATES
 
-    output_path = Path(args.output) if args.output else \
-        SCRIPT_DIR / "results" / "logical_ops_results.csv"
+    default_output = SCRIPT_DIR / "results" / "logical_ops_results.csv"
+    injection_output = SCRIPT_DIR / "results" / "state_injection_results.csv"
 
     print("=" * 60)
     print("Logical Operations Benchmark — Unrotated Surface Code")
@@ -417,24 +495,39 @@ def main():
     print(f"max_shots  : {max_shots:.0e}")
     print(f"max_errors : {max_errors}")
     print(f"num_workers: {args.num_workers}")
-    print(f"Output     : {output_path}")
+    if "state_injection" in gates_to_run:
+        print(f"Inject states    : {args.inject_states}")
+        print(f"Inject protocols : {args.inject_protocols}")
+        print(f"Inject modes     : {args.inject_modes}")
     print("=" * 60)
 
     for gate in gates_to_run:
         print(f"\n{'─' * 50}")
         print(f"Gate: {gate}")
 
+        # Choose output path: explicit flag > per-gate default
+        if args.output:
+            output_path = Path(args.output)
+        elif gate == "state_injection":
+            output_path = injection_output
+        else:
+            output_path = default_output
+
         # Choose decoder: explicit flag > sensible default per gate
         if args.decoder is not None:
             decoder_name = args.decoder
-        elif gate == "memory":
+        elif gate in ("memory", "state_injection"):
             decoder_name = "pymatching"
         else:
             decoder_name = "bposd"
 
         print(f"Decoder    : {decoder_name}")
+        print(f"Output     : {output_path}")
 
-        tasks = build_tasks(gate, distances, p_values, args.rounds)
+        tasks = build_tasks(gate, distances, p_values, args.rounds,
+                            inject_states=args.inject_states,
+                            inject_protocols=args.inject_protocols,
+                            inject_modes=args.inject_modes)
         print(f"Tasks      : {len(tasks)}")
 
         _run_tasks(
