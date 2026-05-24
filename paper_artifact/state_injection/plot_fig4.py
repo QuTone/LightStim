@@ -14,16 +14,16 @@ from matplotlib.lines import Line2D
 import pandas as pd
 from pathlib import Path
 
-from lightstim.plot.styles import apply_paper_style, bold_ticks
+from lightstim.plot.styles import apply_paper_style, bold_ticks, PALETTE
 
 RESULTS     = Path(__file__).resolve().parent / "results"
 PRECOMPUTED = Path(__file__).resolve().parent / "precomputed"
 OUTPUT      = RESULTS / "fig4_corner_d7_z_modes.png"
 
 MODE_COLORS  = {
-    "full_postselection": "#1f77b4",
-    "full_qec":           "#2ca02c",
-    "hybrid":             "#ff7f0e",
+    "full_postselection": PALETTE[0],  # RUST
+    "full_qec":           PALETTE[1],  # TEAL
+    "hybrid":             PALETTE[2],  # VIOLET
 }
 MODE_MARKERS = {
     "full_postselection": "o",

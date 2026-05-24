@@ -14,14 +14,14 @@ from matplotlib.lines import Line2D
 import pandas as pd
 from pathlib import Path
 
-from lightstim.plot.styles import apply_paper_style, bold_ticks
+from lightstim.plot.styles import apply_paper_style, bold_ticks, PALETTE
 
 RESULTS     = Path(__file__).resolve().parent / "results"
 PRECOMPUTED = Path(__file__).resolve().parent / "precomputed"
 OUTPUT      = RESULTS / "fig1_middle_d3.png"
 
-STATE_COLORS  = {"Z": "#1f77b4", "X": "#d62728", "Y": "#2ca02c"}
-STATE_MARKERS = {"Z": "o",       "X": "s",        "Y": "^"}
+STATE_COLORS  = {"Z": PALETTE[0], "X": PALETTE[1], "Y": PALETTE[2]}
+STATE_MARKERS = {"Z": "o",        "X": "s",         "Y": "^"}
 
 PROTOCOL = "middle"
 DISTANCE = 3
