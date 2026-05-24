@@ -73,6 +73,11 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_ops/plot_logical_ops.py \
 Output: `results/logical_ops_plot.png` — one subplot per gate, LER vs p on log-log axes,
 one curve per distance.
 
+## Related benchmarks
+
+For state injection benchmarks (Z/X/Y state injection into the unrotated surface code),
+see [`benchmarks/state_injection/`](../state_injection/README.md).
+
 ## Paper figures
 
 For the exact paper figures (Figures 1-6), see `paper_artifact/logical_ops/`:
