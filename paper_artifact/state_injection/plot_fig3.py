@@ -20,7 +20,7 @@ RESULTS     = Path(__file__).resolve().parent / "results"
 PRECOMPUTED = Path(__file__).resolve().parent / "precomputed"
 OUTPUT      = RESULTS / "fig3_corner_d7.png"
 
-STATE_COLORS  = {"Z": PALETTE[0], "X": PALETTE[1], "Y": PALETTE[2]}
+STATE_COLORS  = {"Z": PALETTE[2], "X": PALETTE[0], "Y": PALETTE[1]}  # Z=VIOLET(blue), X=RUST(red), Y=TEAL(green)
 STATE_MARKERS = {"Z": "o",        "X": "s",         "Y": "^"}
 
 PROTOCOL = "corner"
