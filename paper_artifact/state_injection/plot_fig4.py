@@ -102,7 +102,7 @@ def plot(df):
         Line2D([], [], color="black", ls="-",  linewidth=1.5, label="LER"),
         Line2D([], [], color="black", ls="--", linewidth=1.5, label="PS Rate"),
     ]
-    leg = ax1.legend(handles=handles, loc="lower right", frameon=True, framealpha=0.85)
+    leg = ax1.legend(handles=handles, loc="upper left", frameon=True, framealpha=0.85)
 
     fig.tight_layout()
     fig.savefig(OUTPUT, dpi=180, bbox_inches="tight")
