@@ -1,0 +1,2 @@
+code,distance,p,n_data,n_total,k,rounds,shots,errors,logical_error_rate,decoder,decoder_label,figure
+4d_geo_hadamard,8,0.001,96,224,6,8,5110000,151,2.954990215264187e-05,nv-qldpc-decoder,gpu_bposd,3

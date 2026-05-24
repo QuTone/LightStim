@@ -86,6 +86,7 @@ eval/
 
 # Allow benchmark results data (paper artifact data)
 !benchmarks/**/results/*.csv
+!paper_artifact/*/precomputed/*.csv
 !benchmarks/**/results/*.json
 !benchmarks/logical_circuits/distillation/ls_7to1/*.csv
 !benchmarks/logical_circuits/distillation/ls_7to1/*.json
