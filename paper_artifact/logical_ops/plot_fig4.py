@@ -44,6 +44,7 @@ def plot(df):
         .mean()
         .reset_index()
     )
+    df_agg = df_agg[df_agg["p"] >= 5e-4]
 
     dist_proxy = []
     for d in sorted(df_agg["d"].unique()):
