@@ -6,6 +6,11 @@ Fold-transversal gate verification experiments for Unrotated Surface Code.
 Provides circuit builders for:
 - Single-patch gate verification (H, S) via init → SE → gate → SE → readout
 - Bell pair verification (transversal CNOT) via H → CNOT → Bell readout
+
+S gate circuits
+---------------
+  build_s_oneway_circuit   — 1-way: noisy S, noiseless S†+MX. LER ≈ LER_per_S.
+  build_s_roundtrip_circuit — 2-way: both S and S† noisy.   LER_per_gate ≈ LER/2.
 """
 
 import stim
@@ -173,6 +178,71 @@ def build_s_roundtrip_circuit(
 
     builder.apply_data_readout(
         {q: "X" for q in system.data_indices}
+    )
+
+    if noise_params is not None:
+        return builder.build_noisy_circuit(noise_params, noise_model)
+    return builder.circuit
+
+
+def build_s_oneway_circuit(
+    distance: int,
+    rounds: int = 2,
+    noise_params: Optional[NoiseConfig] = None,
+    noise_model: str = "circuit_level",
+) -> stim.Circuit:
+    """
+    Build a fault-tolerant S gate verification circuit via 1-way method:
+
+      |+⟩ → SE → S_L(noisy) → SE → S†_L(noiseless) → MX(noiseless)
+
+    S†_L and final MX are noiseless — the measured LER reflects only errors
+    from the noisy S_L gate. LER ≈ LER_per_S (no factor-of-2 correction).
+
+    Contrast with build_s_roundtrip_circuit (2-way) where S† is also noisy
+    and LER_per_gate ≈ total_LER / 2.
+
+    Args:
+        distance:      Code distance (must be odd, square patch).
+        rounds:        SE rounds before/after S_L (not after noiseless S†).
+        noise_params:  Optional NoiseConfig for noise injection.
+        noise_model:   Noise model string (default 'circuit_level').
+
+    Returns:
+        stim.Circuit
+    """
+    patch_local = UnrotatedSurfaceCode(distance=distance)
+    system = QECSystem()
+    patch = system.add_patch(patch_local, name="patch")
+
+    tracker = SyndromeTracker(
+        num_qubits=system.num_qubits,
+        expected_num_logicals=system.num_logicals,
+    )
+    builder = CircuitBuilder(tracker=tracker, system_config=system, if_detector=True)
+    system.register_tracker(tracker)
+    system.register_builder(builder)
+
+    executor = LogicalExecutor(builder)
+    executor.register_op_set(UnrotatedSurfaceCode, UnrotatedSurfaceCodeLogicalOpSet())
+
+    builder.write_coordinates()
+    builder.initialize(
+        {q: "X" for q in system.data_indices},
+        system.num_qubits,
+    )
+
+    se_block = UnrotatedSurfaceCodeExtractionBlock(system)
+
+    builder.apply_syndrome_extraction(se_block.circuit, rounds=rounds)
+
+    executor.apply_logical_operation("fold_transversal_s", [patch])
+    builder.apply_syndrome_extraction(se_block.circuit, rounds=rounds)
+
+    # Noiseless S† returns state to |+⟩ without introducing new errors
+    executor.apply_logical_operation("fold_transversal_s_dag", [patch], noiseless=True)
+    builder.apply_data_readout(
+        {q: "X" for q in system.data_indices}, noiseless=True
     )
 
     if noise_params is not None:

@@ -233,6 +233,12 @@ class CNOTLSExperiment:
         print(f"Deactivating {first_coupler} coupler...")
         self.builder.deactivate_coupler(first_coupler)
 
+        # Measure first coupler data qubits immediately at deactivation.
+        # If left until final readout, these qubits sit idle through the entire
+        # second-coupler SE phase — the extra idle time corrupts the detector chain.
+        print(f"Measuring {first_coupler} data qubits immediately at deactivation...")
+        self.builder.apply_data_readout(final_measurements=coupler_init_dict_1)
+
         print(f"Activating {self.interaction_types[1]} coupler for {self.interaction_types[1]} measurement...")
         self.builder.activate_coupler(second_coupler)
 
@@ -271,8 +277,7 @@ class CNOTLSExperiment:
                 measure_dict[q] = self.measure_state_dict["t"]
             elif owner == self.patch_a_name:
                 measure_dict[q] = self.measure_state_dict["a"]
-        # Add coupler measurements
-        measure_dict.update(coupler_init_dict_1)
+        # Add second coupler measurements (first coupler already measured at deactivation)
         measure_dict.update(coupler_init_dict_2)
         
         self.builder.apply_data_readout(final_measurements=measure_dict)

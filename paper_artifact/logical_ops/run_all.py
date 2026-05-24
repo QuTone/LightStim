@@ -34,6 +34,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lightstim.protocols.fold_transversal import (
     build_gate_verification_circuit,
+    build_s_oneway_circuit,
     build_s_roundtrip_circuit,
 )
 from lightstim.protocols.cnot_trans import CNOTTransExperiment
@@ -345,7 +346,7 @@ def run_figure4(sweep, max_shots, max_errors, num_workers):
 # =============================================================================
 
 def run_figure5(sweep, max_shots, max_errors, num_workers):
-    """Figure 5: S gate via S_oneway — S then noiseless S†, measuring X."""
+    """Figure 5: S gate 1-way — noisy S, noiseless S†+MX. LER ≈ LER_per_S."""
     print("=" * 60)
     print("FIGURE 5: S gate (S_oneway)")
     print("=" * 60)
@@ -354,7 +355,7 @@ def run_figure5(sweep, max_shots, max_errors, num_workers):
     for d, p in product(sweep["distance"], sweep["p"]):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
-            circuit = build_s_roundtrip_circuit(d, rounds=sweep["rounds"], noise_params=noise)
+            circuit = build_s_oneway_circuit(d, rounds=sweep["rounds"], noise_params=noise)
         meta = {
             "gate": "S",
             "sub_experiment": "S_oneway",
@@ -379,13 +380,13 @@ def run_figure5(sweep, max_shots, max_errors, num_workers):
 # =============================================================================
 
 def run_figure6(sweep, max_shots, max_errors, num_workers):
-    """Figure 6: Memory baseline — Z-basis memory, rounds=d."""
+    """Figure 6: Memory baseline — Z and X basis, rounds=d. LER averaged in plot."""
     print("=" * 60)
-    print("FIGURE 6: Memory baseline (Unrotated SC, Z basis)")
+    print("FIGURE 6: Memory baseline (Unrotated SC, Z+X basis)")
     print("=" * 60)
 
     tasks = []
-    for d, p in product(sweep["distance"], sweep["p"]):
+    for basis, d, p in product(["Z", "X"], sweep["distance"], sweep["p"]):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
             system = QECSystem()
@@ -396,14 +397,14 @@ def run_figure6(sweep, max_shots, max_errors, num_workers):
                 rounds=d,
                 noise_params=noise,
                 noise_model="circuit_level",
-                basis="Z",
+                basis=basis,
             )
             circuit = exp.build()
         meta = {
             "gate": "memory",
-            "sub_experiment": "Z_memory",
-            "init_basis": "Z",
-            "measure_basis": "Z",
+            "sub_experiment": f"{basis}_memory",
+            "init_basis": basis,
+            "measure_basis": basis,
             "d": d,
             "rounds": d,
             "p": p,

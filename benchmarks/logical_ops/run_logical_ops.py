@@ -7,17 +7,19 @@ Results are saved to a combined CSV with per-task checkpointing (append-on-compl
 Supported gates
 ---------------
     H             Fold-transversal Hadamard (2 sub-experiments: Z→X and X→Z)
-    S             Fold-transversal S gate via S·S† roundtrip (1 sub-experiment)
+    S_oneway      1-way S: noisy S, noiseless S†+MX. LER ≈ LER_per_S.
+    S_roundtrip   2-way S: noisy S and S†. LER_per_gate ≈ total_LER / 2.
     CNOT_trans    Transversal CNOT (5 sub-experiments)
     CNOT_LS_ZZ_XX Lattice Surgery CNOT, ZZ-XX protocol (5 sub-experiments)
     CNOT_LS_XX_ZZ Lattice Surgery CNOT, XX-ZZ protocol (5 sub-experiments)
-    memory        Z-basis memory baseline (1 sub-experiment, rounds=d)
+    memory        Z and X basis memory baseline (rounds=d); plot scripts average.
 
 For state injection benchmarks, see benchmarks/state_injection/.
 
 Decoders
 --------
-    bposd         CPU BP+OSD  (default for gates; handles non-CSS correlations)
+    cpu_bposd     CPU BP+OSD  (default for gates; handles non-CSS correlations)
+    gpu_bposd     GPU BP+OSD  (same algorithm, CUDA-accelerated)
     pymatching    CPU MWPM    (default for memory; sufficient for CSS memory)
     mwpf          CPU MWPF    (general purpose)
 
@@ -59,6 +61,7 @@ sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # repo root → lightstim import
 
 from lightstim.protocols.fold_transversal import (
     build_gate_verification_circuit,
+    build_s_oneway_circuit,
     build_s_roundtrip_circuit,
 )
 from lightstim.protocols.cnot_trans import CNOTTransExperiment
@@ -74,7 +77,7 @@ from lightstim.qec_code.surface_code.unrotated import (
 
 # ── Available gates ───────────────────────────────────────────────────────────
 
-ALL_GATES = ["H", "S", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "memory"]
+ALL_GATES = ["H", "S_oneway", "S_roundtrip", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "memory"]
 
 # CNOT sub-experiments (shared between transversal and LS variants)
 # (label, init_control, init_target, meas_control, meas_target)
@@ -115,15 +118,35 @@ def _build_h_tasks(distances, p_values, rounds):
     return tasks
 
 
-def _build_s_tasks(distances, p_values, rounds):
-    """S gate: S·S† roundtrip (LER_per_gate = total LER / 2)."""
+def _build_s_oneway_tasks(distances, p_values, rounds):
+    """S gate 1-way: noisy S + noiseless S†+MX. LER ≈ LER_per_S."""
+    tasks = []
+    for d, p in product(distances, p_values):
+        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        with contextlib.redirect_stdout(io.StringIO()):
+            circuit = build_s_oneway_circuit(d, rounds=rounds, noise_params=noise)
+        meta = {
+            "gate": "S_oneway",
+            "sub_experiment": "S_oneway",
+            "init_basis": "X",
+            "measure_basis": "X",
+            "d": d,
+            "rounds": rounds,
+            "p": p,
+        }
+        tasks.append((circuit, meta))
+    return tasks
+
+
+def _build_s_roundtrip_tasks(distances, p_values, rounds):
+    """S gate 2-way: both S and S† noisy. LER_per_gate ≈ total_LER / 2."""
     tasks = []
     for d, p in product(distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
             circuit = build_s_roundtrip_circuit(d, rounds=rounds, noise_params=noise)
         meta = {
-            "gate": "S",
+            "gate": "S_roundtrip",
             "sub_experiment": "S_roundtrip",
             "init_basis": "X",
             "measure_basis": "X",
@@ -210,9 +233,9 @@ def _build_cnot_ls_tasks(distances, p_values, rounds, protocol):
 
 
 def _build_memory_tasks(distances, p_values):
-    """Memory baseline: Z-basis, rounds = d."""
+    """Memory baseline: Z and X basis, rounds = d. Plot scripts average the two."""
     tasks = []
-    for d, p in product(distances, p_values):
+    for basis, d, p in product(["Z", "X"], distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
         with contextlib.redirect_stdout(io.StringIO()):
             system = QECSystem()
@@ -223,14 +246,14 @@ def _build_memory_tasks(distances, p_values):
                 rounds=d,
                 noise_params=noise,
                 noise_model="circuit_level",
-                basis="Z",
+                basis=basis,
             )
             circuit = exp.build()
         meta = {
             "gate": "memory",
-            "sub_experiment": "memory_Z",
-            "init_basis": "Z",
-            "measure_basis": "Z",
+            "sub_experiment": f"memory_{basis}",
+            "init_basis": basis,
+            "measure_basis": basis,
             "d": d,
             "rounds": d,
             "p": p,
@@ -243,8 +266,10 @@ def build_tasks(gate: str, distances, p_values, rounds: int):
     """Dispatch to the appropriate circuit builder for a given gate."""
     if gate == "H":
         return _build_h_tasks(distances, p_values, rounds)
-    if gate == "S":
-        return _build_s_tasks(distances, p_values, rounds)
+    if gate == "S_oneway":
+        return _build_s_oneway_tasks(distances, p_values, rounds)
+    if gate == "S_roundtrip":
+        return _build_s_roundtrip_tasks(distances, p_values, rounds)
     if gate == "CNOT_trans":
         return _build_cnot_trans_tasks(distances, p_values, rounds)
     if gate == "CNOT_LS_ZZ_XX":
@@ -264,9 +289,19 @@ def _decoder_config(name: str) -> DecoderConfig:
     if name == "mwpf":
         return DecoderConfig(name="mwpf", backend="cpu",
                              params={"cluster_node_limit": 50})
-    if name == "bposd":
-        return DecoderConfig(name="bposd", backend="cpu")
-    raise ValueError(f"Unknown decoder: {name!r}. Choose: bposd, pymatching, mwpf")
+    if name == "cpu_bposd":
+        return DecoderConfig(name="bposd", backend="cpu", params={
+            "max_iterations": 1000, "osd_order": 10,
+            "bp_method": "min_sum", "ms_scaling_factor": 0,
+            "osd_method": "osd_cs",
+        })
+    if name == "gpu_bposd":
+        return DecoderConfig(name="nv-qldpc-decoder", backend="gpu", params={
+            "max_iterations": 1000, "osd_order": 10,
+            "bp_method": "min_sum", "ms_scaling_factor": 0,
+            "osd_method": "osd_cs", "use_osd": True,
+        })
+    raise ValueError(f"Unknown decoder: {name!r}. Choose: cpu_bposd, gpu_bposd, pymatching, mwpf")
 
 
 # ── Checkpointing ─────────────────────────────────────────────────────────────
@@ -376,8 +411,8 @@ def main():
         help="SE rounds for gate benchmarks (default: 2). Memory always uses rounds=d.",
     )
     ap.add_argument(
-        "--decoder", choices=["bposd", "pymatching", "mwpf"], default=None,
-        help="Decoder to use (default: bposd for gates, pymatching for memory)",
+        "--decoder", choices=["cpu_bposd", "gpu_bposd", "pymatching", "mwpf"], default=None,
+        help="Decoder to use (default: cpu_bposd for gates, pymatching for memory)",
     )
     ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
     ap.add_argument("--max-errors",  type=int, default=100)
@@ -431,7 +466,7 @@ def main():
         elif gate == "memory":
             decoder_name = "pymatching"
         else:
-            decoder_name = "bposd"
+            decoder_name = "cpu_bposd"
 
         print(f"Decoder    : {decoder_name}")
 

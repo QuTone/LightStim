@@ -1,8 +1,10 @@
 """
-Regenerate fig6_memory.png — Memory baseline (Unrotated SC, Z basis).
+Regenerate fig6_memory.png — Memory baseline (Unrotated SC, Z+X average).
 
-No precomputed data for this figure — run `run_all.py --figure 6` first.
-Uses LER directly (no aggregation needed), color by distance.
+Reads fig6_memory.csv which contains Z_memory and X_memory rows.
+LER is averaged over the two bases before plotting (one curve per distance).
+
+Run data first: PYTHONPATH=. venv/bin/python paper_artifact/logical_ops/run_all.py --figure 6
 
 Usage:
     PYTHONPATH=. venv/bin/python paper_artifact/logical_ops/plot_fig6.py
@@ -41,11 +43,20 @@ def _resolve(filename: str) -> Path:
 
 def plot(df):
     apply_paper_style()
+
+    # Average LER over Z and X basis for each (d, p)
+    df_avg = (
+        df.groupby(["d", "p"])["logical_error_rate"]
+        .mean()
+        .reset_index()
+        .sort_values(["d", "p"])
+    )
+
     fig, ax = plt.subplots(figsize=(4.5, 5.5))
 
     dist_proxy = []
-    for d in sorted(df["d"].unique()):
-        df_d = df[df["d"] == d].sort_values("p")
+    for d in sorted(df_avg["d"].unique()):
+        df_d = df_avg[df_avg["d"] == d].sort_values("p")
         color = PALETTE_DIST.get(int(d), "gray")
         marker = MARKERS.get(int(d), "o")
         ax.loglog(
@@ -60,7 +71,7 @@ def plot(df):
 
     ax.set_xlabel("Physical Error Rate $p$")
     ax.set_ylabel("Logical Error Rate (LER)")
-    ax.set_title("Memory Baseline (Z basis)")
+    ax.set_title("Memory Baseline (Z+X average)")
     ax.grid(True, which="both", ls="--", linewidth=0.5, alpha=0.5)
     bold_ticks(ax)
 
