@@ -81,7 +81,7 @@ def plot(df):
 
     handles = [
         Line2D([], [], color=STATE_COLORS[s], marker=STATE_MARKERS[s],
-               ls="none", markeredgecolor="none", markersize=7, label=f"$|{s}\\rangle$")
+               ls="-", markeredgecolor="none", markersize=7, label=f"$|{s}\\rangle$")
         for s in plotted_states
     ]
     handles += [

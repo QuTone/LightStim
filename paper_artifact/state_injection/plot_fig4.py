@@ -95,7 +95,7 @@ def plot(df):
 
     handles = [
         Line2D([], [], color=MODE_COLORS[m], marker=MODE_MARKERS[m],
-               ls="none", markeredgecolor="none", markersize=7, label=MODE_LABELS[m])
+               ls="-", markeredgecolor="none", markersize=7, label=MODE_LABELS[m])
         for m in plotted_modes
     ]
     handles += [
