@@ -187,7 +187,34 @@ round counts:
 
 ## 3. Simulation & Decoding Pitfalls
 
-### 3-A  PyMatching requires `decompose_errors=True` in the DEM
+### 3-A  CrossLS / PQRM circuits cannot use PyMatching — use MWPF
+
+**Symptom**: PyMatching raises a hyperedge error or produces incorrect LER when
+decoding a CrossLS or PQRM circuit.
+
+**Root cause**: PQRM X-stabilizers are high-weight (weight 7–15) and cannot be
+decomposed into 2-body edges by `decompose_errors=True`. PyMatching (MWPM) is
+fundamentally restricted to edges (weight ≤ 2). MWPF handles arbitrary hyperedges
+natively and is the correct decoder for these circuits.
+
+**Fix**:
+
+```python
+from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
+
+pipeline = SimulationPipeline(
+    decoder_config=DecoderConfig('mwpf'),   # not 'pymatching'
+    max_shots=200_000, max_errors=50,
+    batch_size=10_000, num_workers=4,
+)
+```
+
+This applies to: `CrossLSExperiment`, any circuit built around `PQRMCode`,
+and any custom circuit whose DEM contains hyperedges with weight > 2.
+
+---
+
+### 3-B  PyMatching requires `decompose_errors=True` in the DEM
 
 **Symptom**: PyMatching raises an error about hyperedges, or decoding performance
 is very poor.
