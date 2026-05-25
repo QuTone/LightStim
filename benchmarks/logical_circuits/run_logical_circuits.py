@@ -84,14 +84,14 @@ _build_ls_zz_dist = _mod_ls_zz_dist.build_circuit
 _build_ls_xx_dist = _mod_ls_xx_dist.build_circuit
 
 # Distillation builders
-from benchmarks.logical_circuits.distillation.ls_7to1.LS_distillation_7_to_1 import (
+from lightstim.protocols.ls_distillation import (
     build_distillation_circuit as _build_ls_distill,
     inject_noise as _inject_ls,
     estimate_p_in as _estimate_p_in_ls,
     run_simulation as _run_ls_sim,
     _LS_MAGIC_NAMES,
 )
-from benchmarks.logical_circuits.distillation.tg_7to1.TG_distillation_7_to_1 import (
+from lightstim.protocols.tg_distillation import (
     build_distillation_circuit as _build_tg_distill,
     inject_noise as _inject_tg,
     estimate_p_in as _estimate_p_in_tg,
