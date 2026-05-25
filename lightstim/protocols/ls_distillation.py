@@ -13,6 +13,7 @@ run_simulation(circuit, magic_qubits, p, p_injected, mode, ...) → stats
 """
 import time
 import numpy as np
+import stim
 
 from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode,
@@ -20,6 +21,7 @@ from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedMultiPatchCoupler,
     UnrotatedSurfaceCodeLogicalOpSet,
 )
+from lightstim.qec_code.surface_code.unrotated.operation import _get_fold_yx_pairs
 from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.tracker import SyndromeTracker
@@ -83,6 +85,7 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
     builder.write_coordinates()
 
     def prepare_y(patch_name):
+        """Re-initialize a single patch to |Y⟩_L (used between coupler rounds)."""
         patch = system.patches[patch_name][0]
         if y_prep == "fold_transversal_s":
             wd = {q: 'X' for q in system.data_indices
@@ -92,12 +95,33 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
         else:
             raise ValueError(f"Unknown y_prep method: {y_prep}")
 
-    for wname in ['W1', 'W2', 'W3']:
-        prepare_y(wname)
+    # Initialize all 5 patches simultaneously (one RX block).
+    # Exclude coupler-owned data qubits — the coupler meas_1 is already registered
+    # above, so system.data_indices includes its data qubits which must NOT be
+    # initialized here (they are initialized separately when the coupler activates).
+    coupler_names = set(system.coupler_patches.keys())
+    patch_data = {q: 'X' for q in system.data_indices
+                  if system.index_to_owner_map.get(q) not in coupler_names}
+    builder.initialize(init_dict=patch_data, n=num_qubits)
 
-    w4d = {q: 'X' for q in system.data_indices if system.index_to_owner_map[q] == 'W4'}
-    builder.initialize(init_dict=w4d, n=num_qubits)
-    prepare_y('W5')
+    # Apply fold_transversal_S on W1,W2,W3,W5 in one TICK (W4 stays |+⟩_L)
+    if y_prep == "fold_transversal_s":
+        combined = stim.Circuit()
+        s_qs, sdag_qs, cz_pairs = [], [], []
+        for wn in ['W1', 'W2', 'W3', 'W5']:
+            ds, dsd, pairs = _get_fold_yx_pairs(system, system.patches[wn][0])
+            s_qs.extend(ds)
+            sdag_qs.extend(dsd)
+            cz_pairs.extend(pairs)
+        if s_qs:
+            combined.append("S", sorted(s_qs))
+        if sdag_qs:
+            combined.append("S_DAG", sorted(sdag_qs))
+        for a, b in cz_pairs:
+            combined.append("CZ", [a, b])
+        builder.apply_unitary_block(combined)
+    else:
+        raise ValueError(f"Unknown y_prep method: {y_prep}")
 
     se = UnrotatedSurfaceCodeExtractionBlock(system)
     builder.apply_syndrome_extraction(circuit_chunk=se.circuit, rounds=rounds)
