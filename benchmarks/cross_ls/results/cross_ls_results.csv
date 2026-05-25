@@ -1,0 +1,2 @@
+experiment,pqrm,d_surf,rounds,state,p_1q,p_2q,ps_mode,decoder,backend,n_det,n_ps,shots,kept,ps_rate,errors,ler,seconds
+sweep,1-2-4,3,3,Z,1e-06,0.001,hybrid,mwpf,cpu,88,12,50000,40676,0.8135,10,0.0002458452158520995,9.02
