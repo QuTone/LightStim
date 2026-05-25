@@ -199,6 +199,7 @@ def _build_cnot_ls_tasks(distances, p_values, rounds, protocol):
               'XX_ZZ' — ancilla init |0> (Z), measure X
     Both use the same CNOTLSExperiment; only the gate label differs.
     """
+    ancilla_init = "X" if protocol == "ZZ_XX" else "Z"  # |+⟩ for ZZ_XX, |0⟩ for XX_ZZ
     tasks = []
     for (sub, ic, it, mc, mt), d, p in product(_CNOT_SUB_EXPERIMENTS, distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
@@ -211,8 +212,8 @@ def _build_cnot_ls_tasks(distances, p_values, rounds, protocol):
                 },
                 offset_ta=(2 * d, 0),
                 offset_ca=(0, 2 * d),
-                initial_state_dict={"a": "X", "c": ic, "t": it},
-                measure_state_dict={"a": "Z", "c": mc, "t": mt},
+                initial_state_dict={"a": ancilla_init, "c": ic, "t": it},
+                measure_state_dict={"a": "Z", "c": mc, "t": mt},  # ancilla meas auto-corrected
                 extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
                 rounds=rounds,
                 noise_params=noise,
