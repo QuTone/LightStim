@@ -39,7 +39,7 @@ if __name__ == "__main__":
     parser.add_argument("--p-injected", type=float, nargs="+",
                         default=[1e-3, 2e-3, 5e-3, 1e-2])
     parser.add_argument("--noise-mode", choices=["injection", "full", "both"], default="both")
-    parser.add_argument("-r", "--gate-se-rounds", type=int, default=1)
+    parser.add_argument("--rounds-gate", type=int, default=1)
     parser.add_argument("--decoder", choices=["bposd", "mwpf", "pymatching"],
                         default="pymatching")
     parser.add_argument("--backend", choices=["cpu", "gpu"], default="cpu")
@@ -57,14 +57,14 @@ if __name__ == "__main__":
     all_results = []
 
     for d in args.distances:
-        rounds = d
+        rounds_init = d
         print(f"\n{'='*60}")
-        print(f"Building d={d}, init_rounds={rounds}, gate_se_rounds={args.gate_se_rounds}")
+        print(f"Building d={d}, rounds_init={rounds_init}, rounds_gate={args.rounds_gate}")
         print(f"{'='*60}")
 
-        circuit_path = os.path.join(circuit_dir, f"TG_7to1_d{d}_r{args.gate_se_rounds}.stim")
+        circuit_path = os.path.join(circuit_dir, f"TG_7to1_d{d}_rg{args.rounds_gate}.stim")
         transform_path = os.path.join(circuit_dir,
-                                      f"TG_7to1_d{d}_r{args.gate_se_rounds}_obs.json")
+                                      f"TG_7to1_d{d}_rg{args.rounds_gate}_obs.json")
 
         if args.load_circuits and os.path.exists(circuit_path) and os.path.exists(transform_path):
             t_build_start = time.perf_counter()
@@ -80,7 +80,7 @@ if __name__ == "__main__":
                 'num_qubits': circuit.num_qubits,
                 'num_detectors': circuit.num_detectors,
                 'num_observables': circuit.num_observables,
-                'r': args.gate_se_rounds,
+                'rounds_gate': args.rounds_gate,
             }
             print(f"Loaded {circuit_info['num_qubits']} qubits, "
                   f"target obs: {target_obs}, PS obs: {post_select_obs}")
@@ -88,7 +88,7 @@ if __name__ == "__main__":
         else:
             t_build_start = time.perf_counter()
             circuit, circuit_info, system = build_distillation_circuit(
-                d, rounds, r=args.gate_se_rounds)
+                d, rounds_init=rounds_init, rounds_gate=args.rounds_gate)
             t_build = time.perf_counter() - t_build_start
 
             print(f"Circuit: {circuit_info['num_qubits']} qubits, "
@@ -141,7 +141,7 @@ if __name__ == "__main__":
             )
 
             result = {
-                'd': d, 'rounds': rounds, 'r': args.gate_se_rounds,
+                'd': d, 'rounds_init': rounds_init, 'rounds_gate': args.rounds_gate,
                 'p': p, 'p_injected': p_inj, 'noise_mode': args.noise_mode,
                 'decoder': args.decoder,
                 'num_qubits': circuit_info['num_qubits'],

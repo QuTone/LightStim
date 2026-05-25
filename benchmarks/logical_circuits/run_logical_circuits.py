@@ -291,7 +291,7 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
         build_fn    = _build_tg_distill
         p_in_fn     = _estimate_p_in_tg
         magic_names = _TG_MAGIC_NAMES
-        build_kwargs = {"r": 1}
+        build_kwargs = {"rounds_gate": 1}
         obs_target   = ["W0"]
 
     noise_modes = args.noise_mode or ["injection"]
@@ -300,10 +300,10 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
     decoder_name = args.decoder or "pymatching"
 
     for d in args.distances:
-        rounds = d
-        print(f"\n  Building d={d}, rounds={rounds}")
+        rounds_init = d
+        print(f"\n  Building d={d}, rounds_init={rounds_init}")
         with contextlib.redirect_stdout(io.StringIO()):
-            circuit, info, system = build_fn(d, rounds, **build_kwargs)
+            circuit, info, system = build_fn(d, rounds_init, **build_kwargs)
 
         matrix, patch_names = build_obs_patch_matrix(circuit, system)
         T, target_obs, ps_obs = identify_distillation_observables(
@@ -328,7 +328,7 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                 row_proto = {
                     "experiment": f"distill_{which}",
                     "d": d,
-                    "rounds": rounds,
+                    "rounds": rounds_init,
                     "p_injected": p_inj,
                     "noise_mode": mode,
                     "p": p,
@@ -341,7 +341,7 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                 # Calibrate p_in (injection and both modes only)
                 if mode in ("injection", "both"):
                     p_bg = p if mode == "both" else 0.0
-                    p_in = p_in_fn(d, rounds, p_injected=p_inj,
+                    p_in = p_in_fn(d, rounds_init, p_injected=p_inj,
                                    p_background=p_bg,
                                    max_shots=args.max_shots // 10,
                                    max_errors=50,

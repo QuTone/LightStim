@@ -6,11 +6,18 @@ with Y state injection on 7 magic patches (M1-M7) and transversal S-bar gate.
 
 Public API
 ----------
-build_distillation_circuit(d, rounds, r) → (circuit, circuit_info, system)
+build_distillation_circuit(d, rounds_init, rounds_gate) → (circuit, circuit_info, system)
 inject_noise(circuit, magic_qubits, p, p_injected, mode) → circuit
-estimate_p_in(d, rounds, p_injected, p_background, ...) → float
+estimate_p_in(d, rounds_init, p_injected, p_background, ...) → float
 run_simulation(circuit, magic_qubits, p, p_injected, mode, T, ...) → stats
 analyze_observables(circuit, system, target_patch_names) → (T, target, ps, matrix, names)
+
+Round parameters
+----------------
+rounds_init  : SE rounds after state preparation (working-patch init + magic corner
+               injection). Paper value: d. Defaults to None → d.
+rounds_gate  : SE rounds after each transversal gate layer (3 CNOT encoding ticks +
+               1 teleportation CNOT). Paper value: 1. Defaults to 1.
 """
 import time
 import numpy as np
@@ -42,20 +49,24 @@ TG_MAGIC_NAMES = {f'M{i}' for i in range(1, 8)}
 _TG_MAGIC_NAMES = TG_MAGIC_NAMES
 
 
-def build_distillation_circuit(d, rounds, r=1):
+def build_distillation_circuit(d, rounds_init=None, rounds_gate=1):
     """
     Build TG 7-to-1 distillation circuit (noiseless).
 
     Layout: 8 working patches (W0-W7) in 2×4 grid + 7 magic patches (M1-M7).
 
     Args:
-        d:      Code distance.
-        rounds: SE rounds after initialization (typically d).
-        r:      SE rounds after each transversal gate layer.
+        d:            Code distance.
+        rounds_init:  SE rounds after state preparation (working-patch init +
+                      magic corner injection). Defaults to d (paper setting).
+        rounds_gate:  SE rounds after each transversal gate layer (3 CNOT encoding
+                      ticks + 1 teleportation CNOT). Paper value: 1.
 
     Returns:
         (circuit, circuit_info, system)
     """
+    if rounds_init is None:
+        rounds_init = d
     patch_size = 2 * (d - 1)
     gap = 2
     col_sp = patch_size + gap
@@ -124,8 +135,8 @@ def build_distillation_circuit(d, rounds, r=1):
         op_set.state_injection(builder, gp[mname], inject_state='Y',
                                protocol='corner', rounds=0, post_select_coords=set())
 
-    # Step 2: Initialization SE
-    do_se(rounds)
+    # Step 2: Initialization SE (rounds_init = d by default)
+    do_se(rounds_init)
 
     # Step 3: Hypercube encoding — 3 ticks of parallel transversal CNOTs
     cnot_ticks = [
@@ -144,7 +155,7 @@ def build_distillation_circuit(d, rounds, r=1):
                 targets.extend([c, t])
             cnot_circuit.append("CNOT", targets)
         builder.apply_unitary_block(cnot_circuit)
-        do_se(r)
+        do_se(rounds_gate)
 
     # Step 4: Teleportation CNOT(W_i, M_i) + noiseless S on W0
     tele_cnot = stim.Circuit()
@@ -163,7 +174,7 @@ def build_distillation_circuit(d, rounds, r=1):
     for a, b in mirror_pairs_w0:
         tele_cnot.append("CZ", [a, b])
     builder.apply_unitary_block(tele_cnot)
-    do_se(r)
+    do_se(rounds_gate)
 
     # Step 5: Final readout — W in X, M in Z
     final_meas = {}
@@ -177,7 +188,8 @@ def build_distillation_circuit(d, rounds, r=1):
         'num_qubits': circuit.num_qubits,
         'num_detectors': circuit.num_detectors,
         'num_observables': circuit.num_observables,
-        'r': r,
+        'rounds_init': rounds_init,
+        'rounds_gate': rounds_gate,
     }
     return circuit, circuit_info, system
 
@@ -215,17 +227,23 @@ def inject_noise(circuit, magic_qubits, p, p_injected, mode="full"):
         raise ValueError(f"Unknown noise mode: {mode!r}. Choose from 'injection', 'full', 'both'.")
 
 
-def estimate_p_in(d, rounds, p_injected, p_background=0.0,
+def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
                   max_shots=10_000_000, max_errors=100, batch_size=5_000):
     """
     Estimate effective logical input infidelity P_in for TG |Y⟩ magic state.
 
-    Calibration circuit: corner injection → SE(rounds)
+    Calibration circuit: corner injection → SE(rounds_init)
     → noiseless S†_L → MX logical readout.
+
+    Args:
+        rounds_init: SE rounds after corner injection. Defaults to d (paper setting).
 
     Returns:
         p_in (float): logical error rate of the corner-injected |Y⟩ state.
     """
+    if rounds_init is None:
+        rounds_init = d
+
     patch = UnrotatedSurfaceCode(distance=d)
     sys1 = QECSystem()
     gp = sys1.add_patch(patch, name='cal', offset=(0, 0))
@@ -240,7 +258,7 @@ def estimate_p_in(d, rounds, p_injected, p_background=0.0,
                            protocol='corner', rounds=0, post_select_coords=set())
 
     se = UnrotatedSurfaceCodeExtractionBlock(sys1)
-    builder.apply_syndrome_extraction(circuit_chunk=se.circuit, rounds=rounds)
+    builder.apply_syndrome_extraction(circuit_chunk=se.circuit, rounds=rounds_init)
 
     op_set.fold_transversal_s_dag(builder, sys1.patches['cal'][0], noiseless=True)
     builder.apply_data_readout(final_measurements={q: 'X' for q in sys1.data_indices})
