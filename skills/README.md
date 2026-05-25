@@ -16,7 +16,8 @@ skills/
 ├── lattice-surgery-cnot/    # 3-patch lattice surgery CNOT
 ├── state-injection/         # Inject Z/X/Y logical states
 ├── custom-noise/            # Configure noise models
-└── extend-new-code/         # Add a new QEC code to the library
+├── extend-new-code/         # Add a new QEC code to the library
+└── gotchas/                 # Known pitfalls & FAQ — read when debugging
 ```
 
 ## Installing into Claude Code

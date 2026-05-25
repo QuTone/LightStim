@@ -14,6 +14,8 @@ Each demonstrates one complete workflow and serves as a reference for LLM-assist
 | `06_custom_noise_model.py` | Compare circuit_level / phenomenological / code_capacity noise models |
 | `07_extend_new_qec_code.py` | Template for adding a new QEC code (QECPatch + SE_block) |
 
+See also `skills/gotchas/SKILL.md` — a catalogue of known pitfalls and debugging patterns.
+
 ## Usage
 
 ```bash
