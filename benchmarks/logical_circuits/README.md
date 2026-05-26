@@ -95,9 +95,6 @@ errors, logical_error_rate, decoder, seconds
 ```bash
 # Bell teleportation:
 PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_bell_tele.py
-
-# Routing overhead:
-PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_routing_combined.py
 ```
 
-> Distillation plot scripts are in `distillation/ls_7to1/` and `distillation/tg_7to1/`.
+> Distillation plot scripts are not yet implemented. Results CSV can be inspected directly.

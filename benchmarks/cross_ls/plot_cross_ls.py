@@ -4,20 +4,20 @@ CrossLS (Surface–PQRM Lattice Surgery) evaluation figures.
 Fig 1: LER vs PER — Z state, d=3,5,7, 3×PQRM = 9 lines
         Color = distance, linestyle = PQRM code
 
-Fig 2: LER vs d_surf — p=5e-4, 3×PQRM × 3×State = 9 lines
+Fig 2: LER vs d_surf — 3×PQRM × 3×State = 9 lines
         Color = state, linestyle = PQRM code
 
-Data:  results/all_sweep_data.csv (bposd only)
-       Generate with: venv/bin/python benchmarks/new_protocol/surface-PQRM-LS/run_sweep.py
-Output: benchmarks/new_protocol/surface-PQRM-LS/results/
+Data:  results/cross_ls_results.csv
+       Generate with:
+           PYTHONPATH=. venv/bin/python benchmarks/cross_ls/run_cross_ls.py --quick
 
 Usage:
-    venv/bin/python benchmarks/new_protocol/surface-PQRM-LS/plot_cross_ls.py
+    PYTHONPATH=. venv/bin/python benchmarks/cross_ls/plot_cross_ls.py
 """
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # project root
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # project root
 
 import numpy as np
 import pandas as pd
@@ -31,13 +31,13 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, PALETTE, 
 apply_paper_style()
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-CSV    = Path(__file__).parent / "results" / "all_sweep_data.csv"
+CSV    = Path(__file__).parent / "results" / "cross_ls_results.csv"
 OUT    = Path(__file__).parent / "results"
 OUT.mkdir(exist_ok=True)
 
-# ── Load & filter bposd ───────────────────────────────────────────────────────
+# ── Load data (all decoders) ──────────────────────────────────────────────────
 df_all = pd.read_csv(CSV)
-df     = df_all[df_all["decoder"] == "bposd"].copy()
+df     = df_all[df_all["experiment"] == "sweep"].copy()
 
 # ── Style constants ───────────────────────────────────────────────────────────
 FS_TITLE  = 12
@@ -119,7 +119,12 @@ def plot_fig1():
 # Fig 2: LER vs d_surf, p=5e-4, 3×PQRM × 3×State = 9 lines
 # ─────────────────────────────────────────────────────────────────────────────
 def plot_fig2():
-    sub = df[abs(df["p_2q"] - 5e-4) < 1e-10].copy()
+    target_p = 5e-4
+    # fall back to nearest available p if 5e-4 is not in the data
+    available_p = df["p_2q"].unique()
+    if not any(abs(available_p - target_p) < 1e-10):
+        target_p = available_p[np.argmin(np.abs(available_p - target_p))]
+    sub = df[abs(df["p_2q"] - target_p) < 1e-10].copy()
 
     fig, ax = plt.subplots(figsize=(4.8, 4.2), constrained_layout=True)
 
@@ -138,7 +143,7 @@ def plot_fig2():
 
     ax.set_xlabel("Surface Code Distance $d$", fontsize=FS_LABEL)
     ax.set_ylabel("LER", fontsize=FS_LABEL)
-    ax.set_title("CrossLS — LER vs $d$, $p=5\\times10^{-4}$", fontsize=FS_TITLE)
+    ax.set_title(f"CrossLS — LER vs $d$, $p={target_p:.0e}$", fontsize=FS_TITLE)
     ax.set_xticks([3, 4, 5, 6, 7])
     ax.tick_params(labelsize=FS_TICK)
     ax.grid(True, which="major", ls="--", alpha=0.5)

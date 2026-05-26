@@ -270,7 +270,17 @@ def main():
                     help="Noise model (default: circuit_level)")
     ap.add_argument("--output", default=None,
                     help="Output CSV path (auto-computed as results/<codes>_<decoder>.csv if omitted)")
+    ap.add_argument("--quick", action="store_true",
+                    help="Smoke test: d=3,5 and 2 p-values (1e-3, 5e-3)")
     args = ap.parse_args()
+
+    if args.quick:
+        args.codes = args.codes if args.codes else ["rotated_sc"]
+        if not args.distances:
+            args.distances = [3, 5]
+        args.p_values = [1e-3, 5e-3]
+        args.max_shots = 100_000
+        args.max_errors = 50
 
     # Validate distances for topological codes
     topo = [c for c in args.codes if c in _TOPO_CODES]

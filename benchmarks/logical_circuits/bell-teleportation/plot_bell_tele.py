@@ -1,12 +1,15 @@
 """
 Bell-teleportation circuit benchmark: LER vs PER.
-3 subplots: TG | LS-XX | LS-ZZ
-Each subplot: d=3,5,7 (color) × state=Z/X (solid/dashed)
+One figure per protocol (TG | LS-ZZ | LS-XX).
+Each figure: d=3,5,7 (color) × state=Z/X (solid/dashed)
+
+Data:  ../results/bell_tele_results.csv
+       Generate with:
+           PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py \\
+               --experiment bell_tele --distances 3 5 7 --p-values 5e-4 1e-3 2e-3 5e-3
 
 Usage:
-    venv/bin/python -m eval.logical_circuit_benchmark.bell-teleportation.plot_bell_tele
-    # or from project root:
-    venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_bell_tele.py
+    PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/bell-teleportation/plot_bell_tele.py
 """
 import sys
 from pathlib import Path as _P
@@ -23,8 +26,9 @@ from lightstim.plot.styles import apply_paper_style, PALETTE_DISTANCE, bold_tick
 
 apply_paper_style()
 
-RESULTS = Path(__file__).parent / "results"
-OUTPUT  = RESULTS / "fig_bell_tele.png"
+CSV     = Path(__file__).resolve().parents[1] / "results" / "bell_tele_results.csv"
+OUT_DIR = CSV.parent
+OUT_DIR.mkdir(exist_ok=True)
 
 # ── Style constants ───────────────────────────────────────────────────────────
 FS_TITLE  = 9
@@ -37,14 +41,14 @@ MS        = 6
 LINESTYLE = {"Z": "-", "X": "--"}
 MARKER    = {"Z": "o", "X": "s"}
 
-DATASETS = [
-    ("TG",     "tg_results.csv",    "Transversal Gate"),
-    ("LS-XX",  "ls_xx_results.csv", "LS-XX"),
-    ("LS-ZZ",  "ls_zz_results.csv", "LS-ZZ"),
+PROTOCOLS = [
+    ("tg",    "Transversal Gate",  "fig_bell_tele_tg.png"),
+    ("ls_zz", "LS-ZZ",             "fig_bell_tele_ls_zz.png"),
+    ("ls_xx", "LS-XX",             "fig_bell_tele_ls_xx.png"),
 ]
 
 # ── Load data ─────────────────────────────────────────────────────────────────
-dfs = {key: pd.read_csv(RESULTS / fname) for key, fname, _ in DATASETS}
+df_all = pd.read_csv(CSV)
 
 # ── Legend proxies ────────────────────────────────────────────────────────────
 dist_proxy = [
@@ -59,13 +63,13 @@ state_proxy = [
            markeredgecolor="none", label="X state"),
 ]
 
-# ── One independent figure per protocol ──────────────────────────────────────
-out_names = {"TG": "fig_bell_tele_tg.png",
-             "LS-XX": "fig_bell_tele_ls_xx.png",
-             "LS-ZZ": "fig_bell_tele_ls_zz.png"}
+# ── One figure per protocol ───────────────────────────────────────────────────
+for proto_key, title, out_fname in PROTOCOLS:
+    df = df_all[df_all["protocol"] == proto_key]
+    if df.empty:
+        print(f"No data for protocol={proto_key!r}, skipping.")
+        continue
 
-for key, _, title in DATASETS:
-    df = dfs[key]
     fig, ax = plt.subplots(figsize=(2.5, 4))
 
     for d in [3, 5, 7]:
@@ -92,7 +96,7 @@ for key, _, title in DATASETS:
               loc="lower right",
               frameon=True)
 
-    out = RESULTS / out_names[key]
+    out = OUT_DIR / out_fname
     fig.tight_layout()
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
