@@ -6,9 +6,19 @@ build-backend = "setuptools.build_meta"
 name = "lightstim"
 version = "0.1.0"
 description = "QEC simulation framework built on Stim"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
 authors = [
     {name = "Xiang Fang"}
+]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
 ]
 
 dependencies = [
@@ -17,11 +27,13 @@ dependencies = [
     "sinter>=1.15.0",
     "PyMatching>=2.0.0",
     "pandas",
-    "matplotlib",
-    "seaborn",
 ]
 
 [project.optional-dependencies]
+plot = [
+    "matplotlib",
+    "seaborn",
+]
 decoders = [
     "stimbposd",
     "mwpf",
@@ -30,6 +42,13 @@ decoders = [
 ]
 gpu = [
     "cudaq-qec",
+]
+dev = [
+    "pytest",
+    "jupyter",
+    "ipykernel",
+    "matplotlib",
+    "seaborn",
 ]
 
 [tool.setuptools.packages.find]

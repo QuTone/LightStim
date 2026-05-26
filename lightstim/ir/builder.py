@@ -1,7 +1,10 @@
+import logging
 import stim
 import numpy as np
 from typing import List, Dict, Any, Optional, Union, Literal, Set
 from dataclasses import dataclass
+
+_log = logging.getLogger(__name__)
 
 from ..ir.tracker import SyndromeTracker, _append_detector
 from ..noise.config import NoiseConfig
@@ -176,7 +179,7 @@ class CircuitBuilder:
         # ======================================================================
         # Phase 1: First Round (Tracker-Driven)
         # ======================================================================
-        print("Applying first round of syndrome extraction...")
+        _log.debug("Applying first round of syndrome extraction...")
         # Analyze Ideal Basis for the Tracker
         back_propagated_paulis, syn_qubit_indices = self._get_back_propagated_pauli(circuit_chunk, self.tracker.num_qubits)
         syn_coords = [self.system.qubit_coords[i] for i in syn_qubit_indices] # extract from circuit_chunk, more robust
@@ -223,7 +226,7 @@ class CircuitBuilder:
         # Phase 2: Repeat Rounds (Stim Loop)
         # ======================================================================
         if rounds > 1:
-            print("Applying rest rounds of syndrome extraction...")
+            _log.debug("Applying rest rounds of syndrome extraction...")
 
             loop_body = stim.Circuit()
             num_syn = len(syn_coords)

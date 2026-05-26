@@ -110,6 +110,8 @@ class SimulationPipeline:
         """
         Run simulation on a single circuit via the unified custom pipeline.
         """
+        # Validate decoder name in the parent process before spawning workers.
+        get_decoder(self.config.decoder.name, backend=self.config.decoder.backend)
         meta = json_metadata or {}
         post_indices = self._resolve_post_select_indices(circuit)
         return self._run_custom(circuit, meta, post_indices)

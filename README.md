@@ -48,7 +48,11 @@ cd LightStim
 
 python3 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+
+pip install -e .                   # core (PyMatching included)
+pip install -e ".[decoders]"       # + BP+OSD (stimbposd) and MWPF
+pip install -e ".[gpu]"            # + NVIDIA GPU decoder (requires CUDA)
+pip install -r requirements-dev.txt  # dev / notebook environment
 ```
 
 > **GPU decoder** (`nv-qldpc-decoder`) requires NVIDIA GPU + CUDA 12.x. `cudaq-qec` is included in `requirements.txt` but will fail to install on non-CUDA systems — comment it out if not needed.

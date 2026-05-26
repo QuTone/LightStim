@@ -1,5 +1,4 @@
-# experiments/memory.py
-
+import logging
 import stim
 from typing import Type, Literal, Optional, Any
 
@@ -41,6 +40,7 @@ class MemoryExperiment:
             z_only: If True, only Z-ancilla measurements emit DETECTOR instructions.
                 Produces a smaller DEM matching Z-basis-only decoding (e.g. gong_circuit style).
         """
+        self._log = logging.getLogger(__name__)
         self.system = qec_system
         self.block_class = extraction_block_class
         self.rounds = rounds
@@ -68,14 +68,14 @@ class MemoryExperiment:
 
         # 2. Coordinate Definitions
         # ----------------------------------------------------------------------
-        print("Writing coordinates...")
+        self._log.debug("Writing coordinates...")
         self.builder.write_coordinates()
 
         # 3. Initialization
         # ----------------------------------------------------------------------
         # Initialize Data Qubits in the target memory basis.
         # The Tracker will automatically register the initial stabilizers.
-        print("Initializing...")
+        self._log.debug("Initializing...")
         data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
         init_dict = {q: self.basis for q in data_indices}
         self.builder.initialize(init_dict=init_dict, n=num_qubits)
@@ -84,7 +84,7 @@ class MemoryExperiment:
         # ----------------------------------------------------------------------
         # Instantiate the block to get the unit-cell circuit (One Round)
         # We pass self.patch because the Block needs coordinate info
-        print("Building syndrome extraction rounds...")
+        self._log.debug("Building syndrome extraction rounds...")
         se_block = self.block_class(self.system, **self.se_block_kwargs)
 
         # Apply the loop using Builder, construct detectors
@@ -97,7 +97,7 @@ class MemoryExperiment:
         # 5. Final Readout
         # ----------------------------------------------------------------------
         # Measure data qubits in the memory basis. Construct detectors and logical observables.
-        print("Measuring data qubits...")
+        self._log.debug("Measuring data qubits...")
         measurements = {q: self.basis for q in data_indices}
         self.builder.apply_data_readout(final_measurements=measurements, z_only=self.z_only)
 
@@ -105,7 +105,7 @@ class MemoryExperiment:
         # ----------------------------------------------------------------------
         # Finally, wrap the clean topological circuit with the requested noise model.
         if self.noise_params is not None:
-            print("Injecting noise...")
+            self._log.debug("Injecting noise...")
             noisy_circuit = self.builder.build_noisy_circuit(
                 noise_params=self.noise_params,
                 noise_model=self.noise_model
