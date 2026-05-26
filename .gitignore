@@ -71,33 +71,26 @@ qubeats-lightstim-ide/
 processing/
 external/
 MagicCross/
-scripts/
+/scripts/
 
 # Old eval/ directory (data migrated to benchmarks/*/results/)
 eval/
 
-# Paper artifact (kept locally, archived on Zenodo)
-
-
-# Simulation outputs (gitignored by default; benchmarks/results/ are exceptions below)
+# Simulation outputs (CSV/JSON gitignored by default)
 *.csv
 *.json
 !requirements.txt
 
-# Allow benchmark results data (paper artifact data)
-!benchmarks/**/results/*.csv
-!paper_artifact/*/precomputed/*.csv
-!benchmarks/**/results/*.json
-!benchmarks/logical_circuits/distillation/ls_7to1/*.csv
-!benchmarks/logical_circuits/distillation/ls_7to1/*.json
-!benchmarks/logical_circuits/distillation/ls_7to1/circuits/*.json
-!benchmarks/logical_circuits/distillation/tg_7to1/*.csv
-!benchmarks/logical_circuits/distillation/tg_7to1/*.json
-!benchmarks/logical_circuits/distillation/tg_7to1/circuits/*.json
-!benchmarks/logical_circuits/distillation/tg_7to1/circuits_no_inject/*.json
-!benchmarks/logical_ops/state_injection/results_rotated/*.csv
-!benchmarks/logical_ops/state_injection/results_unrotated/*.csv
-!benchmarks/new_protocol/surface-PQRM-LS/results/all_sweep_data.csv
+# paper_artifact/precompute/: canonical reference data committed by authors
+# (reviewer compares their local results/ run against these)
+!paper_artifact/*/precompute/*.json
+!paper_artifact/*/precompute/*.csv
+
+# benchmarks/*/results/: local simulation outputs — NOT pushed (archived on Zenodo)
+# paper_artifact/*/results/: reviewer's local run output — NOT pushed
+
+# Generated Stim circuits (regenerable; not tracked)
+*.stim
 
 # Logs
 *.log

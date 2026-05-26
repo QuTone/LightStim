@@ -1,0 +1,60 @@
+{
+  "rotated_sc_d3": {
+    "protocol": "Rotated SC",
+    "instance": "d=3",
+    "stim_det": 24,
+    "our_det": 24,
+    "det_match": true,
+    "ler_ratio": 1.0011,
+    "stim_ler": 0.00077008,
+    "our_ler": 0.0007709,
+    "shots": 1000000000,
+    "p": 0.001
+  },
+  "rotated_sc_d5": {
+    "protocol": "Rotated SC",
+    "instance": "d=5",
+    "stim_det": 120,
+    "our_det": 120,
+    "det_match": true,
+    "ler_ratio": 1.0047,
+    "stim_ler": 0.0001315,
+    "our_ler": 0.00013211,
+    "shots": 1000000000,
+    "p": 0.001
+  },
+  "rotated_sc_d7": {
+    "protocol": "Rotated SC",
+    "instance": "d=7",
+    "stim_det": 336,
+    "our_det": 336,
+    "det_match": true,
+    "ler_ratio": 0.9837,
+    "stim_ler": 1.781e-05,
+    "our_ler": 1.752e-05,
+    "shots": 100000000,
+    "p": 0.001
+  },
+  "bb_72,12,6_r6": {
+    "protocol": "BB Memory",
+    "instance": "[[72,12,6]]",
+    "rounds": 6,
+    "ref_det": 432,
+    "our_det": 444,
+    "excess": 12,
+    "n_x_stab": 36,
+    "n_z_stab": 36,
+    "ref_convention": "Z-only: n_Z_stab \u00d7 rounds (gongaa/IBM)"
+  },
+  "bb_144,12,12_r12": {
+    "protocol": "BB Memory",
+    "instance": "[[144,12,12]]",
+    "rounds": 12,
+    "ref_det": 1728,
+    "our_det": 1740,
+    "excess": 12,
+    "n_x_stab": 72,
+    "n_z_stab": 72,
+    "ref_convention": "Z-only: n_Z_stab \u00d7 rounds (gongaa/IBM)"
+  }
+}

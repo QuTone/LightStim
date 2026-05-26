@@ -1648,3 +1648,48 @@ class MyCoupler(LogicalCouplerProtocol):
 ```
 
 Register with `QECSystem.register_coupler(MyCoupler(), patch_names=[...], name="...")`.
+
+## 8. Tips & Gotchas
+
+### Use the virtual environment
+
+All Python commands must use `venv/bin/python`. The GPU decoder (`cudaq_qec`) is only installed inside the venv; using the system Python silently disables it and produces garbage results (LER ≈ 99%).
+
+```bash
+# Correct
+venv/bin/python benchmarks/memory/run_memory.py
+
+# Wrong — cudaq_qec not found, silently falls back to CPU or fails
+python benchmarks/memory/run_memory.py
+```
+
+### Run long benchmarks in a tmux session
+
+Compilation and simulation sweeps for large codes (d ≥ 9, BB code, distillation) can take tens of minutes to hours. Run them in a detached tmux session so they survive terminal disconnects:
+
+```bash
+# Start a named session
+tmux new-session -d -s my_sweep -x 220 -y 50
+
+# Send the command (output is logged to file)
+tmux send-keys -t my_sweep \
+  "venv/bin/python benchmarks/memory/run_memory.py 2>&1 | tee results/run.log" Enter
+
+# Attach to monitor progress
+tmux attach -t my_sweep
+
+# Detach (stay running): Ctrl-B then D
+```
+
+All benchmark scripts use per-row checkpointing — if a run is interrupted, restart and it will skip already-completed rows.
+
+### CPU resource limits
+
+Long sweeps at high concurrency can saturate a shared server. Always:
+- Use `timeout <seconds> venv/bin/python ...` for experiments with unknown runtime
+- Set `num_workers` conservatively (4–8 on a shared node)
+- Check `nvidia-smi` before launching GPU jobs; confirm free VRAM matches `num_workers`
+
+### Stim circuit files are regenerable
+
+`.stim` files cached by distillation scripts are generated artifacts — delete them freely. Re-running the script with `--build-only` or without `--load-circuits` regenerates them in seconds (d=3) to minutes (d=7).

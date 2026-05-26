@@ -370,3 +370,162 @@ T, target_obs, ps_obs = identify_distillation_observables(matrix, patch_names, [
 
 This returns the correct `target_obs` and `ps_obs` indices regardless of circuit
 construction order.
+
+---
+
+## 7. Decoder Selection Pitfalls
+
+### 7-A  Check for hyperedges before choosing a decoder
+
+**Symptom**: PyMatching reports 0 errors (silently wrong) or raises an error on
+circuits with hyperedges (fold-transversal gates, transversal CNOT, TG Bell teleportation,
+CrossLS, PQRM). PyMatching is fundamentally restricted to edges (weight ≤ 2).
+
+**Root cause**: Fold-transversal H/S gates (via SWAP + CZ operations), transversal CNOT
+across patches, and multi-patch syndrome correlations produce weight > 2 hyperedges in
+the DEM. PyMatching silently decomposes or drops these, giving wrong LER.
+
+**Detect hyperedges before choosing a decoder**:
+
+```python
+dem = noisy_circuit.detector_error_model(decompose_errors=False)
+max_weight = max(
+    len([t for t in inst.targets_copy() if t.is_relative_detector_id()])
+    for inst in dem.flattened() if inst.type == 'error'
+)
+# max_weight > 2 → hyperedges present → do NOT use PyMatching
+print(f"Max DEM edge weight: {max_weight}")
+```
+
+**Decoder selection by circuit type** (empirical benchmarks):
+
+| Circuit type | d=3,5 | d=7, p ≤ 2e-3 | d=7, p ≥ 5e-3 |
+|---|---|---|---|
+| Memory / Lattice Surgery (no hyperedges) | `pymatching` | `pymatching` | `pymatching` |
+| Fold-transversal H/S (hyperedges) | `bposd` CPU | `nv-qldpc-decoder` GPU | `nv-qldpc-decoder` GPU |
+| Transversal CNOT (hyperedges) | `bposd` or GPU | `nv-qldpc-decoder` GPU | `nv-qldpc-decoder` GPU |
+| TG Bell teleportation (hyperedges) | `bposd` CPU | `mwpf` CPU | `nv-qldpc-decoder` GPU |
+| CrossLS / PQRM (hyperedges) | `mwpf` | `mwpf` | `nv-qldpc-decoder` GPU |
+
+**num_workers by decoder**:
+
+| Decoder | Recommended num_workers |
+|---|---|
+| `pymatching` | 8–16 |
+| `bposd` | 8–16 |
+| `mwpf` | 8 |
+| `nv-qldpc-decoder` | 1 (GPU manages parallelism internally) |
+
+---
+
+### 7-B  CPU decoders hang at high p and large d
+
+**Symptom**: `bposd` or `mwpf` decoding stalls indefinitely on a single shot. The
+pipeline appears frozen with no output.
+
+**Root cause**: Dense syndromes (≥ 200 detection events/shot for d=7 TG circuits)
+create "hard instances" where BP fails to converge and OSD explores exponentially
+many configurations. One shot can take hours.
+
+**Concrete case**: d=7, p=5e-3, TG Bell teleportation — DEM has 48,249 error
+mechanisms, 72% hyperedges. MWPF decoded first ~80k shots (21s), then hung
+indefinitely on shot 80,001.
+
+**Fix**: Switch to `nv-qldpc-decoder` GPU when CPU decoders hang. GPU parallelism
+prevents individual-shot blowup. CUDA_VISIBLE_DEVICES controls which GPU to use:
+
+```bash
+nvidia-smi                                           # check free GPUs first
+CUDA_VISIBLE_DEVICES=2 venv/bin/python run_tg.py    # use GPU 2
+```
+
+---
+
+## 8. Multi-Patch Coupler: Perpendicular Boundary Limitation
+
+### 8-A  `UnrotatedMultiPatchCoupler` only supports side-connected patches
+
+**Symptom**: `circuit.detector_error_model()` raises an error about non-deterministic
+detectors, e.g.:
+
+```
+The circuit contains non-deterministic detectors.
+R on qubit 132 [coords (9, 8)] anti-commuted with detector D223
+```
+
+**Root cause**: The 6-tick interleaved SE schedule (Li 2014, arXiv:1410.7808) applies
+X and Z syndrome CNOTs simultaneously at ticks 3-4. At a **perpendicular** boundary
+(patch boundary perpendicular to the corridor axis), a data qubit is shared by both
+a corridor X-syndrome and an endpoint Z-syndrome in the same tick. The tracker's
+back-propagated Pauli includes a syndrome-to-syndrome cross-talk term that makes the
+corresponding detector non-deterministic.
+
+At **parallel** boundaries (patch boundary parallel to the corridor), X and Z CNOT
+directions are fully separated in time, so no cross-talk occurs.
+
+**What works** (N patches all side-connected, verified):
+- 2-patch ZZ, 3-patch ZZZ, 4-patch ZZZZ
+- 5-patch selective Z₄ with idle patch
+- Mixed distances (d=3 + d=4)
+
+**What fails**: Any patch whose boundary is perpendicular to the corridor axis
+(i.e., centered below or above the corridor, like an "endpoint" patch).
+
+**Current workaround**: Place all interacting patches as side patches (left/right of
+the vertical corridor). For layouts that would naturally use an endpoint position,
+shift the patch to a side position:
+
+```python
+# Fails: endpoint position (perpendicular boundary)
+system.add_patch(p5, name='p5', offset=(4, 16))   # centered below corridor
+
+# Works: side position (parallel boundary)
+system.add_patch(p5, name='p5', offset=(-2, 16))  # left side of corridor
+```
+
+**Known fix paths** (not yet implemented):
+- **8-tick fully separated schedule**: separate X and Z CNOT rounds completely.
+  No cross-talk at any orientation. Cost: +2 ticks/round (33% more depth).
+- **ZX interleaving schedule** (Gidney et al. arXiv:2603.01628): 4-tick minimum,
+  handles arbitrary boundary orientations.
+- **Diagonal schedule** (Fowler & Kishony arXiv:2602.09099): period-7 schedule
+  that eliminates hook errors at arbitrary boundaries.
+
+---
+
+## 9. Open Bugs
+
+### 9-A  Sequential coupler reuse blocks detectors (tracker stabilizer transition)
+
+**Status**: Open. Blocks multi-cycle lattice surgery distillation protocols
+(e.g., Steane 4 × ZZZZ sequential measurements).
+
+**Symptom**: For 4 sequential coupler cycles (each activating a different patch
+subset), the tracker's logical count explodes after the first cycle transitions to
+the second. `RuntimeError: Logical Count Mismatch` during the second
+`apply_syndrome_extraction`.
+
+**Root cause**: `SyndromeTracker.process_mid_measurement` assumes a stable stabilizer
+structure. After `deactivate_coupler()` + `activate_coupler()` for a new patch
+subset, the stabilizer tableau rows from cycle k no longer decompose against cycle
+k+1's SE measurements. Old rows become independent → classified as logicals →
+logical count explodes.
+
+**What works**:
+- Single measurement cycle: DEM OK
+- Multiple cycles with `if_detector=False`: circuit compiles (no detector tracking)
+- 4 cycles with Z-init (trivial): DEM OK
+
+**What doesn't work**: 4 cycles with Y/X init + proper detector tracking.
+
+**Potential solutions** (not yet implemented):
+1. **Stabilizer canonicalization mid-circuit**: new tracker method that re-aligns the
+   tableau with the current active stabilizers mid-circuit, preserving logicals.
+2. **Tracker reset at cycle boundaries**: after each deactivation, reset stabilizer
+   rows to current active stabilizers (loses historical records, starts fresh).
+3. **Unified coupler**: register one coupler with all patches upfront, selectively
+   mask/unmask boundary stabilizers per cycle (avoids stabilizer structure changes).
+
+**Related files**: `src/ir/tracker.py` (`process_mid_measurement`,
+`stabilizer_canonicalization`), `src/ir/builder.py` (`apply_data_readout`),
+`tests/test_back_propagated_pauli.py`.

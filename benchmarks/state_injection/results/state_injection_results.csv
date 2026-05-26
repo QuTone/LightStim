@@ -1,5 +1,0 @@
-gate,sub_experiment,inject_state,injection_protocol,post_select_mode,d,rounds,p,shots,post_selected_shots,post_selection_rate,errors,logical_error_rate,seconds,decoder
-state_injection,Z_corner_full_postselection,Z,corner,full_postselection,3,2,0.001,5000,4268,0.8536,24,0.005623242736644799,11.533078415028285,pymatching
-state_injection,Z_corner_full_postselection,Z,corner,full_postselection,3,2,0.005,3000,1320,0.44,24,0.01818181818181818,11.03071442397777,pymatching
-state_injection,Z_corner_full_postselection,Z,corner,full_postselection,5,2,0.001,14000,8041,0.5743571428571429,20,0.002487252829250093,12.059490448969882,pymatching
-state_injection,Z_corner_full_postselection,Z,corner,full_postselection,5,2,0.005,15000,880,0.058666666666666666,21,0.023863636363636365,12.557879471976776,pymatching

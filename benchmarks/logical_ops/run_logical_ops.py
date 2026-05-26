@@ -12,6 +12,9 @@ Supported gates
     CNOT_trans    Transversal CNOT (5 sub-experiments)
     CNOT_LS_ZZ_XX Lattice Surgery CNOT, ZZ-XX protocol (5 sub-experiments)
     CNOT_LS_XX_ZZ Lattice Surgery CNOT, XX-ZZ protocol (5 sub-experiments)
+    GHZ           GHZ state prep: CNOT(1,2)+CNOT(1,3) on 3 patches (2 sub-experiments)
+    TwoPatchLS_XX Two-patch lattice surgery XX measurement (1 sub-experiment)
+    TwoPatchLS_ZZ Two-patch lattice surgery ZZ measurement (1 sub-experiment)
     memory        Z and X basis memory baseline (rounds=d); plot scripts average.
 
 For state injection benchmarks, see benchmarks/state_injection/.
@@ -67,6 +70,8 @@ from lightstim.protocols.fold_transversal import (
 from lightstim.protocols.cnot_trans import CNOTTransExperiment
 from lightstim.protocols.cnot_ls import CNOTLSExperiment
 from lightstim.protocols.memory import MemoryExperiment
+from lightstim.protocols.ghz import GHZExperiment
+from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
 from lightstim.noise.config import NoiseConfig
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 from lightstim.ir.qec_system import QECSystem
@@ -77,7 +82,7 @@ from lightstim.qec_code.surface_code.unrotated import (
 
 # ── Available gates ───────────────────────────────────────────────────────────
 
-ALL_GATES = ["H", "S_oneway", "S_roundtrip", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "memory"]
+ALL_GATES = ["H", "S_oneway", "S_roundtrip", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "GHZ", "TwoPatchLS_XX", "TwoPatchLS_ZZ", "memory"]
 
 # CNOT sub-experiments (shared between transversal and LS variants)
 # (label, init_control, init_target, meas_control, meas_target)
@@ -263,6 +268,93 @@ def _build_memory_tasks(distances, p_values):
     return tasks
 
 
+def _build_ghz_tasks(distances, p_values, rounds):
+    """GHZ state prep: patch1=|+>, patch2=patch3=|0>; CNOT(1,2) + CNOT(1,3).
+    Sub-experiments: measure in Z,Z,Z (test ZZ correlations) and X,X,X (test XX).
+    """
+    tasks = []
+    sub_exps = [
+        ("GHZ_ZZZ", "Z", "Z", "Z"),
+        ("GHZ_XXX", "X", "X", "X"),
+    ]
+    for (sub, mb1, mb2, mb3), d, p in product(sub_exps, distances, p_values):
+        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        dx = 4 * (2 * d - 1) - 2
+        with contextlib.redirect_stdout(io.StringIO()):
+            exp = GHZExperiment(
+                distance=d,
+                offset_patch2=(dx, 0),
+                offset_patch3=(2 * dx, 0),
+                initial_basis_patch1="X",
+                initial_basis_patch2="Z",
+                initial_basis_patch3="Z",
+                measure_basis_patch1=mb1,
+                measure_basis_patch2=mb2,
+                measure_basis_patch3=mb3,
+                rounds_before=rounds,
+                rounds_after=rounds,
+                noise_params=noise,
+                noise_model="circuit_level",
+            )
+            circuit = exp.build()
+        meta = {
+            "gate": "GHZ",
+            "sub_experiment": sub,
+            "init_basis": "XZZ",
+            "measure_basis": mb1 + mb2 + mb3,
+            "d": d,
+            "rounds": rounds,
+            "p": p,
+        }
+        tasks.append((circuit, meta))
+    return tasks
+
+
+def _build_two_patch_ls_tasks(distances, p_values, rounds, interaction_type):
+    """Two-patch lattice surgery XX or ZZ measurement.
+    XX: patch1=|+>, patch2=|0> → LS XX → measure Z,X (one observable: XX result)
+    ZZ: patch1=|0>, patch2=|0> → LS ZZ → measure Z,Z (one observable: ZZ result)
+    """
+    tasks = []
+    if interaction_type == "XX":
+        init1, init2, meas1, meas2 = "X", "Z", "Z", "X"
+        offset = (4 * 3 - 2, 0)  # overridden per d below
+    else:
+        init1, init2, meas1, meas2 = "Z", "Z", "Z", "Z"
+        offset = (0, 4 * 3 - 2)
+
+    for d, p in product(distances, p_values):
+        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        step = 2 * (2 * d - 1)
+        off = (step, 0) if interaction_type == "XX" else (0, step)
+        with contextlib.redirect_stdout(io.StringIO()):
+            exp = TwoPatchLSExperiment(
+                patch1_config={"distance": d},
+                patch2_config={"distance": d},
+                offset=off,
+                interaction_type=interaction_type,
+                initial_state_patch1=init1,
+                initial_state_patch2=init2,
+                measure_state_patch1=meas1,
+                measure_state_patch2=meas2,
+                rounds=rounds,
+                noise_params=noise,
+                noise_model="circuit_level",
+            )
+            circuit = exp.build()
+        meta = {
+            "gate": f"TwoPatchLS_{interaction_type}",
+            "sub_experiment": f"LS_{interaction_type}",
+            "init_basis": init1 + init2,
+            "measure_basis": meas1 + meas2,
+            "d": d,
+            "rounds": rounds,
+            "p": p,
+        }
+        tasks.append((circuit, meta))
+    return tasks
+
+
 def build_tasks(gate: str, distances, p_values, rounds: int):
     """Dispatch to the appropriate circuit builder for a given gate."""
     if gate == "H":
@@ -277,6 +369,12 @@ def build_tasks(gate: str, distances, p_values, rounds: int):
         return _build_cnot_ls_tasks(distances, p_values, rounds, "ZZ_XX")
     if gate == "CNOT_LS_XX_ZZ":
         return _build_cnot_ls_tasks(distances, p_values, rounds, "XX_ZZ")
+    if gate == "GHZ":
+        return _build_ghz_tasks(distances, p_values, rounds)
+    if gate == "TwoPatchLS_XX":
+        return _build_two_patch_ls_tasks(distances, p_values, rounds, "XX")
+    if gate == "TwoPatchLS_ZZ":
+        return _build_two_patch_ls_tasks(distances, p_values, rounds, "ZZ")
     if gate == "memory":
         return _build_memory_tasks(distances, p_values)
     raise ValueError(f"Unknown gate: {gate!r}. Available: {ALL_GATES}")

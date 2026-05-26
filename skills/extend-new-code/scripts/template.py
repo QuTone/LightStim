@@ -1,31 +1,31 @@
 """
-Template for adding a new QEC code to LightStim.
+Extend with a new QEC code — template script.
 
-Every code requires two files:
-  code_patch.py  — subclass QECPatch, define geometry + stabilizers + logicals
-  SE_block.py    — class with a .circuit attribute, one round of syndrome extraction
+Implements a minimal end-to-end example: a single-row repetition code
+called "BitFlipStrip" that corrects bit-flip errors.
 
-This script shows a minimal runnable example: a single-row repetition-like code
-called "BitFlipStrip" that can be dropped into lightstim/qec_code/your_code/.
+Demonstrates:
+  - QECPatch subclass (geometry + stabilizers + logicals)
+  - Extraction block (one SE round as stim.Circuit)
+  - Verification with CircuitBuilder directly (no MemoryExperiment)
+  - Noiseless sanity check
 
-Key QECPatch API used here:
-  self.add_qubit(x, y, role)                  — register qubit, role ∈ {'data', 'syndrome_z', 'syndrome_x'}
-  self.create_stim_stabilizer(target_dict, syn_coord, type)
-      target_dict: Dict[(x, y) → 'X'|'Z'|'Y'],  type: 'X' or 'Z'
-  self.create_stim_logical(target_dict, op_type)
-      op_type: 'X' or 'Z' (the logical operator type)
+Run from repo root:
+    venv/bin/python skills/extend-new-code/scripts/template.py
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../..'))
+import sys
+sys.path.insert(0, ".")
 
 import stim
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.ir.qec_system import QECSystem
-from lightstim.protocols.memory import MemoryExperiment
+from lightstim.ir.tracker import SyndromeTracker
+from lightstim.ir.builder import CircuitBuilder
 from lightstim.noise.config import NoiseConfig
+from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 
 
-# ── 1. Code Patch ────────────────────────────────────────────────────────────
+# ── 1. Code Patch ─────────────────────────────────────────────────────────────
 
 class BitFlipStrip(QECPatch):
     """
@@ -34,7 +34,7 @@ class BitFlipStrip(QECPatch):
     Layout along x-axis:
       D  S  D  S  D  ...  D
       0  1  2  3  4       2d-2
-    D = data (even indices), S = syndrome_z (odd indices)
+    D = data (even x), S = syndrome_z (odd x)
     """
 
     def _process_params(self):
@@ -45,31 +45,35 @@ class BitFlipStrip(QECPatch):
     def build(self):
         d = self.distance
 
-        # Phase 1: geometry — register all qubits
+        # Phase 1: geometry — register every qubit
         for x in range(2 * d - 1):
             role = 'data' if x % 2 == 0 else 'syndrome_z'
             self.add_qubit(x, 0, role=role)
 
-        # Phase 2: physics — one ZZ stabilizer per syndrome qubit
+        # Phase 2: physics — ZZ stabilizer per syndrome qubit
+        # create_stim_stabilizer looks up syn_coord via self.index_map
+        # → must call add_qubit first for the ancilla
         for syn_coord in self.syndrome_coords:
-            left  = (syn_coord[0] - 1, 0)
-            right = (syn_coord[0] + 1, 0)
+            left  = (syn_coord[0] - 1, 0.0)
+            right = (syn_coord[0] + 1, 0.0)
             self.create_stim_stabilizer(
                 {left: 'Z', right: 'Z'},
                 syn_coord=syn_coord,
                 type='Z',
             )
 
-        # Phase 3: logical operators (both X and Z representative for each logical)
-        self.create_stim_logical({(0, 0): 'Z'}, op_type='Z')
-        self.create_stim_logical({(2 * i, 0): 'X' for i in range(d)}, op_type='X')
+        # Phase 3: logical operators
+        # Z logical: one data qubit at one end (minimum weight)
+        self.create_stim_logical({(0.0, 0.0): 'Z'}, op_type='Z')
+        # X logical: all data qubits (minimum weight transversal X)
+        self.create_stim_logical({(float(2 * i), 0.0): 'X' for i in range(d)}, op_type='X')
         self.num_logicals = 1
 
 
 # ── 2. Syndrome Extraction Block ─────────────────────────────────────────────
 
 class BitFlipStripExtractionBlock:
-    """One round: Reset → CX(data→syn) × 2 → Measure."""
+    """One SE round: Reset syndrome → CX(data→syn) for left/right neighbors → Measure."""
 
     def __init__(self, system):
         self.system = system
@@ -78,59 +82,79 @@ class BitFlipStripExtractionBlock:
 
     def _build(self):
         c = self.circuit
-        syn_indices = sorted(self.system.syndrome_indices)
+        syn_indices = sorted(self.system.active_syndrome_indices_z)
+
+        # Reset Z-ancillas
         c.append("R", syn_indices)
+        # SE_start tick — noise injector attaches idle errors here
         c.append("TICK", tag="SE_start")
 
-        for dx in [-1, +1]:   # left neighbor, right neighbor
+        # Two CX layers: left neighbor, then right neighbor
+        # Use system.active_stabilizers_z + system.index_map for global indices
+        for dx in [-1, +1]:
             pairs = []
             for stab in self.system.active_stabilizers_z:
                 syn_coord = stab['syn_coord']
                 neighbor = (syn_coord[0] + dx, syn_coord[1])
                 if neighbor in self.system.index_map:
-                    pairs += [self.system.index_map[neighbor], stab['syn_idx']]
+                    data_idx = self.system.index_map[neighbor]
+                    pairs += [data_idx, stab['syn_idx']]  # CX: data→ancilla (Z-type)
             if pairs:
                 c.append("CX", pairs)
             c.append("TICK")
 
+        # Measure — MUST be the last instruction
+        # CircuitBuilder reads this to determine measurement basis and qubit indices
         c.append("M", syn_indices)
 
 
-# ── 3. Verify it works ────────────────────────────────────────────────────────
+# ── 3. Verify end-to-end ──────────────────────────────────────────────────────
 
 def main():
-    patch = BitFlipStrip(distance=5)
-    print(f"BitFlipStrip d=5: {patch.num_qubits} qubits, "
-          f"{len(patch.stabilizers)} stabilizers, "
-          f"{patch.num_logicals} logical(s)")
+    D = 5
 
+    # Build code
+    patch = BitFlipStrip(distance=D)
+    print(f"BitFlipStrip d={D}: {patch.num_qubits} qubits, "
+          f"{len(patch.stabilizers)} Z-stabilizers, {patch.num_logicals} logical")
+
+    # Register in system
     system = QECSystem()
-    system.add_patch(patch, name='strip')
+    system.add_patch(patch, name="strip")
 
-    noise = NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3)
-    exp = MemoryExperiment(
-        qec_system=system,
-        extraction_block_class=BitFlipStripExtractionBlock,
-        rounds=5,
-        noise_params=noise,
-        noise_model='circuit_level',
-        basis='Z',
+    # Build circuit directly (not via MemoryExperiment)
+    tracker = SyndromeTracker(system.num_qubits, expected_num_logicals=system.num_logicals)
+    builder = CircuitBuilder(tracker, system)
+    se = BitFlipStripExtractionBlock(system)
+
+    builder.write_coordinates()
+    builder.initialize({q: "Z" for q in system.data_indices}, n=system.num_qubits)
+    builder.apply_syndrome_extraction(se.circuit, rounds=D)
+    builder.apply_data_readout({q: "Z" for q in system.data_indices})
+
+    # Noiseless sanity check — MUST pass before adding noise
+    dets, obs = builder.circuit.compile_detector_sampler().sample(100, separate_observables=True)
+    assert not dets.any(), "Noiseless circuit fires detectors — stabilizer or SE bug"
+    assert not obs.any(),  "Noiseless circuit flips observable — logical operator bug"
+    print(f"Noiseless check: PASS ({builder.circuit.num_detectors} detectors, "
+          f"{builder.circuit.num_observables} observable)")
+
+    # Add noise and simulate
+    noisy = builder.build_noisy_circuit(
+        NoiseConfig(p_2q=1e-3, p_meas=1e-3),
+        noise_model="circuit_level",
     )
-    circuit = exp.build()
-    print(f"Memory circuit: {circuit.num_qubits} qubits, "
-          f"{circuit.num_detectors} detectors, "
-          f"{circuit.num_observables} observable(s)")
+    stats = SimulationPipeline(
+        decoder_config=DecoderConfig("pymatching"),
+        max_errors=100, print_progress=False,
+    ).run(noisy)
+    print(f"LER = {stats.logical_error_rate:.3e} (p=1e-3, d={D})")
 
-    # Noiseless sanity check
-    noiseless = exp.builder.circuit
-    sampler = noiseless.compile_detector_sampler()
-    det_events, _ = sampler.sample(shots=20, separate_observables=True)
-    assert det_events.sum() == 0, "Unexpected detection events"
-    print("Noiseless check passed: 0 detection events over 20 shots")
-    print("\nTo add this code to the library, move the two classes into:")
-    print("  lightstim/qec_code/bit_flip_strip/code_patch.py")
-    print("  lightstim/qec_code/bit_flip_strip/SE_block.py")
+    print("\nTo add to the library:")
+    print("  lightstim/qec_code/bit_flip_strip/code_patch.py  ← BitFlipStrip")
+    print("  lightstim/qec_code/bit_flip_strip/SE_block.py    ← BitFlipStripExtractionBlock")
+    print("  lightstim/qec_code/bit_flip_strip/__init__.py    ← export both classes")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

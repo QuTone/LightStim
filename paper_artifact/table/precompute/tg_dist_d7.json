@@ -1,0 +1,10 @@
+{
+  "label": "TG Distill.",
+  "d": 7,
+  "compile_ms": 2459802.7,
+  "timeout": false,
+  "num_qubits": 2535,
+  "num_detectors": 13818,
+  "num_observables": 4,
+  "annotation_loc": 13822
+}

@@ -1,74 +1,86 @@
 """
-Configure and compare different noise models on a memory experiment.
+Noise model comparison — template script.
 
-LightStim supports three built-in noise model strategies:
-  circuit_level    — depolarizing noise after every gate + measurement flip
-  phenomenological — only measurement errors + data errors between rounds
-  code_capacity    — data errors only (no gate/measurement errors), ideal model
+Compares all four built-in noise strategies on the same circuit,
+plus the XZ-biased model for hardware with asymmetric error rates.
 
-NoiseConfig is a dataclass. Standard fields (p_1q, p_2q, p_meas, p_reset, p_idle)
-cover most use cases. Unusual rates (e.g. biased noise) go in custom_params.
+Run from repo root:
+    venv/bin/python skills/custom-noise/scripts/template.py
 """
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../..'))
+import sys
+sys.path.insert(0, ".")
 
+from lightstim.ir.qec_system import QECSystem
+from lightstim.ir.tracker import SyndromeTracker
+from lightstim.ir.builder import CircuitBuilder
 from lightstim.qec_code.surface_code.rotated import (
     RotatedSurfaceCode,
     RotatedSurfaceCodeExtractionBlock,
 )
-from lightstim.ir.qec_system import QECSystem
 from lightstim.noise.config import NoiseConfig
-from lightstim.protocols.memory import MemoryExperiment
+from lightstim.noise.injector import NoiseInjector
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 
+D = 3
+ROUNDS = D
+P = 1e-2
 
-def build(noise_model: str, noise: NoiseConfig):
-    patch = RotatedSurfaceCode(distance=3)
-    system = QECSystem()
-    system.add_patch(patch, name='main')
-    exp = MemoryExperiment(
-        qec_system=system,
-        extraction_block_class=RotatedSurfaceCodeExtractionBlock,
-        rounds=3,
-        noise_params=noise,
-        noise_model=noise_model,
-        basis='Z',
-    )
-    return exp.build()
+# ── Build noiseless circuit once ─────────────────────────────────────────────
+system = QECSystem()
+system.add_patch(RotatedSurfaceCode(distance=D), name="main")
+tracker = SyndromeTracker(system.num_qubits, expected_num_logicals=system.num_logicals)
+builder = CircuitBuilder(tracker, system)
+se = RotatedSurfaceCodeExtractionBlock(system)
 
+builder.write_coordinates()
+builder.initialize({q: "Z" for q in system.data_indices}, n=system.num_qubits)
+builder.apply_syndrome_extraction(se.circuit, rounds=ROUNDS)
+builder.apply_data_readout({q: "Z" for q in system.data_indices})
 
-def main():
-    p = 1e-2
-    pipeline = SimulationPipeline(
-        decoder_config=DecoderConfig(name='pymatching'),
-        max_errors=100,
-        print_progress=False,
-    )
+# Noiseless sanity check
+dets, obs = builder.circuit.compile_detector_sampler().sample(20, separate_observables=True)
+assert not dets.any() and not obs.any(), "Build bug: noiseless circuit has events"
 
-    configs = [
-        ('circuit_level',    NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p, p_idle=p)),
-        ('phenomenological', NoiseConfig(p_meas=p, p_idle=p)),
-        ('code_capacity',    NoiseConfig(p_idle=p)),
-    ]
+# ── Compare noise models ──────────────────────────────────────────────────────
+pipeline = SimulationPipeline(
+    decoder_config=DecoderConfig("pymatching"),
+    max_errors=100,
+    print_progress=False,
+)
 
-    print(f"{'model':>20}  {'LER':>10}  {'shots':>8}")
-    print("-" * 44)
-    for model_name, noise_cfg in configs:
-        circuit = build(model_name, noise_cfg)
-        stats = pipeline.run(circuit, json_metadata={'model': model_name})
-        print(f"{model_name:>20}  {stats.logical_error_rate:>10.3e}  "
-              f"{stats.post_selected_shots:>8}")
+configs = [
+    # (strategy, NoiseConfig)  — only populate relevant fields per strategy
+    ("circuit_level",    NoiseConfig(p_1q=P, p_2q=P, p_meas=P, p_reset=P)),
+    ("phenomenological", NoiseConfig(p_idle=P, p_meas=P)),
+    ("code_capacity",    NoiseConfig(p_idle=P)),
+]
 
-    # Custom params example: asymmetric T1/T2 noise
-    custom_noise = NoiseConfig(
-        p_2q=p,
-        p_meas=p,
-        custom_params={'p_z': p * 10, 'p_x': p * 0.1},  # Z-biased idle noise
-    )
-    print(f"\nCustom params: p_z={custom_noise.custom_params['p_z']:.0e}, "
-          f"p_x={custom_noise.custom_params['p_x']:.0e}")
-    print("  (use noise.get('p_z') in a custom NoiseInjector rule to apply these)")
+print(f"d={D}, p={P:.0e}")
+print(f"{'strategy':>20}  {'LER':>10}  {'shots':>8}")
+print("-" * 44)
 
+for model, noise in configs:
+    noisy = builder.build_noisy_circuit(noise, noise_model=model)
+    stats = pipeline.run(noisy)
+    print(f"{model:>20}  {stats.logical_error_rate:>10.3e}  {stats.post_selected_shots:>8}")
 
-if __name__ == '__main__':
-    main()
+# ── XZ-biased noise (neutral atom / trapped ion) ──────────────────────────────
+print("\nXZ-biased (eta=0.01, strongly Z-biased):")
+biased_noise = NoiseInjector.compute_XZ_biased_params(
+    p_1q=P, p_2q=P, p_meas=P, p_reset=P,
+    eta=0.01,  # p_X / p_Z = 0.01: phase flips dominate
+)
+print(f"  p_1q_z = {biased_noise.custom_params.get('p_1q_z', 0):.2e}, "
+      f"p_1q_x = {biased_noise.custom_params.get('p_1q_x', 0):.2e}")
+noisy_biased = builder.build_noisy_circuit(biased_noise, noise_model="XZ_biased")
+stats_biased = pipeline.run(noisy_biased)
+print(f"  LER = {stats_biased.logical_error_rate:.3e}")
+
+# ── Noiseless tag: suppress noise on specific phases ──────────────────────────
+# Example: encoding (unitary block) is noiseless, SE rounds are noisy.
+# builder.apply_unitary_block(encoding_circuit, noiseless=True)
+# builder.apply_syndrome_extraction(se.circuit, rounds=ROUNDS)  # noisy
+# builder.apply_syndrome_extraction(se.circuit, rounds=1, noiseless=True)  # suppress
+print("\nNote: pass noiseless=True to initialize()/apply_syndrome_extraction()/")
+print("apply_unitary_block() to suppress noise on specific circuit phases.")
+print("The noise injector skips any instruction tagged 'noiseless'.")

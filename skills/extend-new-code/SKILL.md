@@ -13,58 +13,182 @@ user-invocable: true
 
 Every LightStim code requires two classes:
 
-1. **`QECPatch` subclass** — defines geometry (qubit positions) and physics
-   (stabilizers + logicals). Lives in `lightstim/qec_code/<your-code>/code_patch.py`.
+1. **`QECPatch` subclass** — geometry (qubit positions) + physics (stabilizers + logicals)
+2. **Extraction block** — builds one noiseless SE round as a `stim.Circuit`
 
-2. **Extraction block** — generates one noiseless SE round as a `stim.Circuit`.
-   Lives in `lightstim/qec_code/<your-code>/SE_block.py`.
+## Part 1: `QECPatch` subclass
 
-## How to help the user
-
-1. Ask: what is the code structure (topology, stabilizer types, distance)?
-2. Read `scripts/template.py` — it implements a complete minimal example
-   (BitFlipStrip, a repetition-code variant) from scratch.
-3. Walk through the three build phases from the template:
-   - **Phase 1**: register qubits with `self.add_qubit(x, y, role)`
-   - **Phase 2**: register stabilizers with `self.create_stim_stabilizer(target_dict, syn_coord, type)`
-   - **Phase 3**: register logicals with `self.create_stim_logical(target_dict, op_type)` + set `self.num_logicals`
-4. For the SE block: Reset syndrome qubits → TICK(SE_start) → CX/CZ layers →
-   TICK between each layer → Measure syndrome qubits.
-5. After writing both classes, verify with a noiseless memory experiment
-   (0 detection events = correct build).
-
-## QECPatch API
+### The three build phases
 
 ```python
-# Register a qubit at (x, y) with role 'data', 'syndrome_z', or 'syndrome_x'
-self.add_qubit(x, y, role='data')
+from lightstim.ir.qec_patch import QECPatch
 
-# Register a stabilizer: target_dict maps (x,y) coords → Pauli ('X','Z','Y')
-# syn_coord is the syndrome qubit coord; type is 'X' or 'Z'
-self.create_stim_stabilizer({'target_coord': 'Z', ...}, syn_coord=(sx, sy), type='Z')
+class MyCode(QECPatch):
+    def _process_params(self):
+        self.distance = self.params['distance']  # validate params here
 
-# Register a logical operator: op_type is 'X' or 'Z'
-self.create_stim_logical({'data_coord': 'Z', ...}, op_type='Z')
-self.num_logicals = 1
+    def build(self):
+        d = self.distance
+
+        # Phase 1: geometry — register every qubit at its (x, y) coordinate
+        self.add_qubit(x, y, role='data')         # data qubit
+        self.add_qubit(x, y, role='syndrome_z')   # Z-ancilla
+        self.add_qubit(x, y, role='syndrome_x')   # X-ancilla
+
+        # Phase 2: physics — one stabilizer per ancilla
+        # target_dict: {(x, y): 'X'|'Z'|'Y'} for each data qubit in the stabilizer support
+        self.create_stim_stabilizer(
+            target_dict={(x1, y1): 'Z', (x2, y2): 'Z'},
+            syn_coord=(sx, sy),   # coordinate of the ancilla qubit
+            type='Z',             # 'X' or 'Z' (or 'Mixed' for YY etc.)
+        )
+
+        # Phase 3: logical operators (must register both X and Z representatives)
+        self.create_stim_logical({(x, y): 'Z', ...}, op_type='Z')
+        self.create_stim_logical({(x, y): 'X', ...}, op_type='X')
+        self.num_logicals = 1     # k = number of encoded logical qubits
 ```
 
-## Key invariants
+### Key invariants
 
-- All coordinates are `(float, float)` — use integers for simplicity
-- Syndrome qubits must be in `self.syndrome_coords` (set by `add_qubit` with role `syndrome_*`)
-- The SE block reads `system.active_stabilizers_z` / `system.active_stabilizers_x`
-  and `system.index_map[(x,y)]` for global qubit indices
+- `add_qubit` role must be one of `'data'`, `'syndrome_x'`, `'syndrome_z'`.
+  Both `syndrome_x` and `syndrome_z` populate `syndrome_indices_x` / `syndrome_indices_z`
+  — the SE block uses these to emit Hadamard gates and distinguish CX vs CZ layers.
+- `create_stim_stabilizer` looks up `syn_coord` via `self.index_map` — register
+  the ancilla with `add_qubit` BEFORE calling it.
+- `create_stim_logical` only takes data qubit coordinates — syndrome coords are ignored.
+- You MUST set `self.num_logicals` in `build()`.
+
+### CSS vs non-CSS
+
+For CSS codes (most common: SC, BB, toric), stabilizers are either all-X or all-Z.
+Use `type='X'` or `type='Z'` respectively. The SE block will separate them.
+
+For non-CSS codes with Y stabilizers, use `type='Mixed'` and handle gate decomposition
+in the SE block manually.
+
+---
+
+## Part 2: Syndrome Extraction block
+
+The SE block generates exactly **one noiseless SE round** as a `stim.Circuit`.
+Noise is injected later by `builder.build_noisy_circuit()` — never put noise here.
+
+### Structure
+
+```python
+import stim
+
+class MyCodeExtractionBlock:
+    def __init__(self, system):
+        self.system = system
+        self.circuit = stim.Circuit()
+        self._build()
+
+    def _build(self):
+        c = self.circuit
+
+        # 1. Reset all active syndrome qubits (both X and Z ancillas)
+        syn_z = sorted(self.system.active_syndrome_indices_z)
+        syn_x = sorted(self.system.active_syndrome_indices_x)
+        c.append("R",  syn_z)
+        c.append("RX", syn_x)
+
+        # 2. TICK with SE_start tag — marks the idle window for noise injection
+        c.append("TICK", tag="SE_start")
+
+        # 3. Gate layers — one TICK between each layer
+        # For Z-stabilizers: CX(data → ancilla)  [ancilla is "target" of CX]
+        # For X-stabilizers: CX(ancilla → data)  [ancilla is "control" of CX]
+        #
+        # Ordering matters for hook errors — follow the code's canonical gate schedule.
+        # Read system.active_stabilizers_z / _x and system.index_map to get global indices.
+        for stab in self.system.active_stabilizers_z:
+            for data_idx in stab['data_indices']:
+                c.append("CX", [data_idx, stab['syn_idx']])
+        c.append("TICK")
+
+        for stab in self.system.active_stabilizers_x:
+            for data_idx in stab['data_indices']:
+                c.append("CX", [stab['syn_idx'], data_idx])
+        c.append("TICK")
+
+        # 4. Basis change for X-ancillas: H before measure
+        if syn_x:
+            c.append("H", syn_x)
+            c.append("TICK")
+
+        # 5. Measure — MUST be the LAST instruction (CircuitBuilder analyzes it)
+        #    Z-ancillas measured in Z basis (M), X-ancillas in X basis (MX)
+        if syn_z: c.append("M",  syn_z)
+        if syn_x: c.append("MX", syn_x)
+```
+
+### Critical constraints on the SE block
+
+1. **The last instruction must be `M` or `MX`** on syndrome qubits.
+   `CircuitBuilder._get_back_propagated_pauli()` reads this last instruction to determine
+   the measurement basis and which qubits were measured.
+
+2. **Gate ordering within one SE round affects hook errors.** For an unrotated SC, the
+   canonical order is: North → East → West → South neighbors. For your code, pick an
+   order and be consistent across all rounds.
+
+3. **Use `system.active_stabilizers_z` / `_x` not `system.stabilizers`.**
+   When couplers are active, `active_stabilizers` includes coupler stabilizers.
+   The SE block must work correctly in both coupled and uncoupled regimes.
+
+4. **Use global indices from `system.index_map[(x, y)]` or `stab['syn_idx']`.**
+   Never use local patch indices in the SE block circuit.
+
+5. **No noise in the SE block.** The noise injector handles it via the `SE_start` tag.
+
+---
 
 ## File layout
 
 ```
 lightstim/qec_code/<your-code>/
-├── __init__.py
-├── code_patch.py   ← QECPatch subclass
-└── SE_block.py     ← extraction block
+├── __init__.py        # export patch class + extraction block
+├── code_patch.py      # QECPatch subclass
+└── SE_block.py        # extraction block class
+```
+
+---
+
+## Verification sequence
+
+After writing both classes, verify in this order:
+
+```python
+# 1. Patch builds without errors
+patch = MyCode(distance=3)
+print(patch.num_qubits, len(patch.stabilizers), patch.num_logicals)
+
+# 2. System registration
+system = QECSystem()
+system.add_patch(patch, name="p")
+
+# 3. SE block builds without errors
+se = MyCodeExtractionBlock(system)
+
+# 4. Full noiseless circuit (use builder directly)
+from lightstim.ir.tracker import SyndromeTracker
+from lightstim.ir.builder import CircuitBuilder
+tracker = SyndromeTracker(system.num_qubits, expected_num_logicals=system.num_logicals)
+builder = CircuitBuilder(tracker, system)
+builder.write_coordinates()
+builder.initialize({q: "Z" for q in system.data_indices}, n=system.num_qubits)
+builder.apply_syndrome_extraction(se.circuit, rounds=3)
+builder.apply_data_readout({q: "Z" for q in system.data_indices})
+
+# 5. Must see 0 detection events and 0 observable flips
+dets, obs = builder.circuit.compile_detector_sampler().sample(100, separate_observables=True)
+assert not dets.any(),  "Noiseless circuit fires detectors — stabilizer or SE bug"
+assert not obs.any(),   "Noiseless circuit flips observable — logical operator bug"
 ```
 
 ## Reference script
 
-Read `scripts/template.py` for the complete BitFlipStrip example, which you can
-run directly to verify the pattern works end-to-end.
+Read `scripts/template.py` for a complete `BitFlipStrip` repetition-code example
+that you can run directly to verify the pattern works end-to-end.
