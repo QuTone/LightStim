@@ -32,6 +32,10 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | BB [[144,12,12]] | `bb_144_12_12` | no (d=12 fixed) |
 | BB [[288,12,18]] | `bb_288_12_18` | no (d=18 fixed) |
 
+> **Not yet supported**: 4D geometric codes (`FourDGeoCode`) use an L-matrix parameter
+> interface incompatible with the `--distances` flag. See `notebooks/Memory/memory_4D_hadamard.ipynb`
+> for an interactive example, and `lightstim/qec_code/four_d_geo_code/configs.py` for named configs.
+
 ## Supported Decoders
 
 | `--decoder` | Backend | Best for |
@@ -129,12 +133,3 @@ Default output path: `benchmarks/memory/results/<codes>_<decoder>.csv`
 The runner automatically skips tasks already present in the output CSV.
 Safe to interrupt with Ctrl+C and resume — just re-run the same command.
 
-## Running Tests
-
-```bash
-# Fast unit + integration tests (no GPU required, ~2 min)
-venv/bin/python -m pytest tests/test_run_memory.py -v
-
-# Skip slow integration tests
-venv/bin/python -m pytest tests/test_run_memory.py -v -k "not cli"
-```
