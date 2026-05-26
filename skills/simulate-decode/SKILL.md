@@ -132,7 +132,7 @@ for d in [3, 5, 7]:
         })
 ```
 
-## Reference script
+## Working examples
 
-Read `scripts/template.py` for a complete threshold sweep with progress tracking
-and CSV output.
+- `benchmarks/memory/run_memory.py` — full threshold sweep with checkpointing, argparse, CSV output
+- `benchmarks/logical_circuits/run_logical_circuits.py` — multi-experiment runner pattern

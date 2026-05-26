@@ -259,8 +259,7 @@ builder.deactivate_coupler("zz")
 builder.apply_syndrome_extraction(se_original.circuit, rounds=rounds_after)
 ```
 
-## Reference script
+## Working examples
 
-Read `scripts/template.py` for a complete minimal `LogicalCouplerProtocol` subclass
-that implements a custom one-dimensional ZZ coupler from scratch, with geometry
-analysis, qubit registration, stabilizer construction, and circuit integration.
+- `lightstim/qec_code/surface_code/unrotated/two_patch_coupler.py` — `UnrotatedTwoPatchCoupler`: canonical two-patch ZZ/XX coupler implementation
+- `lightstim/qec_code/surface_code/unrotated/multi_patch_coupler.py` — `UnrotatedMultiPatchCoupler`: N-patch bus coupler

@@ -212,7 +212,8 @@ assert not dets.any(),  f"Noiseless circuit has detection events — build bug!"
 assert not obs.any(),   f"Noiseless circuit has observable flips — build bug!"
 ```
 
-## Reference script
+## Working examples
 
-Read `scripts/template.py` for a complete custom two-patch ZZ measurement
-protocol built from scratch using the IR layer directly.
+- `lightstim/protocols/two_patch_ls.py` — two-patch ZZ/XX lattice surgery, full pipeline
+- `lightstim/protocols/cnot_ls.py` — three-patch CNOT via lattice surgery
+- `notebooks/LogicalOps/multi_patch_LS.ipynb` — N-patch Z-product measurement with `build_zz_circuit()` helper

@@ -93,7 +93,8 @@ builder.apply_unitary_block(gate, noiseless=True)           # same
 The noise injector skips all instructions tagged `'noiseless'`.
 This is how state-injection protocols avoid noising the unencoded region.
 
-## Reference script
+## Working examples
 
-Read `scripts/template.py` for a side-by-side comparison of all four strategies
-at the same physical error rate, plus the XZ-biased example.
+- `lightstim/protocols/memory.py` — standard circuit-level noise via `build_noisy_circuit()`
+- `lightstim/protocols/state_injection.py` — selective noise (injection region excluded via tags)
+- `lightstim/noise/injector.py` — `NoiseInjector` factory methods for all four built-in models

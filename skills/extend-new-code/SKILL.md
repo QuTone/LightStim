@@ -188,7 +188,7 @@ assert not dets.any(),  "Noiseless circuit fires detectors — stabilizer or SE 
 assert not obs.any(),   "Noiseless circuit flips observable — logical operator bug"
 ```
 
-## Reference script
+## Working examples
 
-Read `scripts/template.py` for a complete `BitFlipStrip` repetition-code example
-that you can run directly to verify the pattern works end-to-end.
+- `lightstim/qec_code/repetition/repetition.py` + `SE_block.py` — simplest complete QECPatch implementation to read first
+- `lightstim/qec_code/surface_code/rotated/` — full-featured code with rectangular distance support

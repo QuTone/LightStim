@@ -6,8 +6,8 @@ or design task with the LightStim API.
 ## Structure
 
 Each skill is a subdirectory with:
-- `SKILL.md` — task-oriented instructions Claude loads at the start of a task
-- `scripts/template.py` — complete runnable Python example Claude adapts for the user
+- `SKILL.md` — task-oriented instructions; ends with a "Working examples" section
+  pointing to real, tested code in `lightstim/protocols/`, `benchmarks/`, or `notebooks/`
 
 ```
 skills/
@@ -41,17 +41,6 @@ See also `docs/api/` for formal API reference:
 The skills in this directory are pre-installed for this project via
 `.claude/plugins/lightstim/`. They are active whenever you open this repo
 in Claude Code — no manual installation needed.
-
-## Running the template scripts directly
-
-Each `scripts/template.py` is a standalone runnable script (from repo root):
-
-```bash
-venv/bin/python skills/builder-tracker-api/scripts/template.py
-venv/bin/python skills/logical-coupler-design/scripts/template.py
-venv/bin/python skills/simulate-decode/scripts/template.py
-venv/bin/python skills/extend-new-code/scripts/template.py
-```
 
 ---
 
