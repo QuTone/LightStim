@@ -15,7 +15,7 @@
 ## 1. Introduction
 
 **LightStim** is a modular Quantum Error Correction (QEC) simulator built on top of
-[Stim](https://github.com/quantumlib/Stim), Google's fast stabilizer circuit simulator.
+[Stim](https://github.com/quantumlib/Stim), Google's fast stabilizer circuit simulator developed by Craig Gidney.
 LightStim provides a high-level framework for constructing, simulating, and analyzing QEC
 experiments while Stim handles the low-level circuit simulation.
 
@@ -31,16 +31,12 @@ outcomes at millions of shots per second and produce detector error models for d
 - **Multi-patch system management** with automatic local-to-global index mapping and coordinate transforms
 - **Pluggable QEC codes**: Rotated Surface Code, Unrotated Surface Code, Toric Code, Repetition Code, BB codes, PQRM code
 - **Protocol library**: Memory, Transversal CNOT, Lattice Surgery, GHZ, State Injection, Distillation, CrossLS
-- **Standardized noise injection**: Code-capacity, phenomenological, circuit-level, and biased noise models
+- **Standardized noise injection**: Code-capacity, phenomenological, circuit-level, biased noise models, and configurable noise models
 - **Unified decoder backend**: PyMatching, BP+OSD (CPU/GPU), and MWPF decoders
 
 ### Architecture
 
-```
-QECPatch → QECSystem → CircuitBuilder + SyndromeTracker → stim.Circuit
-                                   ↓
-                           NoiseInjector → SimulationPipeline → LER
-```
+![LightStim workflow](assets/workflow.png)
 
 LightStim separates physics (integer qubit indices, Pauli stabilizer strings) from geometry
 (float coordinates for visualization). `QECPatch.qubit_coords` is the single source of truth
