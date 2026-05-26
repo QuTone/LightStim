@@ -134,7 +134,7 @@ All codes are in `lightstim/qec_code/`.
 
 ## Try it with your AI coding agent
 
-No tutorial needed. If you use Claude Code, Cursor, or any AI coding assistant,
+No tutorial needed. If you use Claude Code, Codex, Cursor, or any AI coding assistant,
 paste the prompt below and let it build your first experiment:
 
 > Read `skills/SKILL.md` in this repo first. Then build an unrotated surface code
