@@ -1,35 +1,38 @@
 # LightStim
 
-LightStim is a modular Quantum Error Correction (QEC) framework built on top of [Stim](https://github.com/quantumlib/Stim). It focuses on building fault-tolerant circuits with automatic detector generation, running simulation/decoding pipelines, and comparing logical error rates across codes and protocols.
+LightStim is a modular Quantum Error Correction (QEC) framework built on [Stim](https://github.com/quantumlib/Stim). It provides high-level abstractions for constructing fault-tolerant circuits with **automatic detector generation**, running simulation and decoding pipelines, and comparing logical error rates across codes and protocols.
 
 ## What this repo is for
 
 - Build QEC experiments from reusable abstractions (`QECPatch`, `QECSystem`, `CircuitBuilder`, `SyndromeTracker`)
-- Support multi-patch workflows (transversal gates, lattice surgery)
+- Support multi-patch workflows (transversal gates, lattice surgery, state injection)
 - Inject standardized noise models (`code_capacity`, `phenomenological`, `circuit_level`, `XZ_biased`)
 - Decode with a unified backend (PyMatching, BP+OSD CPU/GPU, MWPF)
-- Analyze and visualize simulation results
+- Analyze and visualize logical error rates
 
 ## Repository layout
 
 ```text
 LightStim/
-├── docs/                       # Architecture and API documentation
-│   ├── user_guide.md
-│   └── simulation_pipeline.md
 ├── lightstim/                  # Main library package
 │   ├── ir/                     # Core abstractions (QECPatch, QECSystem, CircuitBuilder, SyndromeTracker)
-│   ├── qec_code/               # Code implementations (surface, BB, color, repetition, ...)
+│   ├── qec_code/               # Code implementations (surface, toric, BB, color, PQRM, repetition)
 │   ├── noise/                  # Noise config and injectors
 │   ├── protocols/              # Experiment orchestration (memory, CNOT, lattice surgery, ...)
 │   ├── simulation/             # Decoder backend and simulation pipeline
-│   │   └── decoder_backend/
-│   ├── plot/                   # Plotting helpers
-│   └── utils/                  # Utilities
-├── skills/                     # Claude Code skill definitions (7 skills)
-├── notebooks/                  # Jupyter notebooks
-├── tests/
-├── benchmarks/
+│   └── plot/                   # Plotting helpers
+├── docs/
+│   ├── api/                    # API reference (ir.md, simulation.md)
+│   └── user_guide.md
+├── skills/                     # Claude Code skill definitions
+│   ├── builder-tracker-api/    # Direct CircuitBuilder + SyndromeTracker usage
+│   ├── logical-coupler-design/ # Design a new LogicalCouplerProtocol
+│   ├── simulate-decode/        # Run SimulationPipeline and get LER
+│   ├── custom-noise/           # Configure noise models
+│   ├── extend-new-code/        # Add a new QEC code
+│   └── gotchas/                # Known pitfalls and debugging patterns
+├── notebooks/                  # Jupyter notebooks by topic
+├── benchmarks/                 # Simulation scripts and paper artifacts
 ├── requirements.txt
 └── Dockerfile
 ```
@@ -47,104 +50,95 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+> **GPU decoder** (`nv-qldpc-decoder`) requires NVIDIA GPU + CUDA 12.x. `cudaq-qec` is included in `requirements.txt` but will fail to install on non-CUDA systems — comment it out if not needed.
+
 ### 2) Optional: Jupyter kernel
 
 ```bash
-python -m ipykernel install --user --name=qec-simulator --display-name="QEC Simulator"
+python -m ipykernel install --user --name=lightstim --display-name="LightStim"
 ```
 
-### 3) Run skills (self-contained examples)
+### 3) Run skill templates (self-contained examples)
 
 ```bash
-python skills/memory-experiment/scripts/template.py
-python skills/simulate-decode/scripts/template.py
+venv/bin/python skills/simulate-decode/scripts/template.py
+venv/bin/python skills/extend-new-code/scripts/template.py
+venv/bin/python skills/builder-tracker-api/scripts/template.py
 ```
 
-## Minimal usage examples
+## Usage examples
 
-### Memory experiment
+### Build and simulate a memory experiment
 
 ```python
-from lightstim.protocols.memory import MemoryExperiment
-from lightstim.qec_code.surface_code.rotated import (
-    RotatedSurfaceCode,
-    RotatedSurfaceCodeExtractionBlock,
-)
 from lightstim.ir.qec_system import QECSystem
-from lightstim.noise.config import NoiseConfig
-
-system = QECSystem()
-system.add_patch(RotatedSurfaceCode(distance=5), name='main')
-
-experiment = MemoryExperiment(
-    qec_system=system,
-    extraction_block_class=RotatedSurfaceCodeExtractionBlock,
-    rounds=5,
-    noise_params=NoiseConfig(p_1q=0.001, p_2q=0.001, p_meas=0.001, p_reset=0.001, p_idle=0.001),
-    noise_model='circuit_level',
-    basis='Z',
+from lightstim.ir.tracker import SyndromeTracker
+from lightstim.ir.builder import CircuitBuilder
+from lightstim.qec_code.surface_code.rotated import (
+    RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock,
 )
-circuit = experiment.build()
-```
-
-### Simulation and decoding
-
-```python
+from lightstim.noise.config import NoiseConfig
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 
+# Build circuit
+system = QECSystem()
+system.add_patch(RotatedSurfaceCode(distance=5), name='main')
+tracker = SyndromeTracker(system.num_qubits, expected_num_logicals=system.num_logicals)
+builder = CircuitBuilder(tracker, system)
+se = RotatedSurfaceCodeExtractionBlock(system)
+
+builder.write_coordinates()
+builder.initialize({q: 'Z' for q in system.data_indices}, n=system.num_qubits)
+builder.apply_syndrome_extraction(se.circuit, rounds=5)
+builder.apply_data_readout({q: 'Z' for q in system.data_indices})
+
+noisy = builder.build_noisy_circuit(
+    NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3, p_reset=1e-3),
+    noise_model='circuit_level',
+)
+
+# Simulate and decode
 pipeline = SimulationPipeline(
     decoder_config=DecoderConfig('pymatching'),
     max_shots=100_000,
-    max_errors=100,
+    max_errors=200,
     num_workers=4,
-    print_progress=True,
 )
-stats = pipeline.run(circuit, json_metadata={'d': 5, 'p': 0.001})
+stats = pipeline.run(noisy)
 print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 ```
 
-Decoder options:
-- PyMatching: `DecoderConfig('pymatching')`
-- BP+OSD CPU: `DecoderConfig('bposd', backend='cpu')` — requires `stimbposd`
-- BP+OSD GPU: `DecoderConfig('bposd', backend='gpu')` — requires `cudaq_qec` + NVIDIA GPU
-- MWPF: `DecoderConfig('mwpf')` — requires `mwpf`
+### Decoder options
+
+| Decoder | Config | Notes |
+|---|---|---|
+| PyMatching (MWPM) | `DecoderConfig('pymatching')` | Default. Surface / LS circuits. |
+| BP+OSD CPU | `DecoderConfig('bposd')` | LDPC codes, hyperedge circuits. |
+| MWPF | `DecoderConfig('mwpf')` | Hyperedges (CrossLS, PQRM, color code). |
+| GPU BP+OSD | `DecoderConfig('nv-qldpc-decoder')` | NVIDIA GPU. Large d or high p. |
 
 ### Available QEC codes
 
-| Code | Patch class | Extraction block |
+| Code | Patch class | Notes |
 |---|---|---|
-| Rotated surface | `RotatedSurfaceCode` | `RotatedSurfaceCodeExtractionBlock` |
-| Unrotated surface | `UnrotatedSurfaceCode` | `UnrotatedSurfaceCodeExtractionBlock` |
-| Toric | `ToricCode` | `ToricCodeExtractionBlock` |
-| Color | `ColorCode` | `ColorCodeExtractionBlock` |
-| Bivariate bicycle (BB) | `BBCode` | `BBCodeExtractionBlock` |
-| Repetition | `RepetitionCode` | `RepetitionCodeExtractionBlock` |
+| Rotated surface | `RotatedSurfaceCode` | Primary code, most complete |
+| Unrotated surface | `UnrotatedSurfaceCode` | Lattice surgery coupler available |
+| Toric | `ToricCode` | Periodic boundary conditions |
+| Color (6-6-6) | `ColorCode` | Fold-transversal H/S gates |
+| Bivariate bicycle | `BBCode` | [[144,12,12]] gross code etc. |
+| PQRM | `PQRMCode` | Transversal T gate; CrossLS protocol |
+| Repetition | `RepetitionCode` | Classical benchmark |
 
 All codes are in `lightstim/qec_code/`.
 
-### CircuitBuilder API
+## Documentation
 
-```python
-builder.initialize(init_dict, n=system.num_qubits)
-builder.apply_syndrome_extraction(circuit_chunk=se_block.circuit, rounds=d)
-builder.apply_data_readout(final_measurements=measurements)
-```
-
-## Testing
-
-```bash
-# Fast regression (~2 min, no GPU required)
-venv/bin/python -m pytest tests/ -v -k "not slow"
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add tests when contributing new features.
-
-## More documentation
-
-- Full user guide: `docs/user_guide.md`
-- Decoder backend details: `lightstim/simulation/README.md`
-- Simulation pipeline guide: `docs/simulation_pipeline.md`
+- `docs/api/ir.md` — `QECPatch`, `QECSystem`, `CircuitBuilder`, `SyndromeTracker`, `LogicalCouplerProtocol`
+- `docs/api/simulation.md` — `SimulationPipeline`, `DecoderConfig`, `SimulationStats`, MWPF configuration
+- `docs/user_guide.md` — comprehensive usage guide
+- `lightstim/simulation/README.md` — decoder backend architecture
+- `skills/` — task-oriented instructions for AI-assisted development
 
 ## License
 
-License is not specified yet in this repository.
+Apache License 2.0 — see [LICENSE](LICENSE).
