@@ -100,18 +100,20 @@ import sys, os
 sys.path.insert(0, ".")
 
 import numpy as np
+from lightstim.ir.qec_system import QECSystem
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.qec_code.surface_code.rotated import (
     RotatedSurfaceCode,
     RotatedSurfaceCodeExtractionBlock,
 )
 
-# 1. Create a distance-3 rotated surface code patch
-code = RotatedSurfaceCode(distance=3)
+# 1. Create a QECSystem with a distance-3 rotated surface code patch
+system = QECSystem()
+system.add_patch(RotatedSurfaceCode(distance=3), name="patch")
 
 # 2. Build a Z-memory experiment (3 rounds, no noise)
 experiment = MemoryExperiment(
-    qec_system=code,
+    qec_system=system,
     extraction_block_class=RotatedSurfaceCodeExtractionBlock,
     rounds=3,
     noise_params=None,   # noiseless
@@ -137,8 +139,10 @@ from lightstim.simulation.decoder_backend.pipeline import SimulationPipeline
 from lightstim.simulation.decoder_backend.config import DecoderConfig
 
 # Build a noisy circuit
+system = QECSystem()
+system.add_patch(RotatedSurfaceCode(distance=3), name="patch")
 experiment = MemoryExperiment(
-    qec_system=RotatedSurfaceCode(distance=3),
+    qec_system=system,
     extraction_block_class=RotatedSurfaceCodeExtractionBlock,
     rounds=3,
     noise_params=NoiseConfig(p_1q=0.001, p_2q=0.005, p_meas=0.001),

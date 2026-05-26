@@ -33,10 +33,11 @@ NOISE_MODEL = "circuit_level"
 # ── 1. Build system ───────────────────────────────────────────────────────────
 system = QECSystem()
 
-# Place two patches side by side (gap = 2 for unrotated d=3)
-# Unrotated SC d=3 spans x ∈ [0, 6], so offset second patch at x=8
+# ZZ interaction → patches stacked vertically (offset along y, same x-range).
+# XX interaction → patches side-by-side horizontally (offset along x, same y-range).
+# Unrotated SC d=3 spans y ∈ [0, 6], so offset second patch at y=8 for ZZ.
 p_ctrl = system.add_patch(UnrotatedSurfaceCode(distance=D), name="ctrl", offset=(0, 0))
-p_tgt  = system.add_patch(UnrotatedSurfaceCode(distance=D), name="tgt",  offset=(8, 0))
+p_tgt  = system.add_patch(UnrotatedSurfaceCode(distance=D), name="tgt",  offset=(0, 8))
 
 # Register a ZZ coupler between them (inactive at construction time)
 coupler_protocol = UnrotatedTwoPatchCoupler()
@@ -56,47 +57,37 @@ builder = CircuitBuilder(tracker, system)
 def make_se(system):
     return UnrotatedSurfaceCodeExtractionBlock(system)
 
-# ── 4. Circuit: stabilization → ZZ coupler → stabilization → readout ─────────
+# ── 4. Circuit: init → SE (no coupler) → activate → SE (with coupler) → readout
 builder.write_coordinates()
 
-# Phase A: initialize both patches in |0⟩ (Z basis)
-init_data = {q: "Z" for q in system.data_indices
-             if system.index_to_owner_map.get(q) in ("ctrl", "tgt")}
-builder.initialize(init_data, n=system.num_qubits)
+# Phase A: initialize both patches in |0⟩ (Z basis).
+# system.data_indices includes coupler data qubits even before activation,
+# so filter them out — they are initialized separately in Phase C.
+patch_data = {q: "Z" for q in system.data_indices
+              if system.index_to_owner_map.get(q) != "zz_coupler"}
+builder.initialize(patch_data, n=system.num_qubits)
 
-# Phase B: SE rounds (patches only — coupler inactive)
+# Phase B: SE rounds with patches only
 se = make_se(system)
 builder.apply_syndrome_extraction(se.circuit, rounds=ROUNDS)
 
-# Phase C: Activate ZZ coupler
-# This pauses the boundary Z-stabilizers of both patches and activates
-# the joint ZZ stabilizers spanning the corridor between them.
+# Phase C: Activate ZZ coupler.
+# Pauses boundary stabilizers of both patches; activates joint ZZ stabilizers
+# spanning the corridor between them.
 builder.activate_coupler("zz_coupler")
 cp = system.coupler_patches["zz_coupler"]
-cp_data = sorted(
-    system.local_to_global_map["zz_coupler"][q]
+cp_data = {
+    system.local_to_global_map["zz_coupler"][q]: "X"
     for q in cp.data_indices
-)
+}
+builder.initialize(cp_data, n=system.num_qubits)
 
-# Initialize coupler data qubits in X basis (for ZZ measurement ancilla corridor)
-builder.initialize({q: "X" for q in cp_data}, n=system.num_qubits)
-
-# Run SE with coupler active (joint stabilizers now in system.active_stabilizers)
+# Phase D: SE rounds with coupler active
 se_coupled = make_se(system)
-builder.apply_syndrome_extraction(se_coupled.circuit, rounds=1)
+builder.apply_syndrome_extraction(se_coupled.circuit, rounds=ROUNDS)
 
-# Measure coupler data qubits IMMEDIATELY (before deactivation — see gotchas 1-B)
-builder.apply_data_readout({q: "X" for q in cp_data})
-builder.deactivate_coupler("zz_coupler")
-
-# Phase D: SE rounds after coupler (patches only again)
-se_after = make_se(system)
-builder.apply_syndrome_extraction(se_after.circuit, rounds=ROUNDS)
-
-# Phase E: Final readout of both patches in Z basis
-patch_data = {q: "Z" for q in system.data_indices
-              if system.index_to_owner_map.get(q) in ("ctrl", "tgt")}
-builder.apply_data_readout(patch_data)
+# Phase E: Final readout — measure all data qubits (patches in Z, coupler in X)
+builder.apply_data_readout({**patch_data, **cp_data})
 
 # ── 5. Noiseless sanity check ─────────────────────────────────────────────────
 print("\nNoiseless check...")
