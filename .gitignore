@@ -72,6 +72,18 @@ processing/
 external/
 MagicCross/
 /scripts/
+/tests/
+/example_circuit/
+
+# Internal / draft files (not for public repo)
+/feedback.md
+/review.md
+/CONTRIBUTING.md
+/Reorg_plan.md
+/Extension_plan.md
+/extract_frontend_data.py
+*_plan.md
+*_Plan.md
 
 # Old eval/ directory (data migrated to benchmarks/*/results/)
 eval/
