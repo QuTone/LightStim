@@ -23,7 +23,7 @@ LightStim/
 │   └── plot/                   # Plotting helpers
 ├── docs/
 │   ├── api/                    # API reference (ir.md, simulation.md)
-│   └── user_guide.md
+│   └── getting_started.md
 ├── skills/                     # Claude Code skill definitions
 │   ├── builder-tracker-api/    # Direct CircuitBuilder + SyndromeTracker usage
 │   ├── logical-coupler-design/ # Design a new LogicalCouplerProtocol
@@ -135,7 +135,7 @@ All codes are in `lightstim/qec_code/`.
 
 - `docs/api/ir.md` — `QECPatch`, `QECSystem`, `CircuitBuilder`, `SyndromeTracker`, `LogicalCouplerProtocol`
 - `docs/api/simulation.md` — `SimulationPipeline`, `DecoderConfig`, `SimulationStats`, MWPF configuration
-- `docs/user_guide.md` — comprehensive usage guide
+- `docs/getting_started.md` — installation, quick start, and QEC concepts
 - `lightstim/simulation/README.md` — decoder backend architecture
 - `skills/` — task-oriented instructions for AI-assisted development
 

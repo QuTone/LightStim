@@ -120,4 +120,4 @@ The vision: **a physicist describes what they want to learn, and the system hand
 
 ## Getting Started
 
-See `docs/user_guide.md` for API reference and `notebooks/` for protocol demonstration notebooks.
+See `docs/getting_started.md` for installation and a QEC primer; `notebooks/` for protocol demonstration notebooks.
