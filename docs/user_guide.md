@@ -912,9 +912,9 @@ print(f"DEM has {dem.num_detectors} detectors, {dem.num_observables} observables
 
 ## 6. API Reference
 
-### 6.1 IR Module (`src/ir/`)
+### 6.1 IR Module (`lightstim/ir/`)
 
-#### QECPatch (`src/ir/qec_patch.py`)
+#### QECPatch (`lightstim/ir/qec_patch.py`)
 
 Abstract base class for all QEC codes.
 
@@ -964,7 +964,7 @@ class QECPatch(ABC):
 
 ---
 
-#### QECSystem (`src/ir/qec_system.py`)
+#### QECSystem (`lightstim/ir/qec_system.py`)
 
 Multi-patch manager with global coordinate space.
 
@@ -977,7 +977,7 @@ class QECSystem:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `add_patch()` | `(patch, name, offset=(0,0)) -> QECPatch` | Add a patch; returns global-index view |
+| `add_patch()` | `(patch, offset=(0,0), name=None, is_active=True) -> QECPatch` | Add a patch; returns global-index view |
 | `register_coupler()` | `(protocol, patch_names, name, **params)` | Register a lattice surgery coupler |
 | `register_tracker()` | `(tracker)` | Register a SyndromeTracker |
 | `register_builder()` | `(builder)` | Register a CircuitBuilder |
@@ -1005,7 +1005,7 @@ class QECSystem:
 
 ---
 
-#### SyndromeTracker (`src/ir/tracker.py`)
+#### SyndromeTracker (`lightstim/ir/tracker.py`)
 
 Pauli tableau-based automated detector generation.
 
@@ -1034,7 +1034,7 @@ class SyndromeTracker:
 
 ---
 
-#### CircuitBuilder (`src/ir/builder.py`)
+#### CircuitBuilder (`lightstim/ir/builder.py`)
 
 High-level circuit construction API.
 
@@ -1065,7 +1065,7 @@ class CircuitBuilder:
 
 ---
 
-#### QECExperiment (`src/ir/experiment.py`)
+#### QECExperiment (`lightstim/ir/experiment.py`)
 
 Abstract base class for experiments.
 
@@ -1094,7 +1094,7 @@ class QECExperiment(ABC):
 
 ---
 
-#### LogicalExecutor (`src/ir/logical_executor.py`)
+#### LogicalExecutor (`lightstim/ir/logical_executor.py`)
 
 Routes logical operations to code-family-specific operation sets.
 
@@ -1110,7 +1110,7 @@ class LogicalExecutor:
 
 ---
 
-#### LogicalOpSet / CSSLogicalOpSet (`src/ir/operation.py`)
+#### LogicalOpSet / CSSLogicalOpSet (`lightstim/ir/operation.py`)
 
 ```python
 class LogicalOpSet(ABC):
@@ -1130,7 +1130,7 @@ class CSSLogicalOpSet(LogicalOpSet):
 
 ---
 
-#### LogicalCouplerProtocol (`src/ir/coupler.py`)
+#### LogicalCouplerProtocol (`lightstim/ir/coupler.py`)
 
 Abstract factory for lattice surgery coupler patches.
 
@@ -1148,7 +1148,7 @@ class LogicalCouplerProtocol(ABC):
 
 ---
 
-#### PauliTableau (`src/ir/tableau.py`)
+#### PauliTableau (`lightstim/ir/tableau.py`)
 
 Binary matrix (M x 2N) Gottesman-Knill representation for stabilizer tracking.
 
@@ -1171,9 +1171,9 @@ class PauliTableau:
 
 ---
 
-### 6.2 QEC Code Module (`src/qec_code/`)
+### 6.2 QEC Code Module (`lightstim/qec_code/`)
 
-#### RotatedSurfaceCode (`src/qec_code/surface_code/rotated/code_patch.py`)
+#### RotatedSurfaceCode (`lightstim/qec_code/surface_code/rotated/code_patch.py`)
 
 ```python
 class RotatedSurfaceCode(QECPatch):
@@ -1188,7 +1188,7 @@ class RotatedSurfaceCode(QECPatch):
 
 ---
 
-#### UnrotatedSurfaceCode (`src/qec_code/surface_code/unrotated/code_patch.py`)
+#### UnrotatedSurfaceCode (`lightstim/qec_code/surface_code/unrotated/code_patch.py`)
 
 ```python
 class UnrotatedSurfaceCode(QECPatch):
@@ -1201,11 +1201,13 @@ class UnrotatedSurfaceCode(QECPatch):
 
 **Logical ops**: `UnrotatedSurfaceCodeLogicalOpSet(LogicalOpSet)` -- stubs for fold-transversal Hadamard and S gate.
 
-**Coupler**: `UnrotatedTwoPatchCoupler(LogicalCouplerProtocol)` -- two-patch lattice surgery coupler.
+**Couplers**:
+- `UnrotatedTwoPatchCoupler(LogicalCouplerProtocol)` — two-patch ZZ or XX lattice surgery coupler.
+- `UnrotatedMultiPatchCoupler(LogicalCouplerProtocol)` — N-patch Z-product coupler (N ≥ 2); builds a vertical quantum bus. Accepts `path_axis`, `center_axis`, and `start_patch` parameters.
 
 ---
 
-#### ToricCode (`src/qec_code/surface_code/toric/code_patch.py`)
+#### ToricCode (`lightstim/qec_code/surface_code/toric/code_patch.py`)
 
 ```python
 class ToricCode(QECPatch):
@@ -1218,7 +1220,7 @@ Encodes 2 logical qubits. All weight-4 stabilizers (periodic boundaries).
 
 ---
 
-#### RepetitionCode (`src/qec_code/repetition/repetition.py`)
+#### RepetitionCode (`lightstim/qec_code/repetition/repetition.py`)
 
 ```python
 class RepetitionCode(QECPatch):
@@ -1231,7 +1233,7 @@ class RepetitionCode(QECPatch):
 
 ---
 
-#### BBCode (`src/qec_code/BB_code/code_patch.py`)
+#### BBCode (`lightstim/qec_code/BB_code/code_patch.py`)
 
 ```python
 class BBCode(QECPatch):
@@ -1245,9 +1247,9 @@ CSS code on 2D torus with weight-6 stabilizers. Builds logical operators either 
 
 ---
 
-### 6.3 Noise Module (`src/noise/`)
+### 6.3 Noise Module (`lightstim/noise/`)
 
-#### NoiseConfig (`src/noise/config.py`)
+#### NoiseConfig (`lightstim/noise/config.py`)
 
 ```python
 @dataclass
@@ -1262,7 +1264,7 @@ class NoiseConfig:
     def get(self, param_name: str, default: float = 0.0) -> float
 ```
 
-#### NoiseInjector (`src/noise/injector.py`)
+#### NoiseInjector (`lightstim/noise/injector.py`)
 
 ```python
 class NoiseInjector:
@@ -1280,7 +1282,7 @@ class NoiseInjector:
 | `NoiseInjector.from_circuit_level(config, data_qubit_indices)` | Circuit-level noise |
 | `NoiseInjector.from_XZ_biased(config, data_qubit_indices)` | XZ-biased noise |
 
-#### Noise rules (`src/noise/rules.py`)
+#### Noise rules (`lightstim/noise/rules.py`)
 
 | Rule class | Description |
 |-----------|-------------|
@@ -1292,9 +1294,9 @@ class NoiseInjector:
 
 ---
 
-### 6.4 Simulation Module (`src/simulation/decoder_backend/`)
+### 6.4 Simulation Module (`lightstim/simulation/decoder_backend/`)
 
-#### DecoderConfig (`src/simulation/decoder_backend/config.py`)
+#### DecoderConfig (`lightstim/simulation/decoder_backend/config.py`)
 
 ```python
 @dataclass
@@ -1304,7 +1306,7 @@ class DecoderConfig:
     params: Dict[str, Any] = field(default_factory=dict)
 ```
 
-#### PipelineConfig (`src/simulation/decoder_backend/config.py`)
+#### PipelineConfig (`lightstim/simulation/decoder_backend/config.py`)
 
 ```python
 @dataclass
@@ -1322,7 +1324,7 @@ class PipelineConfig:
     print_progress: bool = True
 ```
 
-#### SimulationStats (`src/simulation/decoder_backend/config.py`)
+#### SimulationStats (`lightstim/simulation/decoder_backend/config.py`)
 
 ```python
 @dataclass
@@ -1340,14 +1342,14 @@ class SimulationStats:
     def logical_error_rate(self) -> float     # errors / post_selected_shots
 ```
 
-#### ExperimentTask (`src/simulation/decoder_backend/pipeline.py`)
+#### ExperimentTask (`lightstim/simulation/decoder_backend/pipeline.py`)
 
 ```python
 class ExperimentTask:
     def __init__(self, circuit: stim.Circuit, json_metadata: Optional[Dict] = None)
 ```
 
-#### SimulationPipeline (`src/simulation/decoder_backend/pipeline.py`)
+#### SimulationPipeline (`lightstim/simulation/decoder_backend/pipeline.py`)
 
 ```python
 class SimulationPipeline:
@@ -1372,7 +1374,7 @@ class SimulationPipeline:
 
 When no post-selection is needed and `backend="cpu"`, `run()` delegates to `sinter.collect` for maximum performance. GPU backends always use the custom sampling loop (sinter's adaptive batching is too slow for GPU kernel launch overhead).
 
-#### Registry functions (`src/simulation/decoder_backend/registry.py`)
+#### Registry functions (`lightstim/simulation/decoder_backend/registry.py`)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -1382,9 +1384,9 @@ When no post-selection is needed and `backend="cpu"`, `run()` delegates to `sint
 
 ---
 
-### 6.5 Plot Module (`src/plot/`)
+### 6.5 Plot Module (`lightstim/plot/`)
 
-#### PlotConfig (`src/plot/config.py`)
+#### PlotConfig (`lightstim/plot/config.py`)
 
 ```python
 @dataclass
@@ -1407,7 +1409,7 @@ class PlotConfig:
     linewidth: float = 2.5
 ```
 
-#### Plotting functions (`src/plot/plotter.py`)
+#### Plotting functions (`lightstim/plot/plotter.py`)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -1420,11 +1422,14 @@ All functions return a `matplotlib.figure.Figure`.
 
 ---
 
-### 6.6 Experiments Module (`experiments/`)
+### 6.6 Protocols Module (`lightstim/protocols/`)
 
-#### MemoryExperiment (`experiments/memory.py`)
+All protocol classes live in `lightstim/protocols/`. See [Section 5.2](#52-creating-experiments) for
+usage examples. Protocols not covered in Section 5.2 are summarized below.
 
-See [Section 5.2](#52-creating-experiments). Does **not** inherit from `QECExperiment` -- standalone class.
+#### MemoryExperiment (`lightstim/protocols/memory.py`)
+
+Single-patch quantum memory. Standalone class (does not inherit `QECExperiment`).
 
 ```python
 class MemoryExperiment:
@@ -1434,9 +1439,9 @@ class MemoryExperiment:
     def build(self) -> stim.Circuit
 ```
 
-#### CNOTTransExperiment (`experiments/CNOT_trans.py`)
+#### CNOTTransExperiment (`lightstim/protocols/cnot_trans.py`)
 
-Inherits from `QECExperiment`.
+Transversal CNOT between two CSS patches. Inherits from `QECExperiment`.
 
 ```python
 class CNOTTransExperiment(QECExperiment):
@@ -1451,9 +1456,9 @@ class CNOTTransExperiment(QECExperiment):
     def build(self) -> stim.Circuit
 ```
 
-#### TwoPatchLSExperiment (`experiments/two_patch_LS_unrotated.py`)
+#### TwoPatchLSExperiment (`lightstim/protocols/two_patch_ls.py`)
 
-Standalone class (does not inherit `QECExperiment`).
+Two-patch lattice surgery (unrotated surface code). Standalone class.
 
 ```python
 class TwoPatchLSExperiment:
@@ -1467,9 +1472,9 @@ class TwoPatchLSExperiment:
     def build(self) -> stim.Circuit
 ```
 
-#### CNOTLSExperiment (`experiments/CNOT_LS.py`)
+#### CNOTLSExperiment (`lightstim/protocols/cnot_ls.py`)
 
-Standalone class. Three-patch lattice surgery CNOT.
+Three-patch lattice surgery CNOT (Control, Target, Ancilla). Standalone class.
 
 ```python
 class CNOTLSExperiment:
@@ -1482,9 +1487,9 @@ class CNOTLSExperiment:
     def build(self) -> stim.Circuit
 ```
 
-#### GHZExperiment (`experiments/ghz.py`)
+#### GHZExperiment (`lightstim/protocols/ghz.py`)
 
-Inherits from `QECExperiment`.
+GHZ state preparation via transversal CNOTs. Inherits from `QECExperiment`.
 
 ```python
 class GHZExperiment(QECExperiment):
@@ -1501,9 +1506,9 @@ class GHZExperiment(QECExperiment):
     def build(self) -> stim.Circuit
 ```
 
-#### StateInjectionExperiment (`experiments/state_injection.py`)
+#### StateInjectionExperiment (`lightstim/protocols/state_injection.py`)
 
-Standalone class. Rotated surface code state injection.
+Non-FT state injection for the rotated surface code. Standalone class.
 
 ```python
 class StateInjectionExperiment:
@@ -1515,6 +1520,27 @@ class StateInjectionExperiment:
     def build(self) -> stim.Circuit
 ```
 
+#### BellTeleportationExperiment (`lightstim/protocols/bell_teleportation.py`)
+
+Bell-pair teleportation via transversal gate or lattice surgery. Used in `benchmarks/logical_circuits/`.
+
+#### FoldTransversalExperiment (`lightstim/protocols/fold_transversal.py`)
+
+Fold-transversal H and S gates on the unrotated surface code.
+
+#### LSDistillationExperiment (`lightstim/protocols/ls_distillation.py`)
+
+Lattice-surgery-based 7-to-1 |Y⟩ distillation using multi-patch ZZ measurements.
+
+#### TGDistillationExperiment (`lightstim/protocols/tg_distillation.py`)
+
+Transversal-gate-based 7-to-1 |Y⟩ distillation.
+
+#### CrossLS (`lightstim/protocols/cross_ls/`)
+
+Cross-code lattice surgery between a surface code patch and a PQRM code patch.
+See `paper_artifact/cross_ls/` for benchmark data.
+
 ---
 
 ## 7. Extending LightStim
@@ -1524,7 +1550,7 @@ class StateInjectionExperiment:
 1. **Create a patch class** inheriting from `QECPatch`:
 
 ```python
-# src/qec_code/my_code/code_patch.py
+# lightstim/qec_code/my_code/code_patch.py
 from lightstim.ir.qec_patch import QECPatch
 
 class MyCode(QECPatch):
@@ -1548,7 +1574,7 @@ class MyCode(QECPatch):
 2. **Create an SE block**:
 
 ```python
-# src/qec_code/my_code/SE_block.py
+# lightstim/qec_code/my_code/SE_block.py
 import stim
 
 class MyCodeExtractionBlock:
@@ -1612,7 +1638,7 @@ class MyExperiment(QECExperiment):
 Create a decoder module and register it:
 
 ```python
-# src/simulation/decoder_backend/decoders/my_decoder.py
+# lightstim/simulation/decoder_backend/decoders/my_decoder.py
 from ..registry import register_decoder
 
 class MyDecoder:
