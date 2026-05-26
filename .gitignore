@@ -100,8 +100,6 @@ eval/
 
 # benchmarks/*/results/: local simulation outputs — NOT pushed (archived on Zenodo)
 benchmarks/*/results/
-# paper_artifact/*/results/: reviewer's local run output — NOT pushed
-
 # Generated Stim circuits (regenerable; not tracked)
 *.stim
 
@@ -111,4 +109,3 @@ benchmarks/*/results/
 # OS
 .DS_Store
 Thumbs.db
-paper_artifact/*/results/
