@@ -127,7 +127,7 @@ print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 | Toric | `ToricCode` | Periodic boundary conditions |
 | Color (6-6-6) | `ColorCode` | Fold-transversal H/S gates |
 | Bivariate bicycle | `BBCode` | [[144,12,12]] gross code etc. |
-| PQRM | `PQRMCode` | Transversal T gate; CrossLS protocol |
+| PQRM | `PQRMPatch` | Transversal T gate; CrossLS protocol |
 | Repetition | `RepetitionCode` | Classical benchmark |
 
 All codes are in `lightstim/qec_code/`.

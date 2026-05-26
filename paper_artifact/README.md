@@ -39,8 +39,8 @@ PYTHONPATH=. venv/bin/python paper_artifact/memory/plot_fig2.py
 PYTHONPATH=. venv/bin/python paper_artifact/memory/plot_fig3.py
 PYTHONPATH=. venv/bin/python paper_artifact/memory/plot_fig4.py
 
-PYTHONPATH=. venv/bin/python paper_artifact/logical_ops/plot_fig5.py   # (etc.)
-PYTHONPATH=. venv/bin/python paper_artifact/state_injection/plot_fig7.py
+PYTHONPATH=. venv/bin/python paper_artifact/logical_ops/plot_fig1.py   # (etc.)
+PYTHONPATH=. venv/bin/python paper_artifact/state_injection/plot_fig1.py   # (etc.)
 
 PYTHONPATH=. venv/bin/python paper_artifact/cross_ls/plot_cross_ls.py
 PYTHONPATH=. venv/bin/python paper_artifact/logical_circuits/plot_bell_tele.py

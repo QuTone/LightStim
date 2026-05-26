@@ -70,7 +70,7 @@ pip install -r requirements.txt
 ### Jupyter kernel (for notebooks)
 
 ```bash
-python -m ipykernel install --user --name=qec-simulator --display-name="QEC Simulator"
+python -m ipykernel install --user --name=lightstim --display-name="LightStim"
 ```
 
 ### Decoder packages

@@ -67,7 +67,6 @@ They compare LER vs PER and show distance scaling for each code family.
 |---|---|
 | `qec_system_intro.ipynb` | QECSystem multi-patch API: define-by-run pattern, global index space |
 | `define_by_run.ipynb` | Deep-dive into dynamic patch addition and coupler registration |
-| `qec_code_info.ipynb` | Display code properties: stabilizers, logicals, distance, qubit layout |
 
 ## Development workflow
 
