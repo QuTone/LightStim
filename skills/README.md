@@ -11,11 +11,12 @@ Each skill is a subdirectory with:
 
 ```
 skills/
-├── builder-tracker-api/   # Direct use of CircuitBuilder + SyndromeTracker (custom protocols)
+├── builder-tracker-api/    # Direct use of CircuitBuilder + SyndromeTracker (custom protocols)
 ├── logical-coupler-design/ # Design a new LogicalCouplerProtocol (lattice surgery)
 ├── simulate-decode/        # Run SimulationPipeline + get LER
 ├── custom-noise/           # Configure NoiseConfig + noise models
 ├── extend-new-code/        # Add a new QEC code (QECPatch + SE_block)
+├── notebook-workflow/      # Protocol dev lifecycle: prototype → package → benchmark → demo
 └── gotchas/                # Known pitfalls & debugging patterns
 ```
 
