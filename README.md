@@ -132,6 +132,21 @@ print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 
 All codes are in `lightstim/qec_code/`.
 
+## Try it with your AI coding agent
+
+No tutorial needed. If you use Claude Code, Cursor, or any AI coding assistant,
+paste the prompt below and let it build your first experiment:
+
+> Read `skills/SKILL.md` in this repo first. Then build an unrotated surface code
+> ZZ lattice surgery experiment: first patch d=3, second patch d=5 placed at
+> offset (0, 10). Prepare the first patch in |+⟩ and the second in |0⟩; measure
+> them in Z and X basis respectively. Use circuit-level noise with all error rates
+> 1e-3. Choose an appropriate decoder and run a simulation with enough shots to
+> get a reliable LER estimate. Print the result.
+
+The skills system routes your AI to the right protocol class, decoder, and
+simulation parameters — the same way a collaborator who knows the codebase would.
+
 ## Documentation
 
 - `docs/api/ir.md` — `QECPatch`, `QECSystem`, `CircuitBuilder`, `SyndromeTracker`, `LogicalCouplerProtocol`

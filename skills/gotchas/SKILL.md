@@ -493,7 +493,39 @@ system.add_patch(p5, name='p5', offset=(-2, 16))  # left side of corridor
 
 ---
 
-## 9. Open Bugs
+## 9. `UnrotatedTwoPatchCoupler`: ZZ vs XX patch placement
+
+### 9-A  Wrong offset direction causes `ValueError: Vertical interaction requires strictly contained X-ranges`
+
+**Symptom**:
+```
+ValueError: Vertical interaction requires strictly contained X-ranges.
+```
+
+**Root cause**: `UnrotatedTwoPatchCoupler` distinguishes two interaction geometries:
+
+| `interaction_type` | Required placement | Correct offset example |
+|---|---|---|
+| `"ZZ"` | Patches stacked **vertically** (same x-range) | `offset=(0, 10)` |
+| `"XX"` | Patches placed **side-by-side horizontally** (same y-range) | `offset=(10, 0)` |
+
+Swapping these — e.g. using `offset=(10, 0)` with `interaction_type="ZZ"` — triggers the error immediately at `register_coupler`.
+
+**Fix**: Match the offset direction to the interaction type.
+
+```python
+# ZZ: stack vertically
+TwoPatchLSExperiment(..., offset=(0, 10), interaction_type="ZZ")
+
+# XX: place side by side
+TwoPatchLSExperiment(..., offset=(10, 0), interaction_type="XX")
+```
+
+This also applies when building with raw `QECSystem.register_coupler()` directly.
+
+---
+
+## 10. Open Bugs
 
 ### 9-A  Sequential coupler reuse blocks detectors (tracker stabilizer transition)
 
