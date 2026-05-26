@@ -6,8 +6,7 @@ Evaluation artifact for:
 > https://arxiv.org/abs/2604.21472
 
 This directory contains all scripts and precomputed data needed to reproduce the paper's
-figures and tables. The precomputed data is committed to the repository; raw figures are
-not (regenerate locally with the plot scripts).
+figures and tables. The precomputed data and figures are committed to the repository, but can be regenerated locally with the scripts.
 
 ---
 
@@ -20,12 +19,12 @@ paper_artifact/
 ├── state_injection/    Figs 7–10:  State injection (rotated SC)
 ├── cross_ls/           Fig 11:     CrossLS — Surface–PQRM lattice surgery
 ├── logical_circuits/   Figs 12–14: Bell teleportation & magic-state distillation
-└── table/              Table 2:    Correctness validation vs. open-source references
+└── table/              Table 1, 2:    Correctness validation, Compilation efficiency
 ```
 
 Each section has:
 - `precomputed/` — pre-run CSV data committed to git (used by plot scripts)
-- `results/`     — generated PNG figures (gitignored; run plot scripts to create)
+- `results/`     — PNG figures committed to git; run plot scripts to regenerate
 - `run_all.py`   — reproduce the raw data from scratch
 - `plot_*.py`    — generate figures from `precomputed/` or `results/`
 
@@ -67,9 +66,9 @@ PYTHONPATH=. venv/bin/python paper_artifact/memory/run_all.py
 PYTHONPATH=. venv/bin/python paper_artifact/memory/run_all.py --figures 2
 ```
 
-> Raw data outputs land in `paper_artifact/<section>/results/` (gitignored).
-> To use them for plotting, replace the `precomputed/` CSV with the new file, or
-> pass the path directly to the plot script.
+> Raw data outputs land in `paper_artifact/<section>/results/`, overwriting the
+> committed figures. To use new data for plotting, replace the `precomputed/` CSV
+> with the new file, or pass the path directly to the plot script.
 
 ---
 
