@@ -4,14 +4,13 @@ General logical circuits benchmark runner for LightStim.
 Experiments
 -----------
     bell_tele   Bell-state teleportation (TG / ZZ-LS / XX-LS)
-    routing     LER vs routing distance (ZZ-LS and XX-LS, d fixed)
     distill_ls  LS 7-to-1 |Y⟩ distillation (Steane)
     distill_tg  TG 7-to-1 |Y⟩ distillation (hypercube PQRM)
 
 CSV output
 ----------
-    bell_tele / routing → results/bell_tele_results.csv
-        gate, protocol, state, routing_mult, d, rounds, p,
+    bell_tele → results/bell_tele_results.csv
+        experiment, protocol, state, routing_mult, d, rounds, p,
         shots, errors, logical_error_rate, decoder, seconds
 
     distill_ls / distill_tg → results/{distill_ls|distill_tg}_results.csv
@@ -59,29 +58,23 @@ from lightstim.simulation.observable_analysis import (
     identify_distillation_observables,
 )
 
-# Bell tele / routing builders — directory name has a hyphen so use importlib
-import importlib.util as _ilu
+# Bell teleportation builders — direct protocol imports
+from lightstim.protocols.bell_teleportation import (
+    BellTeleportTG,
+    BellTeleportZZLS,
+    BellTeleportXXLS,
+)
 
 
-def _import_from(name: str, rel: str):
-    path = SCRIPT_DIR / "bell-teleportation" / rel
-    spec = _ilu.spec_from_file_location(name, path)
-    mod = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def _build_bell_circuit(protocol: str, d: int, state: str) -> "stim.Circuit":
+    if protocol == "tg":
+        return BellTeleportTG(distance=d, teleport_state=state).build()
+    if protocol == "ls_zz":
+        return BellTeleportZZLS(distance=d, teleport_state=state).build()
+    if protocol == "ls_xx":
+        return BellTeleportXXLS(distance=d, teleport_state=state).build()
+    raise ValueError(f"Unknown protocol: {protocol!r}")
 
-
-_mod_tg         = _import_from("run_tg",         "run_tg.py")
-_mod_ls_zz      = _import_from("run_ls_zz",      "run_ls_zz.py")
-_mod_ls_xx      = _import_from("run_ls_xx",      "run_ls_xx.py")
-_mod_ls_zz_dist = _import_from("run_ls_zz_dist", "run_ls_zz_dist.py")
-_mod_ls_xx_dist = _import_from("run_ls_xx_dist", "run_ls_xx_dist.py")
-
-_build_tg         = _mod_tg.build_circuit
-_build_ls_zz      = _mod_ls_zz.build_circuit
-_build_ls_xx      = _mod_ls_xx.build_circuit
-_build_ls_zz_dist = _mod_ls_zz_dist.build_circuit
-_build_ls_xx_dist = _mod_ls_xx_dist.build_circuit
 
 # Distillation builders
 from lightstim.protocols.ls_distillation import (
@@ -146,27 +139,21 @@ def _append_row(path: Path, row: dict, cols: list) -> None:
 
 # ── Bell teleportation ─────────────────────────────────────────────────────────
 
-_BELL_BUILDERS = {
-    "tg":     (_build_tg,         "bposd"),
-    "ls_zz":  (_build_ls_zz,      "pymatching"),
-    "ls_xx":  (_build_ls_xx,      "pymatching"),
-}
-
-_ROUTING_BUILDERS = {
-    "ls_zz": _build_ls_zz_dist,
-    "ls_xx": _build_ls_xx_dist,
+_BELL_DEFAULT_DECODER = {
+    "tg":    "bposd",
+    "ls_zz": "pymatching",
+    "ls_xx": "pymatching",
 }
 
 
 def _run_bell_tele(args, output_path: Path) -> None:
     done = _load_done(output_path, _BELL_RESULT_KEYS)
-    protocols = args.protocols if args.protocols else list(_BELL_BUILDERS)
+    protocols = args.protocols if args.protocols else list(_BELL_DEFAULT_DECODER)
 
     pipeline_cache: dict = {}
 
     for protocol, d, state, p in product(protocols, args.distances, args.states, args.p_values):
-        builder_fn, default_decoder = _BELL_BUILDERS[protocol]
-        decoder_name = args.decoder or default_decoder
+        decoder_name = args.decoder or _BELL_DEFAULT_DECODER[protocol]
 
         row_proto = {
             "experiment": "bell_tele",
@@ -184,8 +171,7 @@ def _run_bell_tele(args, output_path: Path) -> None:
 
         print(f"  [{protocol}] state={state} d={d} p={p:.0e} decoder={decoder_name}")
         with contextlib.redirect_stdout(io.StringIO()):
-            circuit, info = builder_fn(d, state)
-        circuit_key = (protocol, d, state)
+            circuit = _build_bell_circuit(protocol, d, state)
         noisy = _inject_bell(circuit, p)
 
         if decoder_name not in pipeline_cache:
@@ -214,60 +200,9 @@ def _run_bell_tele(args, output_path: Path) -> None:
         print(f"    LER={stats.logical_error_rate:.2e}  ({stats.errors}/{stats.shots:,})  {elapsed:.1f}s")
 
 
-def _run_routing(args, output_path: Path) -> None:
-    done = _load_done(output_path, _BELL_RESULT_KEYS)
-    protocols = [p for p in (args.protocols or ["ls_zz", "ls_xx"]) if p in _ROUTING_BUILDERS]
-    mults = args.mults or [2, 4, 8]
-
-    pipeline_cache: dict = {}
-
-    for protocol, d, state, mult, p in product(protocols, args.distances, args.states, mults, args.p_values):
-        builder_fn = _ROUTING_BUILDERS[protocol]
-        decoder_name = args.decoder or "pymatching"
-
-        row_proto = {
-            "experiment": "routing",
-            "protocol": protocol,
-            "state": state,
-            "routing_mult": mult,
-            "d": d,
-            "rounds": f"pre={d} ls={d}",
-            "p": p,
-            "decoder": decoder_name,
-        }
-        if _ck_key(row_proto, _BELL_RESULT_KEYS) in done:
-            print(f"  SKIP routing {protocol} state={state} d={d} mult={mult} p={p:.0e}")
-            continue
-
-        print(f"  [routing/{protocol}] state={state} d={d} mult={mult} p={p:.0e}")
-        with contextlib.redirect_stdout(io.StringIO()):
-            circuit, info = builder_fn(d, state, mult)
-        noisy = _inject_bell(circuit, p)
-
-        if decoder_name not in pipeline_cache:
-            pipeline_cache[decoder_name] = SimulationPipeline(
-                decoder_config=_decoder_config(decoder_name),
-                max_shots=args.max_shots,
-                max_errors=args.max_errors,
-                batch_size=10_000,
-                num_workers=args.num_workers,
-                print_progress=False,
-            )
-        pipeline = pipeline_cache[decoder_name]
-
-        t0 = time.perf_counter()
-        stats = pipeline.run(noisy)
-        elapsed = time.perf_counter() - t0
-
-        row = {
-            **row_proto,
-            "shots": stats.shots,
-            "errors": stats.errors,
-            "logical_error_rate": stats.logical_error_rate,
-            "seconds": round(elapsed, 2),
-        }
-        _append_row(output_path, row, _BELL_COLS)
-        print(f"    LER={stats.logical_error_rate:.2e}  ({stats.errors}/{stats.shots:,})  {elapsed:.1f}s")
+# TODO: routing experiment (LER vs routing distance / chain length).
+# Requires a multi-hop LS builder (chain of N patches connected by N-1 couplers).
+# Not yet implemented — omitted from ALL_EXPERIMENTS until protocol is ready.
 
 
 def _inject_bell(circuit, p: float):
@@ -402,7 +337,7 @@ def _decoder_config(name: str) -> DecoderConfig:
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
-ALL_EXPERIMENTS = ["bell_tele", "routing", "distill_ls", "distill_tg"]
+ALL_EXPERIMENTS = ["bell_tele", "distill_ls", "distill_tg"]
 
 
 def main():
@@ -423,21 +358,17 @@ def main():
     ap.add_argument(
         "--p-values", nargs="+", type=float,
         default=[5e-4, 1e-3, 2e-3, 5e-3],
-        help="Physical error rates for bell_tele, routing, distill full/both (default: 5e-4 1e-3 2e-3 5e-3)",
+        help="Physical error rates (default: 5e-4 1e-3 2e-3 5e-3)",
     )
     ap.add_argument(
         "--states", nargs="+", choices=["X", "Z"], default=["X", "Z"],
-        help="States for bell_tele / routing (default: X Z)",
+        help="States for bell_tele (default: X Z)",
     )
     ap.add_argument(
         "--protocols", nargs="+",
         choices=["tg", "ls_zz", "ls_xx"],
         default=None,
-        help="Protocols for bell_tele (default: all three)",
-    )
-    ap.add_argument(
-        "--mults", nargs="+", type=int, default=None,
-        help="Routing multipliers for routing experiment (default: 2 4 8)",
+        help="Protocols for bell_tele (default: tg ls_zz ls_xx)",
     )
     ap.add_argument(
         "--p-injected", nargs="+", type=float, default=None,
@@ -502,8 +433,6 @@ def main():
         print(f"Experiment: {exp}")
         if exp == "bell_tele":
             _run_bell_tele(args, bell_csv)
-        elif exp == "routing":
-            _run_routing(args, bell_csv)
         elif exp == "distill_ls":
             _run_distillation(args, "ls", distill_ls_csv)
         elif exp == "distill_tg":

@@ -10,7 +10,6 @@ All experiments share a single unified runner with per-task checkpointing.
 | `--experiment` | Protocol | Output CSV |
 |---|---|---|
 | `bell_tele` | Bell-state teleportation via TG / ZZ-LS / XX-LS | `results/bell_tele_results.csv` |
-| `routing` | LER vs routing distance (ZZ-LS and XX-LS, fixed d) | `results/bell_tele_results.csv` |
 | `distill_ls` | LS 7-to-1 \|Y⟩ distillation (Steane protocol) | `results/distill_ls_results.csv` |
 | `distill_tg` | TG 7-to-1 \|Y⟩ distillation (PQRM hypercube) | `results/distill_tg_results.csv` |
 | `all` | All of the above | all three CSVs |
