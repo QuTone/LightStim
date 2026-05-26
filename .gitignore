@@ -106,6 +106,10 @@ benchmarks/*/results/
 # Logs
 *.log
 
+# paper_artifact run logs (stdout captures — regenerable, not part of artifact)
+paper_artifact/table/results/*.txt
+paper_artifact/table/results/*.log
+
 # OS
 .DS_Store
 Thumbs.db
