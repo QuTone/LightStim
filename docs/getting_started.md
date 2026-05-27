@@ -63,8 +63,15 @@ python3 -m venv venv
 source venv/bin/activate    # Linux/macOS
 # venv\Scripts\activate     # Windows
 
-# Install dependencies
-pip install -r requirements.txt
+# Install the core library
+pip install -e .
+
+# Optional CPU decoders and development tools
+pip install -e ".[decoders]"
+pip install -e ".[dev]"
+
+# Optional GPU decoder; requires NVIDIA GPU + CUDA 12.x
+pip install -e ".[gpu]"
 ```
 
 ### Jupyter kernel (for notebooks)
@@ -75,18 +82,12 @@ python -m ipykernel install --user --name=lightstim --display-name="LightStim"
 
 ### Decoder packages
 
-`requirements.txt` already includes CPU decoder dependencies (`stimbposd`, `mwpf`, `frozendict`, `frozenlist`).
-
-Install extra decoder packages only when needed:
-
-```bash
-pip install pymatching  # MWPM decoder (recommended if not already installed)
-pip install cudaq_qec   # BP+OSD GPU decoder (NVIDIA only)
-```
+PyMatching is included in the core install. Optional CPU decoder backends are available via
+`pip install -e ".[decoders]"`; the GPU backend is available via `pip install -e ".[gpu]"`
+on CUDA-capable systems.
 
 > **Always use `venv/bin/python`**, not the system Python. The GPU decoder (`cudaq_qec`) is
-> only installed inside the venv; using system Python silently disables it and produces garbage
-> LER results.
+> installed only in environments where the GPU extra succeeds.
 
 ---
 
@@ -235,4 +236,4 @@ decoder's prediction disagrees with the actual observable.
 | Debug unexpected detector counts or LER≈50% | [`skills/gotchas/`](../skills/gotchas/SKILL.md) |
 | Precise API signatures for every class | [`docs/api/ir.md`](api/ir.md), [`docs/api/simulation.md`](api/simulation.md) |
 | Reproduce paper figures | [`paper_artifact/README.md`](../paper_artifact/README.md) |
-| Browse demo notebooks | [`notebooks/README.md`](../notebooks/README.md) |
+| Browse demo notebooks | `notebooks/README.md` once the notebook bundle is restored |

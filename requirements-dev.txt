@@ -98,8 +98,6 @@ stimbposd
 mwpf
 frozendict
 frozenlist
-# GPU decoder (requires NVIDIA GPU + CUDA 12.x): pip install cudaq-qec
-cudaq-qec
 pandas
 seaborn
 PyMatching

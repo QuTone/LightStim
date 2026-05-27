@@ -86,7 +86,7 @@ PYTHONPATH=. venv/bin/python paper_artifact/logical_ops/run_all.py --quick
 | Gate | CNOT via Lattice Surgery (ancilla \|+>, ZZ-XX coupling) |
 | Sub-experiments | ZZ_ZZ, ZX_ZX, XZ_XX, XZ_ZZ, XX_XX |
 | Distances | 3, 5, 7 |
-| Decoder | bposd (CPU) |
+| Decoder | pymatching (CPU) |
 | p-values | `[5e-4, 1e-3, 2e-3, 5e-3, 1e-2]` |
 | Plot aggregation | mean LER over 5 sub-experiments |
 

@@ -46,6 +46,29 @@ print(stats.shots)                 # total shots attempted
 print(stats.post_selected_shots)   # shots surviving post-selection (= shots if no PS)
 ```
 
+## Sampling rule of thumb
+
+For reported LER experiments, prefer error-targeted collection: choose a target
+number of logical errors and run until that count is reached, with a large
+`max_shots` cap. Fixed-shot simulations are useful for smoke tests, but they often
+produce long error bars when the LER is small.
+
+Typical settings:
+
+```python
+pipeline = SimulationPipeline(
+    decoder_config=DecoderConfig("pymatching"),
+    max_errors=100,          # collect this many logical errors per point
+    max_shots=100_000_000,   # hard safety cap
+    batch_size=10_000,
+    num_workers=4,
+    print_progress=False,
+)
+```
+
+Use a smaller `max_errors` only for quick local demos; use 100-200+ errors for
+figures or comparisons.
+
 ## Decoder options
 
 | Name | Backend | When to use |
@@ -56,9 +79,14 @@ print(stats.post_selected_shots)   # shots surviving post-selection (= shots if 
 | `"nv-qldpc-decoder"` | gpu | GPU BP+OSD via `cudaq_qec`. Use `batch_size ≥ 50_000`, `num_workers=1`. |
 
 **Decoder selection rule:**
-- Surface codes (rotated, unrotated, toric): `pymatching`
-- LDPC codes (BB, PQRM) with no hyperedges: `bposd`
-- CrossLS / PQRM (X-stabs weight > 2 → hyperedges): `mwpf`
+- Prefer `pymatching` whenever the detector error model is graphlike / has no
+  hyperedges. This includes ordinary surface-code memory and surface-code
+  lattice-surgery circuits.
+- Use `mwpf` or `bposd` when the circuit has hyperedges or important correlated
+  fault mechanisms that should not be decomposed away.
+- Use `bposd` for LDPC codes such as BB/PQRM when BP+OSD is the intended decoder.
+- Use `mwpf` for CrossLS/PQRM-style hypergraph decoding, especially when
+  high-weight X stabilizers or cross-code surgery create hyperedges.
 
 ## Post-selection
 
@@ -117,7 +145,7 @@ from lightstim.noise.config import NoiseConfig
 
 pipeline = SimulationPipeline(
     decoder_config=DecoderConfig("pymatching"),
-    max_errors=200, max_shots=500_000, print_progress=False,
+    max_errors=100, max_shots=100_000_000, print_progress=False,
 )
 
 results = []

@@ -66,7 +66,7 @@ QUICK_SWEEP = {
     "rounds": 2,
 }
 
-# bposd handles non-CSS correlations; pymatching fails for S/CNOT
+# LS CNOT artifacts use PyMatching; non-LS gates use BP+OSD for correlated faults.
 BPOSD_DECODER = DecoderConfig(name="bposd", backend="cpu")
 PYMATCHING_DECODER = DecoderConfig(name="pymatching", backend="cpu")
 
@@ -200,7 +200,7 @@ def run_figure1(sweep, max_shots, max_errors, num_workers):
     return _run_tasks(
         tasks, max_shots, max_errors, num_workers,
         checkpoint_path=OUTPUT_DIR / "fig1_cnot_ls_zz_xx.csv",
-        decoder_config=BPOSD_DECODER,
+        decoder_config=PYMATCHING_DECODER,
     )
 
 
@@ -248,7 +248,7 @@ def run_figure2(sweep, max_shots, max_errors, num_workers):
     return _run_tasks(
         tasks, max_shots, max_errors, num_workers,
         checkpoint_path=OUTPUT_DIR / "fig2_cnot_ls_xx_zz.csv",
-        decoder_config=BPOSD_DECODER,
+        decoder_config=PYMATCHING_DECODER,
     )
 
 
