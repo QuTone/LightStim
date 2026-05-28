@@ -4,9 +4,6 @@ State Injection Benchmark Suite — Paper Figures 7-10.
 Sweeps injection_protocol × inject_state × post_select_mode × distances × rounds × p.
 Outputs CSV results with per-task checkpointing.
 
-Note: precomputed/ only covers inject_state=[X, Z].
-Run this script to generate full data including Y state.
-
 Usage:
     # Full run (all states, all protocols):
     PYTHONPATH=. venv/bin/python paper_artifact/state_injection/run_all.py

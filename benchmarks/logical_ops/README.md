@@ -49,7 +49,7 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \
 | `--distances` | `3 5 7` | Code distances |
 | `--p-values` | `5e-4 1e-3 2e-3 5e-3 1e-2` | Physical error rates |
 | `--rounds` | `2` | SE rounds for gate benchmarks (memory always uses rounds=d) |
-| `--decoder` | `bposd` (gates) / `pymatching` (memory) | Decoder |
+| `--decoder` | `pymatching` for memory/LS CNOT; `bposd` for other gates | Decoder |
 | `--max-shots` | `1e9` | Max shots per task |
 | `--max-errors` | `100` | Stop after this many errors |
 | `--num-workers` | `8` | Parallel workers |

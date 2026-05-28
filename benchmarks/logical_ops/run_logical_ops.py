@@ -21,9 +21,9 @@ For state injection benchmarks, see benchmarks/state_injection/.
 
 Decoders
 --------
-    cpu_bposd     CPU BP+OSD  (default for gates; handles non-CSS correlations)
+    cpu_bposd     CPU BP+OSD  (default for non-LS gates; handles non-CSS correlations)
     gpu_bposd     GPU BP+OSD  (same algorithm, CUDA-accelerated)
-    pymatching    CPU MWPM    (default for memory; sufficient for CSS memory)
+    pymatching    CPU MWPM    (default for memory and surface-code LS CNOT)
     mwpf          CPU MWPF    (general purpose)
 
 CSV output schema
@@ -511,7 +511,7 @@ def main():
     )
     ap.add_argument(
         "--decoder", choices=["cpu_bposd", "gpu_bposd", "pymatching", "mwpf"], default=None,
-        help="Decoder to use (default: cpu_bposd for gates, pymatching for memory)",
+        help="Decoder to use (default: pymatching for memory/LS CNOT, cpu_bposd for other gates)",
     )
     ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
     ap.add_argument("--max-errors",  type=int, default=100)
@@ -562,7 +562,7 @@ def main():
         # Choose decoder: explicit flag > sensible default per gate
         if args.decoder is not None:
             decoder_name = args.decoder
-        elif gate == "memory":
+        elif gate == "memory" or gate.startswith("CNOT_LS_"):
             decoder_name = "pymatching"
         else:
             decoder_name = "cpu_bposd"

@@ -4,9 +4,9 @@ This directory reproduces the state injection benchmark figures for the rotated 
 
 ```
 paper_artifact/state_injection/
-├── precomputed/          # Pre-run data (git-tracked). Only covers Z/X states.
+├── precomputed/          # Pre-run data (git-tracked).
 ├── results/              # Generated outputs (gitignored). Plots land here.
-├── run_all.py            # Reproduce raw data (required for Y state figures)
+├── run_all.py            # Reproduce raw data
 ├── plot_fig1.py          # Middle injection, d=3, Z/X/Y states (Fig 7)
 ├── plot_fig2.py          # Middle injection, d=5, Z/X/Y states (Fig 8)
 ├── plot_fig3.py          # Corner injection, d=7, Z/X/Y states (Fig 9)
@@ -15,36 +15,24 @@ paper_artifact/state_injection/
 
 ---
 
-## Important: precomputed data only covers Z/X states
+## Precomputed Data Coverage
 
-The file `precomputed/state_injection.csv` contains data for `inject_state=[X, Z]` only.
-**Y state data is missing from precomputed.**
-
-- Figs 7–9 show Z, X, and Y states. With only precomputed data, the Y state line will be skipped.
-- Fig 10 shows only the Z state (all 3 modes), so it can be fully plotted from precomputed data.
-
-To generate full figures including Y state, run `run_all.py` first:
-
-```bash
-PYTHONPATH=. venv/bin/python paper_artifact/state_injection/run_all.py --inject-state Y
-```
+The file `precomputed/state_injection.csv` contains data for `inject_state=[Z, X, Y]`,
+both injection protocols (`corner`, `middle`), all three post-selection modes
+(`full_postselection`, `full_qec`, `hybrid`), distances `d=3,5,7`, `rounds=2`,
+and the tracked physical error-rate sweep.
 
 ---
 
 ## Quick start: regenerate figures from available data
 
-Fig 10 (Z state, all modes) can be fully generated from precomputed data:
-
-```bash
-PYTHONPATH=. venv/bin/python paper_artifact/state_injection/plot_fig4.py
-```
-
-Figs 7–9 will plot Z and X state lines from precomputed data (Y line skipped):
+All state-injection figures can be generated directly from the tracked precomputed data:
 
 ```bash
 PYTHONPATH=. venv/bin/python paper_artifact/state_injection/plot_fig1.py
 PYTHONPATH=. venv/bin/python paper_artifact/state_injection/plot_fig2.py
 PYTHONPATH=. venv/bin/python paper_artifact/state_injection/plot_fig3.py
+PYTHONPATH=. venv/bin/python paper_artifact/state_injection/plot_fig4.py
 ```
 
 Each plot script loads `results/state_injection.csv` first, then merges with `precomputed/state_injection.csv`.
@@ -60,7 +48,7 @@ Fresh results take priority automatically via deduplication.
 PYTHONPATH=. venv/bin/python paper_artifact/state_injection/run_all.py
 ```
 
-### Run only Y state (to fill in missing precomputed data)
+### Run only one state
 
 ```bash
 PYTHONPATH=. venv/bin/python paper_artifact/state_injection/run_all.py --inject-state Y
@@ -95,7 +83,6 @@ PYTHONPATH=. venv/bin/python paper_artifact/state_injection/run_all.py --quick
 - Color by state: Z=RUST, X=TEAL, Y=VIOLET
 - Mode: `full_postselection`
 - Dual y-axis: LER (log, solid lines) + PS survival rate (linear, dashed lines)
-- Y state requires running `run_all.py`
 
 ### Fig 8 — Middle injection, d=5 (`results/fig2_middle_d5.png`)
 
@@ -121,8 +108,6 @@ Same as Fig 7 but d=5.
 
 | File | Description |
 |------|-------------|
-| `precomputed/state_injection.csv` | Z/X injection, corner+middle protocols, d=3,5,7, r=2, p sweep |
+| `precomputed/state_injection.csv` | Z/X/Y injection, corner+middle protocols, all post-selection modes, d=3,5,7, r=2, p sweep |
 
 Schema: `shots, post_selected_shots, post_selection_rate, errors, logical_error_rate, seconds, decoder, injection_protocol, inject_state, post_select_mode, rounds, d, p`
-
-**Y state data is not included.** Run `run_all.py --inject-state Y` to generate it.
