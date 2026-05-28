@@ -181,7 +181,7 @@ class TwoPatchLSExperiment:
             self.system.local_to_global_map[self.coupler_name][q]
             for q in coupler_data_indices_local
         ]
-        # Coupler data qubits are initialized in Z basis for lattice surgery
+        # Coupler data qubits are initialized depending on interaction_type: Z for 'XX', X for 'ZZ' (used in lattice surgery)
         if self.interaction_type == "XX":
             coupler_init_dict = {q: "Z" for q in coupler_data_indices}
         elif self.interaction_type == "ZZ":
