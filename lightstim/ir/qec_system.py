@@ -260,7 +260,7 @@ class QECSystem:
         if is_active:
             self.active_stabilizer_indices.update(stabilizer_indices)
 
-        # 6. Create and return global patch view (with global indices)
+        # 7. Create and return global patch view (with global indices)
         # This is a deep copy of the patch with all indices converted to global
         global_patch = copy.deepcopy(patch)
         
