@@ -64,14 +64,6 @@ pip install -e ".[gpu]"            # optional NVIDIA GPU decoder (requires CUDA)
 python -m ipykernel install --user --name=lightstim --display-name="LightStim"
 ```
 
-### 3) Run skill templates (self-contained examples)
-
-```bash
-venv/bin/python skills/simulate-decode/scripts/template.py
-venv/bin/python skills/extend-new-code/scripts/template.py
-venv/bin/python skills/builder-tracker-api/scripts/template.py
-```
-
 ## Usage examples
 
 ### Build and simulate a memory experiment
