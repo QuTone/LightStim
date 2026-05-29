@@ -153,6 +153,15 @@ simulation parameters — the same way a collaborator who knows the codebase wou
 - `lightstim/simulation/README.md` — decoder backend architecture
 - `skills/` — task-oriented instructions for AI-assisted development
 
+## Testing
+
+```bash
+pip install pytest pytest-timeout
+pytest tests/ -m "not slow" --timeout=90 -q   # 89 tests, ~30s
+```
+
+See [`tests/README.md`](tests/README.md) for the full test structure and contributor guidelines.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
