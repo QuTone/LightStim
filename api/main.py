@@ -30,15 +30,21 @@ class NoiseBase(BaseModel):
     p_2q:   Optional[float] = Field(None, ge=0, le=0.5)
     p_meas: Optional[float] = Field(None, ge=0, le=0.5)
     p_reset: Optional[float] = Field(None, ge=0, le=0.5)
+    p_idle: Optional[float] = Field(None, ge=0, le=0.5,
+        description="Idle depolarizing on data qubits. Required for code_capacity / phenomenological.")
     decompose_errors: bool = False
 
     def noise_config(self) -> NoiseConfig:
         p = self.p
+        # For code_capacity / phenomenological, p_idle is the primary parameter.
+        # Fall back to master p so the model always has something to inject.
+        p_idle_val = self.p_idle if self.p_idle is not None else p
         return NoiseConfig(
-            p_1q=self.p_1q   if self.p_1q   is not None else p,
-            p_2q=self.p_2q   if self.p_2q   is not None else p,
-            p_meas=self.p_meas  if self.p_meas  is not None else p,
+            p_1q=self.p_1q     if self.p_1q   is not None else p,
+            p_2q=self.p_2q     if self.p_2q   is not None else p,
+            p_meas=self.p_meas if self.p_meas is not None else p,
             p_reset=self.p_reset if self.p_reset is not None else p,
+            p_idle=p_idle_val,
         )
 
 def _export(circuit, req: NoiseBase, source: str, distance: int, rounds: int):
@@ -59,8 +65,25 @@ def root():
 # CATEGORY 1 — MEMORY
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_BB_PRESETS = {
+    "bb_72_12_6":   {"l": 6,  "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 6},
+    "bb_144_12_12": {"l": 12, "m": 6,  "A": [[3,0],[0,1],[0,2]], "B": [[0,3],[1,0],[2,0]], "d": 12},
+    "bb_90_8_10":   {"l": 15, "m": 3,  "A": [[9,0],[0,1],[0,2]], "B": [[0,0],[2,0],[7,0]], "d": 10},
+}
+
+_4D_PRESETS = {
+    "det3":     {"L": [[1,0,0,1],[0,1,0,1],[0,0,1,1],[0,0,0,3]],  "n": 18,  "k": 6, "d": 3},
+    "det9":     {"L": [[1,0,0,5],[0,1,0,6],[0,0,1,7],[0,0,0,9]],  "n": 54,  "k": 6, "d": 6},
+    "hadamard": {"L": [[1,1,1,1],[0,2,0,2],[0,0,2,2],[0,0,0,4]],  "n": 96,  "k": 6, "d": 8},
+}
+
 class MemoryRequest(NoiseBase):
-    code: Literal["rotated", "unrotated", "toric", "repetition"] = "rotated"
+    code: Literal[
+        "rotated", "unrotated", "toric", "repetition",
+        "color",
+        "bb_72_12_6", "bb_144_12_12", "bb_90_8_10",
+        "4d_det3", "4d_det9", "4d_hadamard",
+    ] = "rotated"
     distance: int = Field(3, ge=2, le=15)
     rounds:   int = Field(3, ge=1, le=30)
     basis: Literal["Z", "X"] = "Z"
@@ -76,25 +99,36 @@ def memory(req: MemoryRequest):
         system = QECSystem()
 
         if req.code == "rotated":
-            from lightstim.qec_code.surface_code.rotated import (
-                RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock)
+            from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock
             system.add_patch(RotatedSurfaceCode(distance=req.distance), name="main")
             se_cls = RotatedSurfaceCodeExtractionBlock
         elif req.code == "unrotated":
-            from lightstim.qec_code.surface_code.unrotated import (
-                UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock)
+            from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock
             system.add_patch(UnrotatedSurfaceCode(distance=req.distance), name="main")
             se_cls = UnrotatedSurfaceCodeExtractionBlock
         elif req.code == "toric":
-            from lightstim.qec_code.surface_code.toric import (
-                ToricCode, ToricCodeExtractionBlock)
+            from lightstim.qec_code.surface_code.toric import ToricCode, ToricCodeExtractionBlock
             system.add_patch(ToricCode(distance=req.distance), name="main")
             se_cls = ToricCodeExtractionBlock
-        else:  # repetition
-            from lightstim.qec_code.repetition import (
-                RepetitionCode, RepetitionCodeExtractionBlock)
+        elif req.code == "color":
+            from lightstim.qec_code.color_code import ColorCode, ColorCodeExtractionBlock
+            system.add_patch(ColorCode(distance=req.distance), name="main")
+            se_cls = ColorCodeExtractionBlock
+        elif req.code == "repetition":
+            from lightstim.qec_code.repetition import RepetitionCode, RepetitionCodeExtractionBlock
             system.add_patch(RepetitionCode(distance=req.distance), name="main")
             se_cls = RepetitionCodeExtractionBlock
+        elif req.code.startswith("bb_"):
+            from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
+            cfg = _BB_PRESETS[req.code]
+            system.add_patch(BBCode(l=cfg["l"], m=cfg["m"], A=cfg["A"], B=cfg["B"]), name="main")
+            se_cls = BBCodeExtractionBlock
+        else:  # 4d_*
+            from lightstim.qec_code.four_d_geo_code import FourDGeoCode, FourDGeoCodeExtractionBlock
+            key = req.code.replace("4d_", "")
+            cfg = _4D_PRESETS[key]
+            system.add_patch(FourDGeoCode(L=cfg["L"], d=cfg["d"]), name="main")
+            se_cls = FourDGeoCodeExtractionBlock
 
         tracker = SyndromeTracker(system.num_qubits, expected_num_logicals=system.num_logicals)
         builder = CircuitBuilder(tracker, system)
@@ -121,14 +155,18 @@ class TwoPatchLSRequest(NoiseBase):
     distance2: int = Field(3, ge=2, le=9)
     interaction_type: Literal["ZZ", "XX"] = "ZZ"
     rounds: int = Field(3, ge=1, le=20)
+    dx: Optional[float] = Field(None, description="Custom x-offset for patch2 (overrides default)")
+    dy: Optional[float] = Field(None, description="Custom y-offset for patch2 (overrides default)")
 
 
 @app.post("/api/circuit/two-patch-ls")
 def two_patch_ls(req: TwoPatchLSRequest):
     try:
         from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
-        offset = (0.0, float(req.distance1 * 4)) if req.interaction_type == "ZZ" \
-                 else (float(req.distance1 * 4), 0.0)
+        default_offset = (0.0, float(req.distance1 * 4)) if req.interaction_type == "ZZ" \
+                         else (float(req.distance1 * 4), 0.0)
+        offset = (req.dx if req.dx is not None else default_offset[0],
+                  req.dy if req.dy is not None else default_offset[1])
         init1, meas1 = ("X", "X") if req.interaction_type == "ZZ" else ("Z", "Z")
         init2, meas2 = ("Z", "Z") if req.interaction_type == "ZZ" else ("X", "X")
 
@@ -331,5 +369,40 @@ def ls_distillation(req: LSDistillationRequest):
         from lightstim.protocols.ls_distillation import build_distillation_circuit
         circuit, _, _ = build_distillation_circuit(d=req.distance, rounds=req.rounds)
         return _export(circuit, req, "ls_distillation", req.distance, req.rounds)
+    except Exception as e:
+        _err(e)
+
+# ── CrossLS (Surface-PQRM Lattice Surgery) ────────────────────────────────────
+
+_PQRM_PRESETS = {
+    "(1,2,4)": [1, 2, 4],
+    "(1,3,5)": [1, 3, 5],
+    "(1,4,6)": [1, 4, 6],
+}
+
+class CrossLSRequest(NoiseBase):
+    pqrm_preset: Literal["(1,2,4)", "(1,3,5)", "(1,4,6)"] = "(1,2,4)"
+    d_surf: int = Field(3, ge=2, le=9, description="Surface code distance")
+    rounds: int = Field(2, ge=1, le=20)
+    pqrm_state: Literal["Z", "X"] = "Z"
+    surf_state: Literal["X", "Z"] = "X"
+
+
+@app.post("/api/circuit/cross-ls")
+def cross_ls(req: CrossLSRequest):
+    try:
+        from lightstim.protocols.cross_ls import CrossLSExperiment
+        pqrm_para = _PQRM_PRESETS[req.pqrm_preset]
+        exp = CrossLSExperiment(
+            PQRM_para=pqrm_para,
+            d_surf=req.d_surf,
+            rounds=req.rounds,
+            PQRM_state=req.pqrm_state,
+            surf_state=req.surf_state,
+            noise_params=req.noise_config(),
+            noise_model=req.noise_model,
+        )
+        return _export(exp.build(), req, f"cross_ls_{req.pqrm_preset}",
+                       req.d_surf, req.rounds)
     except Exception as e:
         _err(e)
