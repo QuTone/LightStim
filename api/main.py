@@ -341,47 +341,64 @@ def bell_teleport(req: BellTeleportRequest):
 # ── T-gate Distillation ───────────────────────────────────────────────────────
 
 class TGDistillationRequest(NoiseBase):
-    distance: int = Field(3, ge=2, le=7)
+    distance: int = Field(3, ge=2, le=5)   # d>5 takes too long
     rounds: int = Field(3, ge=1, le=20)
 
 
 @app.post("/api/circuit/tg-distillation")
 def tg_distillation(req: TGDistillationRequest):
     try:
-        from lightstim.protocols.tg_distillation import build_distillation_circuit
-        circuit, _, _ = build_distillation_circuit(d=req.distance,
-                                                    rounds_init=req.rounds,
-                                                    rounds_gate=1)
-        return _export(circuit, req, "tg_distillation", req.distance, req.rounds)
+        from lightstim.protocols.tg_distillation import (
+            build_distillation_circuit, inject_noise, _TG_MAGIC_NAMES)
+        circuit, _, system = build_distillation_circuit(
+            d=req.distance, rounds_init=req.rounds, rounds_gate=1)
+        magic_qubits = []
+        for name in _TG_MAGIC_NAMES:
+            patch, _ = system.patches[name]
+            for local_q in patch.data_indices:
+                magic_qubits.append(system.local_to_global_map[name][local_q])
+        noisy = inject_noise(circuit, magic_qubits=magic_qubits,
+                             p=req.p, p_injected=req.p, mode="full")
+        return _export(noisy, req, "tg_distillation", req.distance, req.rounds)
     except Exception as e:
         _err(e)
 
 # ── LS Distillation ───────────────────────────────────────────────────────────
 
 class LSDistillationRequest(NoiseBase):
-    distance: int = Field(3, ge=2, le=7)
+    distance: int = Field(3, ge=2, le=5)   # d>5 takes too long
     rounds: int = Field(3, ge=1, le=20)
 
 
 @app.post("/api/circuit/ls-distillation")
 def ls_distillation(req: LSDistillationRequest):
     try:
-        from lightstim.protocols.ls_distillation import build_distillation_circuit
-        circuit, _, _ = build_distillation_circuit(d=req.distance, rounds=req.rounds)
-        return _export(circuit, req, "ls_distillation", req.distance, req.rounds)
+        from lightstim.protocols.ls_distillation import (
+            build_distillation_circuit, inject_noise, _LS_MAGIC_NAMES)
+        circuit, _, system = build_distillation_circuit(d=req.distance, rounds=req.rounds)
+        magic_qubits = set()
+        for name in _LS_MAGIC_NAMES:
+            patch, _ = system.patches[name]
+            for local_q in patch.data_indices:
+                magic_qubits.add(system.local_to_global_map[name][local_q])
+        noisy = inject_noise(circuit, magic_qubits=magic_qubits,
+                             p=req.p, p_injected=req.p, mode="full",
+                             data_indices=list(system.data_indices))
+        return _export(noisy, req, "ls_distillation", req.distance, req.rounds)
     except Exception as e:
         _err(e)
 
 # ── CrossLS (Surface-PQRM Lattice Surgery) ────────────────────────────────────
 
 _PQRM_PRESETS = {
-    "(1,2,4)": [1, 2, 4],
-    "(1,3,5)": [1, 3, 5],
-    "(1,4,6)": [1, 4, 6],
+    "(1,1,3)": [1, 1, 3],   # [[7,1,3]]
+    "(1,2,4)": [1, 2, 4],   # [[15,1,3]]
+    "(1,3,5)": [1, 3, 5],   # [[31,1,3]]
+    "(1,4,6)": [1, 4, 6],   # [[63,1,3]]
 }
 
 class CrossLSRequest(NoiseBase):
-    pqrm_preset: Literal["(1,2,4)", "(1,3,5)", "(1,4,6)"] = "(1,2,4)"
+    pqrm_preset: Literal["(1,1,3)", "(1,2,4)", "(1,3,5)", "(1,4,6)"] = "(1,1,3)"
     d_surf: int = Field(3, ge=2, le=9, description="Surface code distance")
     rounds: int = Field(2, ge=1, le=20)
     pqrm_state: Literal["Z", "X"] = "Z"
