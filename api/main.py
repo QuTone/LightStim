@@ -507,14 +507,13 @@ def ls_distillation(req: LSDistillationRequest):
 # ── CrossLS (Surface-PQRM Lattice Surgery) ────────────────────────────────────
 
 _PQRM_PRESETS = {
-    "(1,1,3)": [1, 1, 3],   # [[7,1,3]]
     "(1,2,4)": [1, 2, 4],   # [[15,1,3]]
     "(1,3,5)": [1, 3, 5],   # [[31,1,3]]
     "(1,4,6)": [1, 4, 6],   # [[63,1,3]]
 }
 
 class CrossLSRequest(NoiseBase):
-    pqrm_preset: Literal["(1,1,3)", "(1,2,4)", "(1,3,5)", "(1,4,6)"] = "(1,1,3)"
+    pqrm_preset: Literal["(1,2,4)", "(1,3,5)", "(1,4,6)"] = "(1,2,4)"
     d_surf: int = Field(3, ge=2, le=9, description="Surface code distance")
     rounds: int = Field(2, ge=1, le=20)
     pqrm_state: Literal["Z", "X"] = "Z"

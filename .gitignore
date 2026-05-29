@@ -77,8 +77,8 @@ processing/
 external/
 MagicCross/
 /scripts/
-/tests/
 /example_circuit/
+# tests/ is now tracked (CI regression suite)
 
 # Internal / draft files (not for public repo)
 /feedback.md
