@@ -86,6 +86,21 @@ class TestMemory:
         c = build_quiet(exp.build)
         assert_valid_circuit(c); assert_noiseless(c)
 
+    def test_two_patch_system_has_two_observables(self):
+        """Two independent patches without coupler must have num_observables == 2."""
+        from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock
+        from lightstim.ir.qec_system import QECSystem
+        from lightstim.protocols.memory import MemoryExperiment
+        system = QECSystem()
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p1")
+        system.add_patch(UnrotatedSurfaceCode(distance=3), offset=(8, 0), name="p2")
+        exp = MemoryExperiment(qec_system=system,
+                               extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
+                               rounds=3, noise_params=None, noise_model="circuit_level", basis="Z")
+        c = build_quiet(exp.build)
+        assert c.num_observables == 2, f"two independent patches must have 2 logical qubits, got {c.num_observables}"
+        assert_noiseless(c); assert_dem_valid(c)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOGICAL OPERATIONS
@@ -182,6 +197,18 @@ class TestLogicalOps:
         from lightstim.protocols.fold_transversal import build_s_roundtrip_circuit
         c = build_quiet(lambda: build_s_roundtrip_circuit(distance=3, rounds=2, noise_params=None))
         assert c.num_detectors > 0; assert_noiseless(c); assert_dem_valid(c)
+
+    def test_logical_s_to_the_fourth_is_identity(self):
+        """S⁴ = I: applying S four times must return to initial state (mathematical invariant)."""
+        from lightstim.protocols.fold_transversal import build_gate_verification_circuit
+        c = build_quiet(lambda: build_gate_verification_circuit(
+            distance=3,
+            gates=["fold_transversal_s"] * 4,  # S^4 = I
+            init_basis="X", measure_basis="X",
+            rounds=2, unencode=False, noise_params=None,
+        ))
+        assert c.num_detectors > 0
+        assert_noiseless(c)  # S^4|+> = |+>, so X-basis measurement must always agree
 
     def test_ghz(self):
         from lightstim.protocols.ghz import GHZExperiment
