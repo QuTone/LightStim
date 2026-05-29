@@ -269,6 +269,122 @@ def ghz(req: GHZRequest):
     except Exception as e:
         _err(e)
 
+# ── Logical H (fold-transversal Hadamard) ────────────────────────────────────
+
+class LogicalHRequest(NoiseBase):
+    distance: int = Field(3, ge=3, le=11, description="Must be odd")
+    rounds: int = Field(2, ge=1, le=20)
+
+
+@app.post("/api/circuit/logical-h")
+def logical_h(req: LogicalHRequest):
+    try:
+        from lightstim.protocols.fold_transversal import build_gate_verification_circuit
+        circuit = build_gate_verification_circuit(
+            distance=req.distance,
+            gates=["fold_transversal_hadamard"],
+            init_basis="Z",
+            measure_basis="X",
+            rounds=req.rounds,
+            unencode=False,
+            noise_params=req.noise_config(),
+            noise_model=req.noise_model,
+        )
+        return _export(circuit, req, "logical_h", req.distance, req.rounds)
+    except Exception as e:
+        _err(e)
+
+# ── Logical S (fold-transversal S gate, roundtrip) ────────────────────────────
+
+class LogicalSRequest(NoiseBase):
+    distance: int = Field(3, ge=3, le=11, description="Must be odd")
+    rounds: int = Field(2, ge=1, le=20)
+    variant: Literal["roundtrip", "oneway"] = "roundtrip"
+
+
+@app.post("/api/circuit/logical-s")
+def logical_s(req: LogicalSRequest):
+    try:
+        from lightstim.protocols.fold_transversal import (
+            build_s_roundtrip_circuit, build_s_oneway_circuit)
+        noise = req.noise_config()
+        if req.variant == "oneway":
+            circuit = build_s_oneway_circuit(
+                distance=req.distance, rounds=req.rounds,
+                noise_params=noise, noise_model=req.noise_model)
+        else:
+            circuit = build_s_roundtrip_circuit(
+                distance=req.distance, rounds=req.rounds,
+                noise_params=noise, noise_model=req.noise_model)
+        return _export(circuit, req, f"logical_s_{req.variant}", req.distance, req.rounds)
+    except Exception as e:
+        _err(e)
+
+# ── Multi-patch Lattice Surgery (ZZZ…Z product measurement) ──────────────────
+
+class MultiPatchLSRequest(NoiseBase):
+    n_patches: int = Field(3, ge=2, le=5, description="Number of patches (2–5)")
+    distance: int = Field(3, ge=2, le=7)
+    rounds: int = Field(2, ge=1, le=20)
+
+
+@app.post("/api/circuit/multi-patch-ls")
+def multi_patch_ls(req: MultiPatchLSRequest):
+    try:
+        import io, contextlib
+        from lightstim.qec_code.surface_code.unrotated import (
+            UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock,
+            UnrotatedMultiPatchCoupler)
+        from lightstim.ir.qec_system import QECSystem
+        from lightstim.ir.tracker import SyndromeTracker
+        from lightstim.ir.builder import CircuitBuilder
+
+        d, n = req.distance, req.n_patches
+        # Layout: patches arranged in an L-shape / staircase to satisfy
+        # the coupler's disjoint-y-range constraint.
+        # p1 at (0,0), p2 at (step,0), remaining patches stacked below p1.
+        step = float(d * 4)
+        offsets = [(0.0, 0.0), (step, 0.0)]
+        for i in range(2, n):
+            offsets.append((0.0, float(i - 1) * step))
+
+        system = QECSystem()
+        patch_names = []
+        for i, off in enumerate(offsets):
+            name = f"p{i+1}"
+            system.add_patch(UnrotatedSurfaceCode(distance=d), name=name, offset=off)
+            patch_names.append(name)
+
+        center_x = step / 2
+        with contextlib.redirect_stdout(io.StringIO()):
+            system.register_coupler(
+                UnrotatedMultiPatchCoupler(), patch_names, "c",
+                path_axis="vertical", center_axis=center_x)
+
+        tracker = SyndromeTracker(system.num_qubits, system.num_logicals)
+        builder = CircuitBuilder(tracker, system)
+        builder.write_coordinates()
+
+        non_coupler = {q: "X" for q in system.data_indices
+                       if system.index_to_owner_map.get(q) != "c"}
+        builder.initialize(non_coupler, n=system.num_qubits)
+        se = UnrotatedSurfaceCodeExtractionBlock(system)
+        builder.apply_syndrome_extraction(se.circuit, rounds=req.rounds)
+
+        builder.activate_coupler("c")
+        coupler_data = {system.local_to_global_map["c"][q]: "X"
+                        for q in system.coupler_patches["c"].data_indices}
+        builder.initialize(coupler_data, n=system.num_qubits)
+        se2 = UnrotatedSurfaceCodeExtractionBlock(system)
+        builder.apply_syndrome_extraction(se2.circuit, rounds=req.rounds)
+
+        builder.apply_data_readout({**non_coupler, **coupler_data})
+        circuit = builder.build_noisy_circuit(req.noise_config(), noise_model=req.noise_model)
+
+        return _export(circuit, req, f"multi_patch_ls_{n}p", d, req.rounds)
+    except Exception as e:
+        _err(e)
+
 # ── State Injection ───────────────────────────────────────────────────────────
 
 class StateInjectionRequest(NoiseBase):
