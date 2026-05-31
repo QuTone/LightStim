@@ -162,6 +162,19 @@ pytest tests/ -m "not slow" --timeout=90 -q   # 89 tests, ~30s
 
 See [`tests/README.md`](tests/README.md) for the full test structure and contributor guidelines.
 
+### Citation
+
+```bibtex
+@article{fang2026lightstim,
+  author       = {Fang, Xiang and Wang, Ming and Wu, Yue and Prabhu, Sharanya and Tullsen, Dean and Miniskar, Narasinga Rao and Mueller, Frank and Humble, Travis and Ding, Yufei},
+  title        = {LightStim: A Framework for QEC Protocol Evaluation and Prototyping with Automated DEM Construction},
+  year         = {2026},
+  eprint       = {2604.21472},
+  archivePrefix= {arXiv},
+  primaryClass = {quant-ph}
+}
+```
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
