@@ -157,18 +157,27 @@ class TwoPatchLSRequest(NoiseBase):
     rounds: int = Field(3, ge=1, le=20)
     dx: Optional[float] = Field(None, description="Custom x-offset for patch2 (overrides default)")
     dy: Optional[float] = Field(None, description="Custom y-offset for patch2 (overrides default)")
+    init_patch1: Optional[Literal["X", "Z"]] = Field(None, description="Initial state basis for patch 1 (overrides interaction_type default)")
+    meas_patch1: Optional[Literal["X", "Z"]] = Field(None, description="Measurement basis for patch 1 (overrides interaction_type default)")
+    init_patch2: Optional[Literal["X", "Z"]] = Field(None, description="Initial state basis for patch 2 (overrides interaction_type default)")
+    meas_patch2: Optional[Literal["X", "Z"]] = Field(None, description="Measurement basis for patch 2 (overrides interaction_type default)")
 
 
 @app.post("/api/circuit/two-patch-ls")
 def two_patch_ls(req: TwoPatchLSRequest):
     try:
         from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
-        default_offset = (0.0, float(req.distance1 * 4)) if req.interaction_type == "ZZ" \
-                         else (float(req.distance1 * 4), 0.0)
+        default_offset = (0.0, float(req.distance1 * 2)) if req.interaction_type == "ZZ" \
+                         else (float(req.distance1 * 2), 0.0)
         offset = (req.dx if req.dx is not None else default_offset[0],
                   req.dy if req.dy is not None else default_offset[1])
-        init1, meas1 = ("X", "X") if req.interaction_type == "ZZ" else ("Z", "Z")
-        init2, meas2 = ("Z", "Z") if req.interaction_type == "ZZ" else ("X", "X")
+        # Default basis derived from interaction type; each of init/meas independently overridable
+        def_b1 = "X" if req.interaction_type == "ZZ" else "Z"
+        def_b2 = "Z" if req.interaction_type == "ZZ" else "X"
+        init1 = req.init_patch1 if req.init_patch1 is not None else def_b1
+        meas1 = req.meas_patch1 if req.meas_patch1 is not None else def_b1
+        init2 = req.init_patch2 if req.init_patch2 is not None else def_b2
+        meas2 = req.meas_patch2 if req.meas_patch2 is not None else def_b2
 
         exp = TwoPatchLSExperiment(
             patch1_config={"distance": req.distance1},
@@ -191,6 +200,10 @@ class TransversalCNOTRequest(NoiseBase):
     distance: int = Field(3, ge=2, le=9)
     rounds_before: int = Field(2, ge=1, le=20)
     rounds_after:  int = Field(2, ge=1, le=20)
+    init_ctrl: Optional[Literal["X", "Z"]] = Field(None, description="Control init basis (default Z)")
+    meas_ctrl: Optional[Literal["X", "Z"]] = Field(None, description="Control measure basis (default Z)")
+    init_tgt:  Optional[Literal["X", "Z"]] = Field(None, description="Target init basis (default Z)")
+    meas_tgt:  Optional[Literal["X", "Z"]] = Field(None, description="Target measure basis (default Z)")
 
 
 @app.post("/api/circuit/transversal-cnot")
@@ -208,6 +221,10 @@ def transversal_cnot(req: TransversalCNOTRequest):
             offset_target=(float(d * 4), 0.0),
             rounds_before=req.rounds_before,
             rounds_after=req.rounds_after,
+            initial_basis_control=req.init_ctrl or "Z",
+            measure_basis_control=req.meas_ctrl or "Z",
+            initial_basis_target=req.init_tgt  or "Z",
+            measure_basis_target=req.meas_tgt  or "Z",
             noise_params=req.noise_config(),
             noise_model=req.noise_model,
         )
@@ -221,6 +238,12 @@ def transversal_cnot(req: TransversalCNOTRequest):
 class CNOTLSRequest(NoiseBase):
     distance: int = Field(3, ge=2, le=7)
     rounds: int = Field(2, ge=1, le=20)
+    # Ancilla: init X → meas Z forced; init Z → meas X forced (protocol constraint)
+    init_a: Optional[Literal["X", "Z"]] = Field(None, description="Ancilla init basis (default X)")
+    init_c: Optional[Literal["X", "Z"]] = Field(None, description="Control init basis (default X)")
+    meas_c: Optional[Literal["X", "Z"]] = Field(None, description="Control measure basis (default X)")
+    init_t: Optional[Literal["X", "Z"]] = Field(None, description="Target init basis (default X)")
+    meas_t: Optional[Literal["X", "Z"]] = Field(None, description="Target measure basis (default X)")
 
 
 @app.post("/api/circuit/cnot-ls")
@@ -228,12 +251,19 @@ def cnot_ls(req: CNOTLSRequest):
     try:
         from lightstim.protocols.cnot_ls import CNOTLSExperiment
         d = req.distance
-        # XX coupler (target-ancilla) → horizontal; ZZ coupler (control-ancilla) → vertical
+        init_a = req.init_a or "X"
+        meas_a = "Z" if init_a == "X" else "X"  # protocol constraint
+        init_c = req.init_c or "X"
+        meas_c = req.meas_c or "X"
+        init_t = req.init_t or "X"
+        meas_t = req.meas_t or "X"
         exp = CNOTLSExperiment(
             patch_configs={"a": {"distance": d}, "c": {"distance": d}, "t": {"distance": d}},
             offset_ta=(float(2 * d), 0.0),   # target: right of ancilla (XX)
             offset_ca=(0.0, float(2 * d)),   # control: above ancilla (ZZ)
             rounds=req.rounds,
+            initial_state_dict={"a": init_a, "c": init_c, "t": init_t},
+            measure_state_dict={"a": meas_a, "c": meas_c, "t": meas_t},
             noise_params=req.noise_config(),
             noise_model=req.noise_model,
         )
@@ -247,6 +277,13 @@ class GHZRequest(NoiseBase):
     distance: int = Field(3, ge=2, le=9)
     rounds_before: int = Field(2, ge=1, le=20)
     rounds_after:  int = Field(2, ge=1, le=20)
+    # Per-patch init/meas basis (defaults match GHZExperiment: P1 X→Z, P2/P3 Z→Z)
+    init_p1: Optional[Literal["X", "Z"]] = Field(None, description="Patch 1 init basis (default X)")
+    meas_p1: Optional[Literal["X", "Z"]] = Field(None, description="Patch 1 measure basis (default Z)")
+    init_p2: Optional[Literal["X", "Z"]] = Field(None, description="Patch 2 init basis (default Z)")
+    meas_p2: Optional[Literal["X", "Z"]] = Field(None, description="Patch 2 measure basis (default Z)")
+    init_p3: Optional[Literal["X", "Z"]] = Field(None, description="Patch 3 init basis (default Z)")
+    meas_p3: Optional[Literal["X", "Z"]] = Field(None, description="Patch 3 measure basis (default Z)")
 
 
 @app.post("/api/circuit/ghz")
@@ -261,6 +298,12 @@ def ghz(req: GHZRequest):
             offset_patch3=(step * 2, 0.0),
             rounds_before=req.rounds_before,
             rounds_after=req.rounds_after,
+            initial_basis_patch1=req.init_p1 or "X",
+            measure_basis_patch1=req.meas_p1 or "Z",
+            initial_basis_patch2=req.init_p2 or "Z",
+            measure_basis_patch2=req.meas_p2 or "Z",
+            initial_basis_patch3=req.init_p3 or "Z",
+            measure_basis_patch3=req.meas_p3 or "Z",
             noise_params=req.noise_config(),
             noise_model=req.noise_model,
         )
@@ -274,6 +317,9 @@ def ghz(req: GHZRequest):
 class LogicalHRequest(NoiseBase):
     distance: int = Field(3, ge=3, le=11, description="Must be odd")
     rounds: int = Field(2, ge=1, le=20)
+    # Valid H-gate experiments: Z→X (|0⟩ prep, |+⟩ verify) or X→Z (|+⟩ prep, |0⟩ verify)
+    init_basis:    Literal["Z", "X"] = "Z"
+    measure_basis: Literal["X", "Z"] = "X"
 
 
 @app.post("/api/circuit/logical-h")
@@ -283,8 +329,8 @@ def logical_h(req: LogicalHRequest):
         circuit = build_gate_verification_circuit(
             distance=req.distance,
             gates=["fold_transversal_hadamard"],
-            init_basis="Z",
-            measure_basis="X",
+            init_basis=req.init_basis,
+            measure_basis=req.measure_basis,
             rounds=req.rounds,
             unencode=False,
             noise_params=req.noise_config(),
@@ -326,6 +372,7 @@ class MultiPatchLSRequest(NoiseBase):
     n_patches: int = Field(3, ge=2, le=5, description="Number of patches (2–5)")
     distance: int = Field(3, ge=2, le=7)
     rounds: int = Field(2, ge=1, le=20)
+    init_basis: Literal["X", "Z"] = Field("X", description="Init basis for all data qubits (default X)")
 
 
 @app.post("/api/circuit/multi-patch-ls")
@@ -365,14 +412,15 @@ def multi_patch_ls(req: MultiPatchLSRequest):
         builder = CircuitBuilder(tracker, system)
         builder.write_coordinates()
 
-        non_coupler = {q: "X" for q in system.data_indices
+        ib = req.init_basis
+        non_coupler = {q: ib for q in system.data_indices
                        if system.index_to_owner_map.get(q) != "c"}
         builder.initialize(non_coupler, n=system.num_qubits)
         se = UnrotatedSurfaceCodeExtractionBlock(system)
         builder.apply_syndrome_extraction(se.circuit, rounds=req.rounds)
 
         builder.activate_coupler("c")
-        coupler_data = {system.local_to_global_map["c"][q]: "X"
+        coupler_data = {system.local_to_global_map["c"][q]: ib
                         for q in system.coupler_patches["c"].data_indices}
         builder.initialize(coupler_data, n=system.num_qubits)
         se2 = UnrotatedSurfaceCodeExtractionBlock(system)
@@ -381,7 +429,7 @@ def multi_patch_ls(req: MultiPatchLSRequest):
         builder.apply_data_readout({**non_coupler, **coupler_data})
         circuit = builder.build_noisy_circuit(req.noise_config(), noise_model=req.noise_model)
 
-        return _export(circuit, req, f"multi_patch_ls_{n}p", d, req.rounds)
+        return _export(circuit, req, f"multi_patch_ls_{n}p_{ib.lower()}", d, req.rounds)
     except Exception as e:
         _err(e)
 
@@ -423,7 +471,10 @@ def state_injection(req: StateInjectionRequest):
 class BellTeleportRequest(NoiseBase):
     variant: Literal["tg", "zz_ls", "xx_ls"] = "tg"
     distance: int = Field(3, ge=2, le=9)
-    rounds: int = Field(3, ge=1, le=20)
+    rounds_pre:  int = Field(2, ge=1, le=20, description="SE rounds before gate / LS")
+    rounds_mid:  int = Field(1, ge=1, le=20, description="SE rounds during gate (TG only)")
+    rounds_post: int = Field(1, ge=1, le=20, description="SE rounds after gate (TG only)")
+    rounds_ls:   int = Field(2, ge=1, le=20, description="SE rounds for LS coupler (LS variants)")
     teleport_state: Literal["Z", "X"] = "Z"
 
 
@@ -435,22 +486,26 @@ def bell_teleport(req: BellTeleportRequest):
         noise = req.noise_config()
         if req.variant == "tg":
             exp = BellTeleportTG(distance=req.distance,
-                                  rounds_pre=req.rounds, rounds_mid=1, rounds_post=1,
+                                  rounds_pre=req.rounds_pre,
+                                  rounds_mid=req.rounds_mid,
+                                  rounds_post=req.rounds_post,
                                   teleport_state=req.teleport_state,
                                   noise_params=noise, noise_model=req.noise_model)
         elif req.variant == "zz_ls":
             exp = BellTeleportZZLS(distance=req.distance,
-                                    rounds_pre=req.rounds, rounds_ls=req.rounds,
+                                    rounds_pre=req.rounds_pre,
+                                    rounds_ls=req.rounds_ls,
                                     teleport_state=req.teleport_state,
                                     noise_params=noise, noise_model=req.noise_model)
         else:
             exp = BellTeleportXXLS(distance=req.distance,
-                                    rounds_pre=req.rounds, rounds_ls=req.rounds,
+                                    rounds_pre=req.rounds_pre,
+                                    rounds_ls=req.rounds_ls,
                                     teleport_state=req.teleport_state,
                                     noise_params=noise, noise_model=req.noise_model)
         return _export(exp.build(), req,
                        f"bell_teleport_{req.variant}",
-                       req.distance, req.rounds)
+                       req.distance, req.rounds_pre)
     except Exception as e:
         _err(e)
 
@@ -518,6 +573,7 @@ class CrossLSRequest(NoiseBase):
     rounds: int = Field(2, ge=1, le=20)
     pqrm_state: Literal["Z", "X"] = "Z"
     surf_state: Literal["X", "Z"] = "X"
+    post_select_hybrid: bool = Field(False, description="Enable hybrid post-selection on PQRM ancilla")
 
 
 @app.post("/api/circuit/cross-ls")
@@ -531,6 +587,7 @@ def cross_ls(req: CrossLSRequest):
             rounds=req.rounds,
             PQRM_state=req.pqrm_state,
             surf_state=req.surf_state,
+            post_select_hybrid=req.post_select_hybrid,
             noise_params=req.noise_config(),
             noise_model=req.noise_model,
         )
