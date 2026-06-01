@@ -14,15 +14,17 @@ Usage:
     venv/bin/python paper_artifact/table/comprehensive_benchmark.py
 """
 import sys, time, json, signal
-sys.path.insert(0, '/home/xiang/workspace/LightStim')
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
-from pathlib import Path
 
 # ── Output ───────────────────────────────────────────────────────────────────
 # results/ is gitignored — this is the reviewer's local output.
 # The canonical reference data lives in precompute/table3.json (committed).
-OUT_DIR = Path('/home/xiang/workspace/LightStim/paper_artifact/table/results')
+OUT_DIR = Path(__file__).resolve().parent / 'results'
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 CKPT_PATH = OUT_DIR / 'table3.json'
 

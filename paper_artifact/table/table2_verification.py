@@ -21,10 +21,12 @@ Usage:
     venv/bin/python paper_artifact/table/table2_verification.py
 """
 import sys, json
-sys.path.insert(0, '/home/xiang/workspace/LightStim')
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
 
 import stim
-from pathlib import Path
 
 from lightstim.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
 from lightstim.qec_code.surface_code.rotated.SE_block import (
@@ -37,8 +39,7 @@ from lightstim.protocols.memory import MemoryExperiment
 from lightstim.noise.config import NoiseConfig
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-REPO = Path('/home/xiang/workspace/LightStim')
-PRECOMPUTE = REPO / 'paper_artifact' / 'table' / 'precompute'
+PRECOMPUTE = Path(__file__).resolve().parent / 'precompute'
 PRECOMPUTE.mkdir(parents=True, exist_ok=True)
 
 _NC = NoiseConfig(p_1q=0, p_2q=0, p_meas=0, p_reset=0)

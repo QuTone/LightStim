@@ -52,7 +52,7 @@ def test_pipeline_rotated_memory():
 
     stats = _run_pipeline(noisy)
     assert stats.shots > 0,  "pipeline returned 0 shots"
-    assert stats.errors > 0, f"LER=0 at p=0.05 — noise injection or decoder may be broken"
+    assert stats.errors > 0, "Expected nonzero LER at p=0.05; check noise injection and decoder"
     assert 0 < stats.logical_error_rate < 1, f"LER out of range: {stats.logical_error_rate}"
 
 
@@ -74,7 +74,7 @@ def test_pipeline_two_patch_ls():
 
     stats = _run_pipeline(noisy)
     assert stats.shots > 0
-    assert stats.errors > 0, "LER=0 at p=0.05 — noise injection or decoder may be broken"
+    assert stats.errors > 0, "Expected nonzero LER at p=0.05; check noise injection and decoder"
     assert 0 < stats.logical_error_rate < 1
 
 
