@@ -39,7 +39,7 @@ def rotated_memory_payload():
 
 @pytest.mark.smoke
 def test_export_top_level_keys(rotated_memory_payload):
-    assert set(rotated_memory_payload.keys()) == {"dem", "timeline", "detslice"}
+    assert set(rotated_memory_payload.keys()) == {"dem", "timeline", "detslice", "circuit_str"}
 
 
 @pytest.mark.smoke
