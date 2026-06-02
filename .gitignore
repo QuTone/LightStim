@@ -83,7 +83,6 @@ MagicCross/
 # Internal / draft files (not for public repo)
 /feedback.md
 /review.md
-/CONTRIBUTING.md
 /Reorg_plan.md
 /Extension_plan.md
 /extract_frontend_data.py
