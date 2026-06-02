@@ -15,14 +15,14 @@ import pytest
 
 try:
     from fastapi.testclient import TestClient
-    from api.main import app
+    from server.main import app
     _API_AVAILABLE = True
 except ImportError:
     _API_AVAILABLE = False
 
 pytestmark = pytest.mark.skipif(
     not _API_AVAILABLE,
-    reason="fastapi or api.main not available",
+    reason="fastapi or server.main not available",
 )
 
 SMOKE = pytest.mark.smoke

@@ -9,6 +9,7 @@ LightStim is a modular Quantum Error Correction (QEC) framework built on [Stim](
 - Inject standardized noise models (`code_capacity`, `phenomenological`, `circuit_level`, `XZ_biased`)
 - Decode with a unified backend (PyMatching, BP+OSD CPU/GPU, MWPF)
 - Analyze and visualize logical error rates
+- Inspect circuits interactively in a browser (DEM 3D, Circuit Timeline, DetSlice animator)
 
 ## Repository layout
 
@@ -20,9 +21,11 @@ LightStim/
 │   ├── noise/                  # Noise config and injectors
 │   ├── protocols/              # Experiment orchestration (memory, CNOT, lattice surgery, ...)
 │   ├── simulation/             # Decoder backend and simulation pipeline
+│   ├── frontend/               # Circuit → JSON exporters (powers the web UI)
 │   └── plot/                   # Plotting helpers
+├── server/                     # Optional FastAPI HTTP server (powers the web UI)
 ├── docs/
-│   ├── api/                    # API reference (ir.md, simulation.md)
+│   ├── api/                    # Library API reference (ir.md, simulation.md)
 │   ├── getting_started.md      # Installation, quick start, QEC concepts
 │   └── vision.md               # Design philosophy and LightStim + AI workflow
 ├── skills/                     # Claude Code skill definitions
@@ -128,6 +131,30 @@ print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 | Repetition | `RepetitionCode` | Classical benchmark |
 
 All codes are in `lightstim/qec_code/`.
+
+## Interactive web UI (optional)
+
+LightStim ships with a small FastAPI server (`server/`) that exposes every
+protocol over HTTP. Pair it with the
+[LightStim-front-end](https://github.com/x8fangQ/LightStim-front-end) React
+app to inspect circuits in your browser: 3D detector-error-model viewer,
+circuit timeline, detslice animator, etc.
+
+```bash
+# Terminal 1 — start the backend (this repo)
+venv/bin/uvicorn server.main:app --port 9999
+
+# Terminal 2 — start the frontend (sibling repo)
+cd ../LightStim-front-end
+npm install && npm run dev    # opens http://localhost:8080
+```
+
+Open the dev URL in your browser, pick a protocol from the sidebar, and
+hit *Build Circuit*. See [`server/README.md`](server/README.md) for the
+full endpoint list and `LightStim-front-end`'s README for the UI side.
+
+> The backend has **no UI of its own** — `localhost:9999` returns plain
+> JSON. The visual rendering lives entirely in the front-end repo.
 
 ## Try it with your AI coding agent
 

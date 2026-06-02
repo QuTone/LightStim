@@ -5,7 +5,7 @@ sinter>=1.15.0
 PyMatching>=2.0.0
 pandas
 
-# API server (optional — only needed when running `uvicorn api.main:app`)
+# HTTP server (optional — only needed when running `uvicorn server.main:app`)
 fastapi>=0.110.0
 uvicorn>=0.29.0
 

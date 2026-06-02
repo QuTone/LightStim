@@ -1,8 +1,8 @@
 """
-LightStim local API server.
+LightStim local HTTP server.
 
 Start with:
-    venv/bin/uvicorn api.main:app --reload --host 0.0.0.0 --port 9999
+    venv/bin/uvicorn server.main:app --reload --host 0.0.0.0 --port 9999
 
 Docs: http://localhost:9999/docs
 """
