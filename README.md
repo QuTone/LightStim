@@ -187,7 +187,15 @@ pip install pytest pytest-timeout
 pytest tests/ -m "not slow" --timeout=90 -q   # 89 tests, ~30s
 ```
 
-See [`tests/README.md`](tests/README.md) for the full test structure and contributor guidelines.
+See [`tests/README.md`](tests/README.md) for the full test structure, and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, PR conventions,
+and how to extend each layer (codes, protocols, decoders, noise models).
+
+## Contact
+
+For collaboration, security disclosures, or anything not suited for a public
+issue, email Xiang Fang at <x8fang@ucsd.edu>. For bugs and feature requests,
+open a [GitHub issue](https://github.com/x8fangQ/LightStim/issues).
 
 ### Citation
 
