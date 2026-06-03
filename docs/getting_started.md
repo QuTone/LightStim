@@ -55,7 +55,7 @@ for geometry; grid maps are derived from it at runtime.
 
 ```bash
 # Clone the repository
-git clone https://github.com/x8fangQ/LightStim.git
+git clone https://github.com/QuTone/LightStim.git
 cd LightStim
 
 # Create and activate virtual environment
