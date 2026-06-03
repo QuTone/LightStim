@@ -50,9 +50,8 @@ See the auto-generated `/docs` for full parameter schemas.
 
 ## Using with the web UI
 
-Two options:
+Run both locally — this backend and the front-end:
 
-### Option A — Run everything locally
 ```bash
 # Terminal 1: backend (this server)
 cd LightStim
@@ -65,15 +64,7 @@ npm run dev    # opens http://localhost:8080
 ```
 
 The frontend's `VITE_API_URL` defaults to `http://localhost:9999`, so it
-talks to your local backend out of the box.
-
-### Option B — Use the deployed front-end + your local backend
-1. Start this server locally on port 9999.
-2. Open the deployed front-end:
-   <https://qutone.github.io/LightStim-front-end/>.
-
-The deployed front-end calls `http://localhost:9999` from your browser, so
-your local backend is what serves the data. (CORS is open to any origin.)
+talks to your local backend out of the box. (CORS is open to any origin.)
 
 ## What this server does NOT do
 

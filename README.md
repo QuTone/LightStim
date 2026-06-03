@@ -54,6 +54,7 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 
 pip install -e .                   # core library (PyMatching included)
 pip install -e ".[decoders]"       # optional CPU decoders: BP+OSD and MWPF
+pip install -e ".[server]"         # optional FastAPI server for the web UI
 pip install -e ".[dev]"            # development / notebook environment
 pip install -e ".[gpu]"            # optional NVIDIA GPU decoder (requires CUDA)
 ```
@@ -142,6 +143,7 @@ circuit timeline, detslice animator, etc.
 
 ```bash
 # Terminal 1 — start the backend (this repo)
+pip install -e ".[server]"    # one-time: installs FastAPI + uvicorn
 venv/bin/uvicorn server.main:app --port 9999
 
 # Terminal 2 — start the frontend (sibling repo)
