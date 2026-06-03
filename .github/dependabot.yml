@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Python dependencies (requirements.txt + pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Roll all minor/patch bumps into a single weekly PR.
+      # Major bumps still open as individual PRs for manual review.
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Keep the actions used by our CI workflows up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
