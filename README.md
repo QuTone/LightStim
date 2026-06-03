@@ -138,22 +138,26 @@ All codes are in `lightstim/qec_code/`.
 LightStim ships with a small FastAPI server (`server/`) that exposes every
 protocol over HTTP. Pair it with the
 [LightStim-front-end](https://github.com/QuTone/LightStim-front-end) React
-app to inspect circuits in your browser: 3D detector-error-model viewer,
-circuit timeline, detslice animator, etc.
+app (needs Node.js 18+) to inspect circuits in your browser: 3D
+detector-error-model viewer, circuit timeline, detslice animator, etc.
 
 ```bash
-# Terminal 1 — start the backend (this repo)
-pip install -e ".[server]"    # one-time: installs FastAPI + uvicorn
+# Terminal 1 — backend (this repo; venv activated)
+pip install -e ".[server]"          # one-time: installs FastAPI + uvicorn
 venv/bin/uvicorn server.main:app --port 9999
 
-# Terminal 2 — start the frontend (sibling repo)
+# Terminal 2 — front-end (separate repo — clone it next to LightStim)
+git clone https://github.com/QuTone/LightStim-front-end.git ../LightStim-front-end
 cd ../LightStim-front-end
-npm install && npm run dev    # opens http://localhost:8080
+npm install
+npm run dev                         # serves http://localhost:8080
 ```
 
-Open the dev URL in your browser, pick a protocol from the sidebar, and
-hit *Build Circuit*. See [`server/README.md`](server/README.md) for the
-full endpoint list and `LightStim-front-end`'s README for the UI side.
+Open the dev URL that Vite prints (it picks the next free port if 8080 is
+taken), choose a protocol from the sidebar, and hit *Build Circuit*. The
+front-end calls `http://localhost:9999` by default; override it with
+`VITE_API_URL` in `.env.local`. See [`server/README.md`](server/README.md)
+for the full endpoint list and `LightStim-front-end`'s README for the UI side.
 
 > The backend has **no UI of its own** — `localhost:9999` returns plain
 > JSON. The visual rendering lives entirely in the front-end repo.
