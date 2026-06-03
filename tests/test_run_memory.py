@@ -40,6 +40,20 @@ def _has_cuda() -> bool:
         return False
 
 
+def _has_bposd() -> bool:
+    """True if the CPU BP+OSD decoder is registered (stimbposd or ldpc installed).
+
+    Part of the optional ``[decoders]`` extra, so a core-only install skips
+    the bposd CLI tests instead of failing — mirroring how the FastAPI tests
+    skip when ``fastapi`` is absent.
+    """
+    try:
+        from lightstim.simulation.decoder_backend.registry import list_decoders
+        return "bposd" in list_decoders()
+    except Exception:
+        return False
+
+
 # ── Layer 1: circuit building ─────────────────────────────────────────────────
 
 @pytest.mark.parametrize("code,dist", [
@@ -173,6 +187,7 @@ def test_cli_checkpoint_resume(tmp_path):
     assert len(df) == 1  # no duplicates appended
 
 
+@pytest.mark.skipif(not _has_bposd(), reason="bposd decoder unavailable; pip install -e '.[decoders]'")
 def test_cli_cpu_bposd_surface(tmp_path):
     """cpu_bposd on rotated_sc d=3 — verifies decoder config, fast."""
     out = tmp_path / "bposd_surface.csv"
@@ -185,6 +200,7 @@ def test_cli_cpu_bposd_surface(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(not _has_bposd(), reason="bposd decoder unavailable; pip install -e '.[decoders]'")
 def test_cli_cpu_bposd_bb(tmp_path):
     """cpu_bposd on bb_72_12_6 — slow due to OSD precomputation."""
     out = tmp_path / "bb_bposd.csv"

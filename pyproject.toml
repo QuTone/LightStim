@@ -34,6 +34,10 @@ plot = [
     "matplotlib",
     "seaborn",
 ]
+server = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+]
 decoders = [
     "stimbposd",
     "mwpf",
