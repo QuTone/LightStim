@@ -29,6 +29,7 @@ QECPatch → QECSystem → CircuitBuilder + SyndromeTracker → stim.Circuit
 | Run a simulation and get logical error rate | [`simulate-decode/`](simulate-decode/SKILL.md) |
 | Configure noise models (circuit-level, phenomenological…) | [`custom-noise/`](custom-noise/SKILL.md) |
 | Add a new QEC code (new stabilizer geometry) | [`extend-new-code/`](extend-new-code/SKILL.md) |
+| Add a new decoder (wrap a library, GPU, neural, …) | [`extend-new-decoder/`](extend-new-decoder/SKILL.md) |
 | Write or update a protocol notebook | [`notebook-workflow/`](notebook-workflow/SKILL.md) |
 | Debug unexpected detector counts, LER≈50%, or tracker errors | [`gotchas/`](gotchas/SKILL.md) |
 

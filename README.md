@@ -34,6 +34,7 @@ LightStim/
 │   ├── simulate-decode/        # Run SimulationPipeline and get LER
 │   ├── custom-noise/           # Configure noise models
 │   ├── extend-new-code/        # Add a new QEC code
+│   ├── extend-new-decoder/     # Add a new decoder backend
 │   └── gotchas/                # Known pitfalls and debugging patterns
 ├── notebooks/                  # Jupyter notebooks by topic
 ├── benchmarks/                 # Simulation scripts and paper artifacts
