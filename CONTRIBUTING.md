@@ -12,7 +12,7 @@ abstractions for each kind of contribution.
 ## 1. Development setup
 
 ```bash
-git clone https://github.com/x8fangQ/LightStim.git
+git clone https://github.com/QuTone/LightStim.git
 cd LightStim
 python3 -m venv venv
 source venv/bin/activate
@@ -83,7 +83,7 @@ Protocols live in `lightstim/protocols/` and orchestrate `QECPatch` +
 2. **Add a smoke test in `tests/test_api.py`** — the test class
    `TestEndpoints` has a pattern to copy. CI gates new endpoints on this.
 3. **Cross-repo coordination** — the front-end repo
-   ([LightStim-front-end](https://github.com/x8fangQ/LightStim-front-end))
+   ([LightStim-front-end](https://github.com/QuTone/LightStim-front-end))
    has an `ENDPOINT_MAP` in `src/lib/api.ts` and protocol catalog in
    `src/data/experiments.ts`. Add your endpoint there too, or the UI
    won't see it.
