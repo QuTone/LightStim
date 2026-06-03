@@ -16,6 +16,7 @@ skills/
 ├── simulate-decode/        # Run SimulationPipeline + get LER
 ├── custom-noise/           # Configure NoiseConfig + noise models
 ├── extend-new-code/        # Add a new QEC code (QECPatch + SE_block)
+├── extend-new-decoder/     # Add a new decoder backend (wrap a library / DEM-matrix custom)
 ├── notebook-workflow/      # Protocol dev lifecycle: prototype → package → benchmark → demo
 └── gotchas/                # Known pitfalls & debugging patterns
 ```
