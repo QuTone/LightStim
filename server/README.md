@@ -2,7 +2,7 @@
 
 A FastAPI HTTP server that exposes LightStim's circuit-construction protocols
 over REST endpoints. Pair it with the
-[LightStim-front-end](https://github.com/x8fangQ/LightStim-front-end) web UI
+[LightStim-front-end](https://github.com/QuTone/LightStim-front-end) web UI
 for interactive circuit visualization (DEM 3D, Circuit Timeline, DetSlice
 animator).
 
@@ -70,7 +70,7 @@ talks to your local backend out of the box.
 ### Option B — Use the deployed front-end + your local backend
 1. Start this server locally on port 9999.
 2. Open the deployed front-end:
-   <https://x8fangQ.github.io/LightStim-front-end/>.
+   <https://qutone.github.io/LightStim-front-end/>.
 
 The deployed front-end calls `http://localhost:9999` from your browser, so
 your local backend is what serves the data. (CORS is open to any origin.)

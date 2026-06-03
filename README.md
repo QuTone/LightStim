@@ -46,7 +46,7 @@ LightStim/
 ### 1) Install
 
 ```bash
-git clone https://github.com/x8fangQ/LightStim.git
+git clone https://github.com/QuTone/LightStim.git
 cd LightStim
 
 python3 -m venv venv
@@ -136,7 +136,7 @@ All codes are in `lightstim/qec_code/`.
 
 LightStim ships with a small FastAPI server (`server/`) that exposes every
 protocol over HTTP. Pair it with the
-[LightStim-front-end](https://github.com/x8fangQ/LightStim-front-end) React
+[LightStim-front-end](https://github.com/QuTone/LightStim-front-end) React
 app to inspect circuits in your browser: 3D detector-error-model viewer,
 circuit timeline, detslice animator, etc.
 
@@ -195,7 +195,7 @@ and how to extend each layer (codes, protocols, decoders, noise models).
 
 For collaboration, security disclosures, or anything not suited for a public
 issue, email Xiang Fang at <x8fang@ucsd.edu>. For bugs and feature requests,
-open a [GitHub issue](https://github.com/x8fangQ/LightStim/issues).
+open a [GitHub issue](https://github.com/QuTone/LightStim/issues).
 
 ### Citation
 
