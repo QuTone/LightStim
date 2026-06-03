@@ -159,6 +159,14 @@ front-end calls `http://localhost:9999` by default; override it with
 `VITE_API_URL` in `.env.local`. See [`server/README.md`](server/README.md)
 for the full endpoint list and `LightStim-front-end`'s README for the UI side.
 
+> **Running on a remote server (not your laptop)?** `localhost` in your
+> browser means *your own* machine, so it won't reach a dev server running on
+> the remote host. Forward the ports over SSH from your laptop — e.g.
+> `ssh -L 8080:localhost:8080 -L 9999:localhost:9999 you@your-server` (use
+> whatever port Vite actually printed) — then open `http://localhost:8080`
+> locally. Most IDEs (VS Code, Cursor) auto-forward ports: just click the
+> link in their *Ports* panel instead of typing the URL by hand.
+
 > The backend has **no UI of its own** — `localhost:9999` returns plain
 > JSON. The visual rendering lives entirely in the front-end repo.
 
