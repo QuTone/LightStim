@@ -49,21 +49,59 @@ SCHEDULES = {
         ((-1, 0), (0, 0)),   # Tick 5
         ((+1, 0), (0, 0)),   # Tick 6
     ],
-    '4tick': [                    # new — user-supplied
-        ((0, -1), (0, -1)),  # Tick 1
-        ((+1, 0), (0, +1)),  # Tick 2
-        ((-1, 0), (+1, 0)),  # Tick 3
-        ((0, +1), (-1, 0)),  # Tick 4
+    '4tick': [                    # minimal-depth; X and Z mirror on the vertical ticks
+        ((+1, 0), (+1, 0)),  # Tick 1: both East
+        ((0, +1), (0, -1)),  # Tick 2: X North, Z South
+        ((0, -1), (0, +1)),  # Tick 3: X South, Z North
+        ((-1, 0), (-1, 0)),  # Tick 4: both West
     ],
 }
 ```
 
-Confirmed with user: for the `4tick` schedule the left value of each pair is `dx_x`
-(X-stabilizer) and the right value is `dx_z` (Z-stabilizer).
+Tuple order is `(dx_x, dx_z)` (X-stabilizer offset first, Z second).
 
-Note both stabilizer types visit each of their 4 axis-aligned neighbors
-`{(0,±1), (±1,0)}` exactly once across the 4 ticks, with X and Z following different
-orderings (hook-error orientation).
+### Why this `4tick` schedule (and not the originally-proposed one)
+
+The schedule originally proposed used *different* X and Z offsets per tick (the
+rotated-surface-code style, where X and Z follow different rotational orders to set
+hook-error orientation):
+
+```
+((0, -1), (0, -1)), ((+1, 0), (0, +1)), ((-1, 0), (+1, 0)), ((0, +1), (-1, 0))
+```
+
+That does **not** work on this codebase's unrotated lattice. Geometry of the patch:
+
+- Data qubits sit at `(even, even)` and `(odd, odd)`; X-ancillas at `(odd, even)`,
+  Z-ancillas at `(even, odd)`.
+- An `(even, even)` data qubit is reached by **X-ancillas via horizontal offsets**
+  `(±1, 0)` and by **Z-ancillas via vertical offsets** `(0, ±1)`. For `(odd, odd)`
+  data the roles flip.
+- Therefore a tick whose `dx_x` and `dx_z` have **different orientations** (one
+  horizontal, one vertical) makes an X-CNOT and a Z-CNOT land on the *same* data
+  qubit → a same-tick conflict. The proposed schedule's ticks 2 and 4 are exactly
+  these mixed-orientation ticks (measured: 8 conflicts at d=3).
+- Conflict-freeness alone is not sufficient: when an X-ancilla and Z-ancilla share a
+  data qubit, the *order* of their CNOTs must be globally consistent, or the ancillas
+  stay entangled and the measured operator is not a clean stabilizer (stim/tracker:
+  "measurement commutes with all rows but is linearly independent").
+
+A brute-force search over orientation-consistent depth-4 schedules (96 candidates)
+found 16 valid ones; all reach full graphlike distance (`d` at d=3 and d=5). The
+**binding constraint** is that `dx_x` and `dx_z` share the same orientation on every
+tick (both horizontal or both vertical); then X acts on the `(even, even)` sublattice
+while Z acts on `(odd, odd)` — disjoint qubits, globally consistent order, no hook
+penalty.
+
+The adopted `4tick` schedule shares the horizontal ticks (`dx_x == dx_z`) and
+**mirrors X vs Z on the vertical ticks** (`dx_x = (0, ±1)`, `dx_z = (0, ∓1)`). This
+fixes a definite hook-error orientation, closer in spirit to a hook-oriented
+("perpendicular"-style) schedule than the symmetric `dx_x == dx_z` variant. Both
+variants were verified to preserve **full code distance in both bases** (Z-memory and
+X-memory: graphlike distance == d at d = 3, 5); the choice between them only affects
+hook orientation, which matters for biased-noise / sub-threshold logical error rate,
+not for distance. A fully symmetric `dx_x == dx_z` schedule
+(`E, N, S, W` for both X and Z) is an equally valid alternative.
 
 ## Design
 
@@ -144,6 +182,10 @@ is run for **both** `UnrotatedSurfaceCodeExtractionBlock` and
 
 ## Risks
 
-- The user-supplied 4-tick schedule must be conflict-free and distance-preserving
-  for this lattice's coordinate convention. Test #2 (stim build) and test #3
-  (distance) are the gates that catch a bad schedule before merge.
+- A 4-tick schedule must be conflict-free *and* distance-preserving for this
+  lattice's coordinate convention. This risk materialized during implementation: the
+  originally-proposed schedule conflicted (see "Why this `4tick` schedule" above).
+  The conflict-free check (test #2) and the graphlike-distance check (test #3) caught
+  it; the adopted schedule passes both at d = 3 and d = 5. Note stim does **not**
+  auto-reject a same-tick double-drive (it applies repeated targets sequentially), so
+  the explicit per-layer uniqueness assertion in test #2 is load-bearing.

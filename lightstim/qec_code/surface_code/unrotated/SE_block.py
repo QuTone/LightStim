@@ -6,24 +6,61 @@ import stim
 class UnrotatedSurfaceCodeExtractionBlock:
     """
     Generates the noiseless syndrome extraction circuit block for Unrotated Surface Code.
-    
+
     This block represents ONE cycle of stabilizer measurements:
     1. Reset syndrome qubits.
-    2. Entangling gates (H, CNOTs) following the specific 6-tick scheduling (Li's paper).
+    2. Entangling gates (H, CNOTs) following the selected CNOT scheduling.
     3. Measure syndrome qubits.
-    
+
     It relies on the 'system' object to provide coordinate-to-index mappings.
     NO NOISE is injected here; it is handled by an external noise_injector.
+
+    Args:
+        system: An unrotated surface code patch.
+        scheduling: CNOT scheduling variant (see SCHEDULES).
+            '6tick' (default) — Li's-paper schedule that separates some X and Z
+                layers to avoid conflicts on shared data qubits.
+            '4tick' — minimal-depth schedule(perpendicular).
+
+    Each entry is ``(dx_x, dx_z)``: the first element is the X-stabilizer offset
+    (ancilla -> data, syndrome is control), the second is the Z-stabilizer offset
+    (data -> ancilla, syndrome is target). ``(0, 0)`` means that stabilizer type
+    does nothing on that tick.
+
     """
 
-    def __init__(self, system):
+    SCHEDULES = {
+        '6tick': [                    # Li's paper — DEFAULT
+            ((0, 0), (-1, 0)),   # Tick 1
+            ((0, 0), (+1, 0)),   # Tick 2
+            ((0, +1), (0, +1)),  # Tick 3
+            ((0, -1), (0, -1)),  # Tick 4
+            ((-1, 0), (0, 0)),   # Tick 5
+            ((+1, 0), (0, 0)),   # Tick 6
+        ],
+        '4tick': [                    # minimal-depth; X and Z mirror on the vertical ticks
+            ((+1, 0), (+1, 0)),  # Tick 1: both East
+            ((0, +1), (0, -1)),  # Tick 2: X North, Z South
+            ((0, -1), (0, +1)),  # Tick 3: X South, Z North
+            ((-1, 0), (-1, 0)),  # Tick 4: both West
+        ],
+    }
+
+    def __init__(self, system, scheduling='6tick'):
         """
         Args:
             system: An unrotated surface code patch.
+            scheduling: CNOT scheduling variant; one of SCHEDULES ('6tick', '4tick').
         """
+        if scheduling not in self.SCHEDULES:
+            raise ValueError(
+                f"Unknown scheduling {scheduling!r}. "
+                f"Valid options: {sorted(self.SCHEDULES)}"
+            )
         self.system = system
+        self.scheduling = scheduling
         self.circuit = stim.Circuit()
-        
+
         # Build the circuit immediately upon instantiation
         self._build_circuit()
 
@@ -42,20 +79,10 @@ class UnrotatedSurfaceCodeExtractionBlock:
         self.circuit.append("TICK")
 
         # --- Step 3: Entangling Gates (CNOT Scheduling) ---
-        # Unrotated Surface Code scheduling typically involves 4 interactions per stabilizer,
-        # but the provided source uses a 6-tick schedule for avoiding conflicts.
-        
         # Format: (dx_x, dx_z)
-        # dx_z: Offset for Z-stabilizers (Data -> Ancilla)
         # dx_x: Offset for X-stabilizers (Ancilla -> Data)
-        canonical_tick_deltas = [
-            ((0, 0), (-1, 0)),  # Tick 1
-            ((0, 0), (+1, 0)),  # Tick 2
-            ((0, +1), (0, +1)), # Tick 3
-            ((0, -1), (0, -1)), # Tick 4
-            ((-1, 0), (0, 0)),  # Tick 5
-            ((+1, 0),(0, 0))    # Tick 6
-        ]
+        # dx_z: Offset for Z-stabilizers (Data -> Ancilla)
+        canonical_tick_deltas = self.SCHEDULES[self.scheduling]
 
         # Get the active syndrome coordinates for X and Z stabilizers
         active_stabilizers_x = self.system.active_stabilizers_x
