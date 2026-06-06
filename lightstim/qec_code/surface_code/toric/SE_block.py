@@ -6,8 +6,19 @@ class ToricCodeExtractionBlock:
     """
     Syndrome extraction block for Toric Code (unrotated with periodic boundaries).
 
-    Uses the same 6-tick CNOT schedule as UnrotatedSurfaceCodeExtractionBlock,
-    with periodic wrap when resolving neighbor coordinates.
+    Uses the same CNOT schedules as UnrotatedSurfaceCodeExtractionBlock, with
+    periodic wrap when resolving neighbor coordinates.
+
+    Args:
+        system: QECSystem with a toric code patch.
+        scheduling: CNOT scheduling variant; one of SCHEDULES.
+            '6tick' (default) — Li's-paper schedule that separates some X and Z
+                layers to avoid conflicts on shared data qubits.
+            '4tick' — minimal-depth schedule(perpendicular).
+
+    Each entry is ``(dx_x, dx_z)``: the first element is the X-stabilizer offset
+    (ancilla -> data), the second is the Z-stabilizer offset (data -> ancilla).
+    ``(0, 0)`` means that stabilizer type does nothing on that tick.
 
     Expects system (QECSystem) with:
     - active_stabilizers_x, active_stabilizers_z
@@ -16,8 +27,32 @@ class ToricCodeExtractionBlock:
     - Stabilizer records with syn_coord, syn_idx, data_indices, type
     """
 
-    def __init__(self, system):
+    # Own copy of the schedules (identical deltas to the unrotated block).
+    SCHEDULES = {
+        '6tick': [                    # Li's paper — DEFAULT
+            ((0, 0), (-1, 0)),   # Tick 1
+            ((0, 0), (+1, 0)),   # Tick 2
+            ((0, +1), (0, +1)),  # Tick 3
+            ((0, -1), (0, -1)),  # Tick 4
+            ((-1, 0), (0, 0)),   # Tick 5
+            ((+1, 0), (0, 0)),   # Tick 6
+        ],
+        '4tick': [                    # minimal-depth; X and Z mirror on the vertical ticks
+            ((+1, 0), (+1, 0)),  # Tick 1: both East
+            ((0, +1), (0, -1)),  # Tick 2: X North, Z South
+            ((0, -1), (0, +1)),  # Tick 3: X South, Z North
+            ((-1, 0), (-1, 0)),  # Tick 4: both West
+        ],
+    }
+
+    def __init__(self, system, scheduling='6tick'):
+        if scheduling not in self.SCHEDULES:
+            raise ValueError(
+                f"Unknown scheduling {scheduling!r}. "
+                f"Valid options: {sorted(self.SCHEDULES)}"
+            )
         self.system = system
+        self.scheduling = scheduling
         self.circuit = stim.Circuit()
         self._build_circuit()
 
@@ -42,14 +77,7 @@ class ToricCodeExtractionBlock:
         self.circuit.append("H", sorted(active_x_syn_indices))
         self.circuit.append("TICK")
 
-        canonical_tick_deltas = [
-            ((0, 0), (-1, 0)),
-            ((0, 0), (+1, 0)),
-            ((0, +1), (0, +1)),
-            ((0, -1), (0, -1)),
-            ((-1, 0), (0, 0)),
-            ((+1, 0), (0, 0)),
-        ]
+        canonical_tick_deltas = self.SCHEDULES[self.scheduling]
 
         active_stabilizers_x = self.system.active_stabilizers_x
         active_stabilizers_z = self.system.active_stabilizers_z
