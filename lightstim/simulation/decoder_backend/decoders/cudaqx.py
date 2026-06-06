@@ -224,17 +224,18 @@ class CudaQxDecoder(sinter.Decoder):
 
 
 # ---------------------------------------------------------------------------
-# Registration (skipped if cudaq_qec not installed)
+# Registration (no eager cudaq_qec import)
 # ---------------------------------------------------------------------------
+# We register the decoder unconditionally. The actual `import cudaq_qec`
+# is deferred to `CudaQxDecoder.compile_decoder_for_dem` (the lazy import
+# at the top of that method), so every multiprocessing worker that uses
+# a CPU decoder avoids paying the cudaq_qec startup cost — which in turn
+# forks nvidia-smi twice and grabs an NVML global lock. With many
+# concurrent workers this used to hang the GPU driver.
+#
+# GPU decoder users still get a clear ImportError at first use if
+# cudaq_qec is not installed.
 
-_CUDAQX_AVAILABLE = False
-try:
-    import cudaq_qec  # noqa: F401
-    _CUDAQX_AVAILABLE = True
-except ImportError:
-    pass
-
-if _CUDAQX_AVAILABLE:
-    register_decoder("nv-qldpc-decoder", CudaQxDecoder, backend="gpu")
-    # GPU override for the "bposd" name so DecoderConfig(name="bposd", backend="gpu") works
-    register_decoder("bposd", CudaQxDecoder, backend="gpu")
+register_decoder("nv-qldpc-decoder", CudaQxDecoder, backend="gpu")
+# GPU override for the "bposd" name so DecoderConfig(name="bposd", backend="gpu") works
+register_decoder("bposd", CudaQxDecoder, backend="gpu")

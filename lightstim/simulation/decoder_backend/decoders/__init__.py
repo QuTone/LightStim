@@ -32,12 +32,13 @@ else:
     _log.debug("mwpf not installed; skipping MWPF decoder")
 
 # cudaq_qec — optional NVIDIA GPU backend.
-if importlib.util.find_spec("cudaq_qec") is not None:
-    try:
-        from . import cudaqx  # noqa: F401 — registers nv-qldpc-decoder + bposd/gpu
-    except ImportError as exc:
-        _log.debug("cudaq_qec import failed: %s", exc)
-else:
-    _log.debug("cudaq_qec not installed; skipping GPU decoder")
+# Import cudaqx unconditionally: it no longer eager-imports cudaq_qec at module
+# scope. The actual `import cudaq_qec` is deferred to first use of the GPU
+# decoder, which avoids forking nvidia-smi (and grabbing the NVML global lock)
+# in every CPU-decoder worker.
+try:
+    from . import cudaqx  # noqa: F401 — registers nv-qldpc-decoder + bposd/gpu
+except ImportError as exc:
+    _log.debug("cudaqx import failed: %s", exc)
 
 __all__ = ["PyMatchingDecoder"]

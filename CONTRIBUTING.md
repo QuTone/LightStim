@@ -99,23 +99,31 @@ If you change the **JSON output shape** (e.g. add a new field to
 ## 5. Adding a new decoder
 
 Decoders plug into `lightstim/simulation/decoder_backend/` via the
-registry pattern.
+registry pattern. Every decoder is a `sinter.Decoder` subclass
+registered under `(name, backend)` via `register_decoder()`.
 
 1. Add `lightstim/simulation/decoder_backend/decoders/<your_decoder>.py`
-   exposing a class with a `.decode(syndromes) -> predictions` interface
-   (see `pymatching.py` or `bposd.py` for the contract).
-2. Register the decoder in
-   `lightstim/simulation/decoder_backend/registry.py` so it's discoverable
-   via `DecoderConfig('<name>')`.
-3. If your decoder needs post-selection, hook into
-   `lightstim/simulation/decoder_backend/post_select.py`.
-4. Add a smoke test in `tests/test_simulation_backend_quality.py`
-   (or `test_pipeline.py` if it's an end-to-end check) — verify the
-   pipeline produces a valid LER with your decoder on a known-good
-   d=3 surface code memory.
+   with a `sinter.Decoder` subclass implementing
+   `compile_decoder_for_dem(*, dem) -> sinter.CompiledDecoder`. The
+   compiled decoder's `decode_shots_bit_packed` does the work.
+2. Call `register_decoder("<name>", YourDecoder, aliases=[...],
+   backend="cpu"|"gpu"|"fpga")` at module bottom so it's discoverable
+   via `DecoderConfig(name="<name>", backend="...")`.
+3. Add a soft-import hook in
+   `lightstim/simulation/decoder_backend/decoders/__init__.py` behind a
+   `importlib.util.find_spec` guard so missing optional dependencies
+   don't break startup.
+4. Add a smoke test in `tests/test_simulation_backend_quality.py` —
+   verify `list_decoders()` includes your name and the pipeline produces
+   nonzero LER on the trivial single-qubit observable circuit.
 
-Read `skills/simulate-decode/SKILL.md` for the SimulationPipeline
-contract and `lightstim/simulation/README.md` for the backend architecture.
+The full walkthrough — including three concrete patterns (thin wrapper,
+parameter translation, custom DEM-matrix decode) drawn from the existing
+PyMatching / BPOSD / MWPF / cudaqx implementations — lives in
+[`skills/extend-new-decoder/SKILL.md`](skills/extend-new-decoder/SKILL.md).
+Read `skills/simulate-decode/SKILL.md` for how decoders are *used* by
+`SimulationPipeline`, and `lightstim/simulation/README.md` for the
+backend architecture.
 
 ## 6. Adding a new noise model
 
