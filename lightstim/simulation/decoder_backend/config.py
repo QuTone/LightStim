@@ -11,11 +11,22 @@ class DecoderConfig:
     name: str  # e.g. 'pymatching', 'bposd', 'nv-qldpc-decoder'
     backend: Literal["cpu", "gpu", "fpga"] = "cpu"
     params: Dict[str, Any] = field(default_factory=dict)
+    # Policy for shots an ExternalDecoder flags as failed (flag=False):
+    #   "error"   -- count the shot as a logical error (default; pessimistic)
+    #   "discard" -- herald the failure: drop the shot from the denominator
+    #   "ignore"  -- trust whatever prediction was returned anyway
+    # Has no effect on decoders that never emit failure flags.
+    on_decode_failure: Literal["error", "discard", "ignore"] = "error"
 
     def __post_init__(self):
         self.backend = self.backend.lower()
         if self.backend not in ("cpu", "gpu", "fpga"):
             raise ValueError(f"backend must be 'cpu', 'gpu', or 'fpga', got {self.backend}")
+        if self.on_decode_failure not in ("error", "discard", "ignore"):
+            raise ValueError(
+                "on_decode_failure must be 'error', 'discard', or 'ignore', "
+                f"got {self.on_decode_failure!r}"
+            )
 
 
 @dataclass

@@ -38,6 +38,8 @@
 | `"bposd"` | `"cpu"` | `stimbposd` | BP+OSD; alias `"bp_osd"` |
 | `"bposd"` / `"nv-qldpc-decoder"` | `"gpu"` | `cudaq_qec` | GPU BP+OSD via NVIDIA cudaq_qec |
 | `"mwpf"` | `"cpu"` | `mwpf` | — |
+| `"relay-bp"` | `"cpu"` | `relay_bp` | Relay-BP; aliases `"relay_bp"`, `"relaybp"` |
+| `"tesseract"` | `"cpu"` | `tesseract_decoder` | Beam-search MLE; lazy import |
 
 Requesting a backend with no registration raises `ImportError` immediately (e.g. `backend="gpu"` without `cudaq_qec`).
 
@@ -110,7 +112,9 @@ simulation/
 │   │   ├── pymatching.py  # PyMatchingDecoder (CPU)
 │   │   ├── bposd.py       # BpOsdCpuDecoder + unified param translation (CPU)
 │   │   ├── cudaqx.py      # CudaQxDecoder + CudaQxCompiledDecoder (GPU)
-│   │   └── mwpf.py        # MWPF decoder (CPU)
+│   │   ├── mwpf.py        # MWPF decoder (CPU)
+│   │   ├── relay_bp.py    # Relay-BP decoder (CPU, sinter-native)
+│   │   └── tesseract.py   # Tesseract beam-search MLE (CPU, lazy import)
 │   ├── pipeline.py        # SimulationPipeline, ExperimentTask
 │   ├── post_select.py     # apply_post_selection, get_post_select_detector_indices
 │   ├── progress.py        # ProgressReporter, ProgressSnapshot
@@ -127,6 +131,8 @@ simulation/
 - `pymatching` — MWPM decoder: `pip install pymatching`
 - `stimbposd` — CPU BP+OSD: `pip install stimbposd`
 - `mwpf` — MWPF decoder: `pip install mwpf frozendict frozenlist`
+- `relay_bp` — Relay-BP decoder: `pip install "relay-bp[stim]"`
+- `tesseract_decoder` — Tesseract beam-search MLE: `pip install tesseract-decoder` (a prebuilt wheel may not match every CPU; build from source if it fails to import)
 - `cudaq_qec` — GPU BP+OSD: `pip install cudaq_qec` (NVIDIA GPU required)
 
 ---

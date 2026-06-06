@@ -31,6 +31,26 @@ if importlib.util.find_spec("mwpf") is not None:
 else:
     _log.debug("mwpf not installed; skipping MWPF decoder")
 
+# relay_bp — optional Relay-BP backend (sinter-native).
+if importlib.util.find_spec("relay_bp") is not None:
+    try:
+        from . import relay_bp  # noqa: F401 — registers relay-bp/cpu
+    except ImportError as exc:
+        _log.debug("relay_bp import failed: %s", exc)
+else:
+    _log.debug("relay_bp not installed; skipping Relay-BP decoder")
+
+# tesseract_decoder — optional beam-search MLE decoder (sinter-native).
+# Imported unconditionally on purpose: decoders/tesseract.py is import-safe —
+# it does NOT import tesseract_decoder at module load. It self-guards with
+# find_spec and registers a lazy wrapper that imports the native extension only
+# when the decoder is constructed, so a prebuilt wheel that doesn't match the
+# host CPU affects only the Tesseract decoder, not the whole registry.
+try:
+    from . import tesseract  # noqa: F401 — registers tesseract/cpu if installed
+except ImportError as exc:
+    _log.debug("tesseract registration skipped: %s", exc)
+
 # cudaq_qec — optional NVIDIA GPU backend.
 # Import cudaqx unconditionally: it no longer eager-imports cudaq_qec at module
 # scope. The actual `import cudaq_qec` is deferred to first use of the GPU

@@ -93,11 +93,16 @@ soupsieve==2.8.4
 stack-data==0.6.3
 stim==1.16.0
 sinter>=1.15.0
-# Optional decoders. Install individually: pip install stimbposd  OR  pip install mwpf frozendict frozenlist
+# Optional decoders. Install individually, e.g.:
+#   pip install stimbposd  |  pip install mwpf frozendict frozenlist
+#   pip install "relay-bp[stim]"  |  pip install tesseract-decoder
+# (a prebuilt tesseract-decoder wheel may not match every CPU; build from source if it fails to import.)
 stimbposd
 mwpf
 frozendict
 frozenlist
+relay-bp[stim]
+tesseract-decoder
 pandas
 seaborn
 PyMatching
