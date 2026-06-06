@@ -15,6 +15,38 @@ def _simple_observable_circuit(error_probability: float = 0.0) -> stim.Circuit:
     return circuit
 
 
+@pytest.mark.smoke
+def test_cpu_decoder_does_not_import_cudaq_qec():
+    """CPU decoders must not eagerly import cudaq_qec.
+
+    Regression for the NVML lock contention bug where every multiprocessing
+    worker that grabbed a CPU decoder also pulled in cudaq_qec, which forks
+    two nvidia-smi probes per import. Hundreds of concurrent workers could
+    saturate the NVML global lock and hang the driver. cudaq_qec must stay
+    lazy — only loaded when the user actually requests a GPU decoder.
+    """
+    import subprocess
+    import sys
+
+    script = (
+        "import sys; "
+        "from lightstim.simulation.decoder_backend.registry import get_decoder; "
+        "d = get_decoder('pymatching', backend='cpu'); "
+        "print('cudaq_qec_imported=' + ('yes' if 'cudaq_qec' in sys.modules else 'no'))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "cudaq_qec_imported=no" in result.stdout, (
+        f"cudaq_qec was imported by the CPU path:\nstdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+
+
 def test_multiprocess_unknown_decoder_raises_in_parent():
     pipeline = SimulationPipeline(
         decoder_config=DecoderConfig("definitely_missing"),

@@ -1,0 +1,88 @@
+cff-version: 1.2.0
+message: "If you use LightStim in your research, please cite the paper below."
+title: "LightStim"
+abstract: >-
+  A modular Quantum Error Correction (QEC) framework built on Stim,
+  providing high-level abstractions for constructing fault-tolerant
+  circuits with automatic detector generation, running simulation and
+  decoding pipelines, and comparing logical error rates across codes
+  and protocols.
+type: software
+version: "0.1.1"
+date-released: "2026-06-03"
+license: Apache-2.0
+url: "https://github.com/QuTone/LightStim"
+repository-code: "https://github.com/QuTone/LightStim"
+keywords:
+  - quantum-error-correction
+  - quantum-computing
+  - fault-tolerant-quantum-computing
+  - stim
+  - detector-error-model
+  - lattice-surgery
+authors:
+  - family-names: Fang
+    given-names: Xiang
+    affiliation: "University of California, San Diego"
+  - family-names: Wang
+    given-names: Ming
+    affiliation: "North Carolina State University"
+  - family-names: Wu
+    given-names: Yue
+    affiliation: "Yale University"
+  - family-names: Prabhu
+    given-names: Sharanya
+    affiliation: "University of California, San Diego"
+  - family-names: Tullsen
+    given-names: Dean
+    affiliation: "University of California, San Diego"
+  - family-names: Miniskar
+    given-names: Narasinga Rao
+    affiliation: "Oak Ridge National Laboratory"
+  - family-names: Mueller
+    given-names: Frank
+    affiliation: "North Carolina State University"
+  - family-names: Humble
+    given-names: Travis
+    affiliation: "Oak Ridge National Laboratory"
+  - family-names: Ding
+    given-names: Yufei
+    affiliation: "University of California, San Diego"
+preferred-citation:
+  type: article
+  title: "LightStim: A Framework for QEC Protocol Evaluation and Prototyping with Automated DEM Construction"
+  year: 2026
+  journal: "arXiv preprint"
+  url: "https://arxiv.org/abs/2604.21472"
+  identifiers:
+    - type: other
+      value: "arXiv:2604.21472"
+      description: "arXiv preprint identifier"
+  authors:
+    - family-names: Fang
+      given-names: Xiang
+      affiliation: "University of California, San Diego"
+    - family-names: Wang
+      given-names: Ming
+      affiliation: "North Carolina State University"
+    - family-names: Wu
+      given-names: Yue
+      affiliation: "Yale University"
+    - family-names: Prabhu
+      given-names: Sharanya
+      affiliation: "University of California, San Diego"
+    - family-names: Tullsen
+      given-names: Dean
+      affiliation: "University of California, San Diego"
+    - family-names: Miniskar
+      given-names: Narasinga Rao
+      affiliation: "Oak Ridge National Laboratory"
+    - family-names: Mueller
+      given-names: Frank
+      affiliation: "North Carolina State University"
+    - family-names: Humble
+      given-names: Travis
+      affiliation: "Oak Ridge National Laboratory"
+    - family-names: Ding
+      given-names: Yufei
+      affiliation: "University of California, San Diego"
