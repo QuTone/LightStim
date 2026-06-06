@@ -11,6 +11,22 @@ LightStim is a modular Quantum Error Correction (QEC) framework built on [Stim](
 - Analyze and visualize logical error rates
 - Inspect circuits interactively in a browser (DEM 3D, Circuit Timeline, DetSlice animator)
 
+## Project status
+
+LightStim is under active development alongside the paper and community
+contributions. New decoders, QEC codes, protocols, and correctness fixes
+land regularly — see the
+[Releases](https://github.com/QuTone/LightStim/releases) page for a
+running summary.
+
+- **Pulling the latest `main`** is recommended for everyday use; CI keeps
+  it green and changes are documented in commit messages.
+- For **paper-reproducibility runs**, pin to a release tag —
+  e.g. `git checkout v0.1.1` or
+  `pip install git+https://github.com/QuTone/LightStim.git@v0.1.1`.
+- To get notified about new releases, click *Watch → Custom → Releases*
+  at the top of the repo page.
+
 ## Repository layout
 
 ```text
