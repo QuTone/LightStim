@@ -38,10 +38,14 @@ server = [
     "uvicorn>=0.29.0",
 ]
 decoders = [
-    "stimbposd",
-    "mwpf",
+    "stimbposd",                # BP+OSD
+    "mwpf",                     # MWPF
     "frozendict",
     "frozenlist",
+    "relay-bp[stim]",           # Relay-BP
+    # Tesseract (beam-search MLE). A prebuilt wheel may not match every CPU;
+    # build it from source if it fails to import.
+    "tesseract-decoder",
 ]
 gpu = [
     "cudaq-qec",

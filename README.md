@@ -7,7 +7,7 @@ LightStim is a modular Quantum Error Correction (QEC) framework built on [Stim](
 - Build QEC experiments from reusable abstractions (`QECPatch`, `QECSystem`, `CircuitBuilder`, `SyndromeTracker`)
 - Support multi-patch workflows (transversal gates, lattice surgery, state injection)
 - Inject standardized noise models (`code_capacity`, `phenomenological`, `circuit_level`, `XZ_biased`)
-- Decode with a unified backend (PyMatching, BP+OSD CPU/GPU, MWPF)
+- Decode with a unified backend (PyMatching, BP+OSD CPU/GPU, MWPF, Relay-BP, Tesseract)
 - Analyze and visualize logical error rates
 - Inspect circuits interactively in a browser (DEM 3D, Circuit Timeline, DetSlice animator)
 
@@ -54,7 +54,7 @@ python3 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 
 pip install -e .                   # core library (PyMatching included)
-pip install -e ".[decoders]"       # optional CPU decoders: BP+OSD and MWPF
+pip install -e ".[decoders]"       # optional CPU decoders: BP+OSD, MWPF, Relay-BP, Tesseract
 pip install -e ".[server]"         # optional FastAPI server for the web UI
 pip install -e ".[dev]"            # development / notebook environment
 pip install -e ".[gpu]"            # optional NVIDIA GPU decoder (requires CUDA)
@@ -62,6 +62,11 @@ pip install -e ".[gpu]"            # optional NVIDIA GPU decoder (requires CUDA)
 
 > **GPU decoder** (`nv-qldpc-decoder`) requires NVIDIA GPU + CUDA 12.x. Install it only with
 > `pip install -e ".[gpu]"` on compatible systems.
+>
+> **Tesseract**: a prebuilt `tesseract-decoder` wheel may not match every CPU. If it fails to
+> import on your machine, build it from source (the repo's `CMakeLists.txt` uses `-march=native`).
+> LightStim imports `tesseract_decoder` lazily, so this only affects the Tesseract decoder — not
+> `import lightstim` or the other decoders.
 
 ### 2) Optional: Jupyter kernel
 
@@ -118,6 +123,8 @@ print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 | PyMatching (MWPM) | `DecoderConfig('pymatching')` | Default. Surface / LS circuits. |
 | BP+OSD CPU | `DecoderConfig('bposd')` | LDPC codes, hyperedge circuits. |
 | MWPF | `DecoderConfig('mwpf')` | Hyperedges (CrossLS, PQRM, color code). |
+| Relay-BP | `DecoderConfig('relay-bp')` | LDPC / hyperedge circuits. Needs `.[decoders]`. |
+| Tesseract | `DecoderConfig('tesseract', params={'det_beam': 50})` | Beam-search MLE. Needs `.[decoders]`. |
 | GPU BP+OSD | `DecoderConfig('nv-qldpc-decoder')` | NVIDIA GPU. Large d or high p. |
 
 ### Available QEC codes

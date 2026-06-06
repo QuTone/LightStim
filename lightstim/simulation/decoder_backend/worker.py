@@ -30,6 +30,7 @@ def _decode_worker_cpu(
     lock,
     worker_id: int = 0,
     gpu_id: Optional[int] = None,
+    on_decode_failure: str = "error",
 ) -> None:
     """
     Single worker process: reserve shots -> sample -> post-select -> decode.
@@ -37,6 +38,7 @@ def _decode_worker_cpu(
     shots_counter tracks reserved/completed work units, preventing large overshoot
     when many workers race near max_shots.
     """
+    from ._accounting import count_batch
     from .registry import get_decoder
     from .post_select import apply_post_selection
 
@@ -73,40 +75,18 @@ def _decode_worker_cpu(
 
         # sinter.Decoder expects little-endian bit packing.
         det_packed = np.packbits(det_filtered, axis=1, bitorder="little")
-        obs_packed = np.packbits(obs_filtered, axis=1, bitorder="little")
         pred_packed = compiled.decode_shots_bit_packed(
             bit_packed_detection_event_data=det_packed,
         )
 
-        if post_select_corrected_observable_indices:
-            # Post-decode PS: keep only shots where corrected obs == 0.
-            n_obs = obs_filtered.shape[1]
-            pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
-            corrected = obs_filtered ^ pred_unpacked
-            corr_mask = np.all(corrected[:, post_select_corrected_observable_indices] == 0, axis=1)
-            kept_corr = int(corr_mask.sum())
-            if kept_corr > 0:
-                corrected_kept = corrected[corr_mask]
-                if target_observable_indices is not None:
-                    batch_errors = int(np.sum(np.any(corrected_kept[:, target_observable_indices] != 0, axis=1)))
-                else:
-                    batch_errors = int(np.sum(np.any(corrected_kept != 0, axis=1)))
-            else:
-                batch_errors = 0
-            with lock:
-                post_counter.value += kept_corr
-                errors_counter.value += batch_errors
-        elif target_observable_indices is not None:
-            n_obs = obs_filtered.shape[1]
-            pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
-            batch_errors = int(np.sum(np.any(
-                pred_unpacked[:, target_observable_indices] != obs_filtered[:, target_observable_indices], axis=1
-            )))
-            with lock:
-                post_counter.value += kept
-                errors_counter.value += batch_errors
-        else:
-            batch_errors = int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
-            with lock:
-                post_counter.value += kept
-                errors_counter.value += batch_errors
+        batch_kept, batch_errors = count_batch(
+            obs_filtered=obs_filtered,
+            pred_packed=pred_packed,
+            post_select_corrected_observable_indices=post_select_corrected_observable_indices,
+            target_observable_indices=target_observable_indices,
+            flags=getattr(compiled, "last_flags", None),
+            on_decode_failure=on_decode_failure,
+        )
+        with lock:
+            post_counter.value += batch_kept
+            errors_counter.value += batch_errors

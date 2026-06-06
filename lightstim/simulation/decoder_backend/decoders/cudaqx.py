@@ -13,57 +13,8 @@ import numpy as np
 import sinter
 import stim
 
+from ..dem_matrices import dem_to_matrices as _dem_to_matrices
 from ..registry import register_decoder
-
-# ---------------------------------------------------------------------------
-# DEM → matrix parser
-# ---------------------------------------------------------------------------
-
-
-def _dem_to_matrices(
-    dem: stim.DetectorErrorModel,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Convert a stim DEM to the three arrays cudaq_qec needs.
-
-    Returns:
-        H          -- uint8 parity-check matrix (n_detectors, n_error_mechanisms)
-        obs_matrix -- uint8 observable-flip matrix (n_observables, n_error_mechanisms)
-        probs      -- float64 prior error probabilities (n_error_mechanisms,)
-    """
-    n_dets = dem.num_detectors
-    n_obs = dem.num_observables
-
-    error_cols: list[dict] = []
-
-    for instruction in dem.flattened():
-        if instruction.type != "error":
-            continue
-        p = instruction.args_copy()[0]
-        dets: list[int] = []
-        obs: list[int] = []
-        for t in instruction.targets_copy():
-            if t.is_relative_detector_id():
-                dets.append(t.val)
-            elif t.is_logical_observable_id():
-                obs.append(t.val)
-        error_cols.append({"p": p, "dets": dets, "obs": obs})
-
-    n_err = len(error_cols)
-    # Explicitly C-contiguous (row-major) to match cudaq_qec's expected layout,
-    # equivalent to scipy sparse_matrix.todense(order='C').
-    H = np.zeros((n_dets, n_err), dtype=np.uint8, order='C')
-    obs_matrix = np.zeros((n_obs, n_err), dtype=np.uint8, order='C')
-    probs = np.zeros(n_err, dtype=np.float64)
-
-    for e, col in enumerate(error_cols):
-        probs[e] = col["p"]
-        for d in col["dets"]:
-            H[d, e] = 1
-        for o in col["obs"]:
-            obs_matrix[o, e] = 1
-
-    return np.ascontiguousarray(H), obs_matrix, probs
-
 
 # ---------------------------------------------------------------------------
 # sinter CompiledDecoder wrapper

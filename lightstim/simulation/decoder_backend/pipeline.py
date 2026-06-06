@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import stim
 
+from ._accounting import count_batch
 from .config import DecoderConfig, PipelineConfig, SimulationStats
 from .post_select import apply_post_selection, get_post_select_detector_indices
 from .progress import ProgressReporter, ProgressSnapshot, get_progress_logger
@@ -186,6 +187,7 @@ class SimulationPipeline:
                     lock,
                     wid,
                     wid if self.config.decoder.backend != "cpu" else None,
+                    self.config.decoder.on_decode_failure,
                 ),
             )
             p.start()
@@ -280,39 +282,22 @@ class SimulationPipeline:
 
             # sinter.Decoder expects little-endian bit packing.
             det_packed = np.packbits(det_filtered, axis=1, bitorder="little")
-            obs_packed = np.packbits(obs_filtered, axis=1, bitorder="little")
             pred_packed = compiled.decode_shots_bit_packed(
                 bit_packed_detection_event_data=det_packed,
             )
 
-            ps_corr_idx = self.config.post_select_corrected_observable_indices
-            if ps_corr_idx:
-                # Post-decode PS: keep only shots where corrected obs[ps_corr_idx] == 0.
-                # corrected[i] = obs[i] XOR pred[i] — the residual after applying the decoder.
-                n_obs = obs_filtered.shape[1]
-                pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
-                corrected = obs_filtered ^ pred_unpacked
-                corr_mask = np.all(corrected[:, ps_corr_idx] == 0, axis=1)
-                post_selected_shots += int(corr_mask.sum())
-                if corr_mask.sum() > 0:
-                    corrected_kept = corrected[corr_mask]
-                    target = self.config.target_observable_indices
-                    if target is not None:
-                        errors += int(np.sum(np.any(corrected_kept[:, target] != 0, axis=1)))
-                    else:
-                        errors += int(np.sum(np.any(corrected_kept != 0, axis=1)))
-            elif self.config.target_observable_indices is not None:
-                # Only count errors on specified observables
-                n_obs = obs_filtered.shape[1]
-                pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
-                target = self.config.target_observable_indices
-                post_selected_shots += kept
-                errors += int(np.sum(np.any(
-                    pred_unpacked[:, target] != obs_filtered[:, target], axis=1
-                )))
-            else:
-                post_selected_shots += kept
-                errors += int(np.sum(np.any(pred_packed != obs_packed, axis=1)))
+            batch_kept, batch_errors = count_batch(
+                obs_filtered=obs_filtered,
+                pred_packed=pred_packed,
+                post_select_corrected_observable_indices=(
+                    self.config.post_select_corrected_observable_indices
+                ),
+                target_observable_indices=self.config.target_observable_indices,
+                flags=getattr(compiled, "last_flags", None),
+                on_decode_failure=self.config.decoder.on_decode_failure,
+            )
+            post_selected_shots += batch_kept
+            errors += batch_errors
             reporter.emit(
                 self._build_snapshot(
                     shots=total_shots,

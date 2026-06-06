@@ -14,3 +14,6 @@ stimbposd
 mwpf
 frozendict
 frozenlist
+relay-bp[stim]
+# Tesseract: a prebuilt wheel may not match every CPU; build from source if it fails to import.
+tesseract-decoder
