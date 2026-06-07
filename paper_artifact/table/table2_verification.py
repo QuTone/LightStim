@@ -5,7 +5,7 @@ Covers both sections of Table 2:
 
   Part 1 — Rotated Surface Code (vs Stim built-in generator)
     d = 3, 5, 7  |  Z-memory, circuit-level noise, rounds = d
-    Checks: detector count match + LER ratio (AutoDEM / Stim)
+    Checks: detector count match + LER ratio (LightStim / Stim)
     LER ratios: loaded from precompute/hq_verification.json
                 (pre-measured: 1e9 shots at p=1e-3; too slow to re-run inline)
 
@@ -110,7 +110,7 @@ for d in [3, 5, 7]:
         'det_match': det_match,
         'ler_ratio': ratio,
         'stim_ler': hq.get('stim_ler'),
-        'our_ler': hq.get('autodem_ler'),
+        'our_ler': hq.get('lightstim_ler'),
         'shots': hq.get('shots'),
         'p': hq.get('p', 1e-3),
     }
