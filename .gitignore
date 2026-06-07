@@ -20,32 +20,26 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environment
 venv/
 env/
 ENV/
 .venv
 
-# Jupyter Notebook
+# Jupyter
 .ipynb_checkpoints
 *.ipynb_checkpoints/
 
-# Internal review / feedback docs (not for public repo)
-feedback.md
-review.md
-AGENTS.md
-
-# Claude Code
-CLAUDE.md
-.claude/
-
-# IDE
+# Editors / IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
+
+# AI coding assistants
+CLAUDE.md
+.claude/
 
 # Testing
 .pytest_cache/
@@ -53,67 +47,23 @@ CLAUDE.md
 htmlcov/
 .tox/
 
-# Archive (local development files, not needed for sharing)
-archive/
+# OS
+.DS_Store
+Thumbs.db
 
-# Local planning docs
-plan/
-AutoDEM_*Plan*.md
-AutoDEM_*Revision*.md
-
-# Paper (synced with Overleaf separately)
-paper/
-arxiv/paper_backup*/
-
-# Quantinuum (shared separately, not part of repo)
-quantinuum/
-
-# Frontend (developed separately in Lovable)
-front-end/
-qubeats-lightstim-ide/
-
-# Processing (temporary processing files)
-processing/
-external/
-MagicCross/
-/scripts/
-/example_circuit/
-# tests/ is now tracked (CI regression suite)
-
-# Internal / draft files (not for public repo)
-/feedback.md
-/review.md
-/Reorg_plan.md
-/Extension_plan.md
-/extract_frontend_data.py
-*_plan.md
-*_Plan.md
-
-# Old eval/ directory (data migrated to benchmarks/*/results/)
-eval/
-
-# Simulation outputs (CSV/JSON gitignored by default)
+# Generated / regenerable artifacts
+*.stim
+*.log
 *.csv
 *.json
 !requirements.txt
 
-# paper_artifact/precompute/: canonical reference data committed by authors
-# (reviewer compares their local results/ run against these)
+# Canonical reference data committed by authors
+# (reviewers compare their local results/ run against these)
 !paper_artifact/*/precompute/*.json
 !paper_artifact/*/precompute/*.csv
 
-# benchmarks/*/results/: local simulation outputs — NOT pushed (archived on Zenodo)
+# Local simulation outputs (not pushed; archived separately)
 benchmarks/*/results/
-# Generated Stim circuits (regenerable; not tracked)
-*.stim
-
-# Logs
-*.log
-
-# paper_artifact run logs (stdout captures — regenerable, not part of artifact)
 paper_artifact/table/results/*.txt
 paper_artifact/table/results/*.log
-
-# OS
-.DS_Store
-Thumbs.db

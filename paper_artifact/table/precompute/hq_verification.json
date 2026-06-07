@@ -4,12 +4,12 @@
     "shots": 1000000000,
     "p": 0.001,
     "stim_det": 24,
-    "autodem_det": 24,
+    "lightstim_det": 24,
     "det_match": true,
     "stim_ler": 0.00077008,
-    "autodem_ler": 0.0007709,
+    "lightstim_ler": 0.0007709,
     "stim_errors": 770077,
-    "autodem_errors": 770899,
+    "lightstim_errors": 770899,
     "ratio": 1.0011
   },
   {
@@ -17,12 +17,12 @@
     "shots": 1000000000,
     "p": 0.001,
     "stim_det": 120,
-    "autodem_det": 120,
+    "lightstim_det": 120,
     "det_match": true,
     "stim_ler": 0.0001315,
-    "autodem_ler": 0.00013211,
+    "lightstim_ler": 0.00013211,
     "stim_errors": 131499,
-    "autodem_errors": 132113,
+    "lightstim_errors": 132113,
     "ratio": 1.0047
   },
   {
@@ -30,12 +30,12 @@
     "shots": 100000000,
     "p": 0.001,
     "stim_det": 336,
-    "autodem_det": 336,
+    "lightstim_det": 336,
     "det_match": true,
     "stim_ler": 1.781e-05,
-    "autodem_ler": 1.752e-05,
+    "lightstim_ler": 1.752e-05,
     "stim_errors": 1781,
-    "autodem_errors": 1752,
+    "lightstim_errors": 1752,
     "ratio": 0.9837
   }
 ]
