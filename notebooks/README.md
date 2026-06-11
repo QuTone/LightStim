@@ -43,6 +43,7 @@ notebooks/
 | `logical_CNOT_LS.ipynb` | `protocols/cnot_ls.py` | Logical CNOT via lattice surgery (ZZ + XX) |
 | `logical_CNOT_trans.ipynb` | `protocols/cnot_trans.py` | Transversal CNOT between two surface-code patches |
 | `logical_H_S.ipynb` | `protocols/fold_transversal.py` | Fold-transversal H and S gates |
+| `logical_pauli.ipynb` | `protocols/logical_pauli.py` | Logical Pauli: physical application vs Pauli-frame tracking (§7.1, rotated SC) |
 | `state_injection.ipynb` | `protocols/state_injection.py` | Non-FT magic-state injection (rotated SC) |
 | `two_patch_LS.ipynb` | `protocols/two_patch_ls.py` | Two-patch ZZ lattice surgery coupler |
 | `multi_patch_LS.ipynb` | *(in-progress)* | Multi-patch lattice surgery; unrotated SC N-patch coupler |
