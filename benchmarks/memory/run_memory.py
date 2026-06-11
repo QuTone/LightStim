@@ -7,7 +7,7 @@ Results are saved to CSV with per-task checkpointing (append-on-complete).
 Supported codes
 ---------------
 Topological (require --distances):
-    rotated_sc, unrotated_sc, toric, color
+    rotated_sc, unrotated_sc, toric, color, xzzx_sc
 BB codes (distance fixed by code, --distances ignored):
     bb_72_12_6, bb_108_8_10, bb_144_12_12, bb_288_12_18
 
@@ -70,6 +70,9 @@ from lightstim.qec_code.surface_code.toric import ToricCode, ToricCodeExtraction
 from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock,
 )
+from lightstim.qec_code.surface_code.xzzx import (
+    XZZXSurfaceCode, XZZXSurfaceCodeExtractionBlock, xzzx_memory_basis,
+)
 from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeline
 
 # ── Code registry ─────────────────────────────────────────────────────────────
@@ -82,7 +85,7 @@ _BB_CONFIGS = {
     "bb_288_12_18": {"l": 12, "m": 12, "A": [[3,0],[0,2],[0,7]], "B": [[0,3],[1,0],[2,0]], "d": 18},  # needs logical_presets entry
 }
 
-_TOPO_CODES = {"rotated_sc", "unrotated_sc", "toric", "color"}
+_TOPO_CODES = {"rotated_sc", "unrotated_sc", "toric", "color", "xzzx_sc"}
 _BB_CODES   = set(_BB_CONFIGS)
 ALL_CODES   = sorted(_TOPO_CODES | _BB_CODES)
 
@@ -96,6 +99,8 @@ def _make_code(code_name: str, distance: int):
         return ToricCode(distance=distance), ToricCodeExtractionBlock
     if code_name == "color":
         return ColorCode(distance=distance), ColorCodeExtractionBlock
+    if code_name == "xzzx_sc":
+        return XZZXSurfaceCode(distance=distance), XZZXSurfaceCodeExtractionBlock
     if code_name in _BB_CONFIGS:
         cfg = _BB_CONFIGS[code_name]
         return BBCode(l=cfg["l"], m=cfg["m"], A=cfg["A"], B=cfg["B"]), BBCodeExtractionBlock
@@ -136,6 +141,9 @@ def build_circuit(code_name: str, distance: int, p: float,
     system.add_patch(code, name=code_name)
     noise = NoiseConfig(p_idle=p, p_1q=p, p_2q=p, p_meas=p, p_reset=p)
     r = rounds if rounds is not None else distance
+    # XZZX checks mix X and Z, so the memory needs a per-qubit checkerboard of
+    # init/readout bases; a uniform basis yields a degenerate (distance-1) circuit.
+    basis_map = xzzx_memory_basis(system, basis) if code_name == "xzzx_sc" else None
     with contextlib.redirect_stdout(io.StringIO()):
         exp = MemoryExperiment(
             qec_system=system,
@@ -144,6 +152,7 @@ def build_circuit(code_name: str, distance: int, p: float,
             noise_params=noise,
             noise_model=noise_model,
             basis=basis,
+            data_basis_map=basis_map,
         )
         circuit = exp.build()
     n_data  = len(code.data_indices)
