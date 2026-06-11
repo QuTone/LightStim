@@ -87,6 +87,10 @@ class XZZXSurfaceCode(RotatedSurfaceCode):
     def build(self):
         # Build the CSS rotated surface code (geometry, uniform stabilizers,
         # logicals, optional shift), then deform it in place.
+        # QECPatch.__init__ already runs build() once; super().build() is additive,
+        # so a second call must be a no-op or the stabilizer set duplicates.
+        if self.stabilizers:
+            return
         super().build()
         self._deform_to_xzzx()
 
@@ -189,6 +193,8 @@ class XZZXSurfaceCode(RotatedSurfaceCode):
         """
         flip = {"Z": "X", "X": "Z"}
         mb = memory_basis.upper()
+        if mb not in flip:
+            raise ValueError(f"XZZX memory basis must be 'X' or 'Z'; got {memory_basis!r}")
         return {
             idx: (mb if self._data_color(self.qubit_coords[idx]) == 0 else flip[mb])
             for idx in self.data_indices
@@ -204,10 +210,11 @@ def xzzx_memory_basis(system, memory_basis: str) -> Dict[int, str]:
     """
     flip = {"Z": "X", "X": "Z"}
     mb = memory_basis.upper()
+    if mb not in flip:
+        raise ValueError(f"XZZX memory basis must be 'X' or 'Z'; got {memory_basis!r}")
     out: Dict[int, str] = {}
     for coord in system.data_coords:
         gidx = system.index_map[coord]
-        x, y = coord
-        c = (round((x - 1) / 2) + round((y - 1) / 2)) % 2
+        c = XZZXSurfaceCode._data_color(coord)
         out[gidx] = mb if c == 0 else flip[mb]
     return out

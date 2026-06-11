@@ -64,6 +64,62 @@ class TestMemory:
         c = self._run(RepetitionCode(distance=5), RepetitionCodeExtractionBlock)
         assert c.num_detectors > 0; assert_noiseless(c)
 
+    # ── XZZX surface code: per-qubit checkerboard basis via data_basis_map ──
+
+    def _build_xzzx(self, d=3, basis="Z", noise_params=None, map_edit=None, **exp_kwargs):
+        from lightstim.ir.qec_system import QECSystem
+        from lightstim.protocols.memory import MemoryExperiment
+        from lightstim.qec_code.surface_code.xzzx import (
+            XZZXSurfaceCode, XZZXSurfaceCodeExtractionBlock, xzzx_memory_basis)
+        system = QECSystem()
+        system.add_patch(XZZXSurfaceCode(distance=d), name="xzzx_sc")
+        basis_map = xzzx_memory_basis(system, basis)
+        if map_edit is not None:
+            basis_map = map_edit(basis_map)
+        exp = MemoryExperiment(qec_system=system,
+                               extraction_block_class=XZZXSurfaceCodeExtractionBlock,
+                               rounds=d, noise_params=noise_params, noise_model="circuit_level",
+                               basis=basis, data_basis_map=basis_map, **exp_kwargs)
+        return build_quiet(exp.build)
+
+    @pytest.mark.parametrize("basis", ["Z", "X"])
+    def test_xzzx_surface_code(self, basis):
+        c = self._build_xzzx(basis=basis)
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
+    @pytest.mark.parametrize("basis", ["Z", "X"])
+    def test_xzzx_checkerboard_recovers_distance_3(self, basis):
+        """Uniform basis on XZZX is degenerate (distance 1); the checkerboard map must restore d=3.
+        Covers both memory bases: a flip-dict bug in the X map would pass the noiseless
+        smoke test (a degenerate circuit also has zero noiseless detection events)."""
+        from lightstim.noise.config import NoiseConfig
+        p = 1e-3
+        noise = NoiseConfig(p_idle=p, p_1q=p, p_2q=p, p_meas=p, p_reset=p)
+        c = self._build_xzzx(basis=basis, noise_params=noise)
+        assert c.num_detectors == 24, f"expected rotated-d3-like detector structure, got {c.num_detectors}"
+        assert len(c.shortest_graphlike_error()) == 3
+
+    def test_xzzx_basis_map_z_only_rejected(self):
+        """z_only readout path assumes uniform Z measurement — must refuse a mixed basis map."""
+        with pytest.raises(ValueError, match="z_only"):
+            self._build_xzzx(z_only=True)
+
+    def test_xzzx_basis_map_wrong_keys_rejected(self):
+        """A map not covering exactly the data qubits (e.g. local patch indices) must fail fast."""
+        def drop_one(m):
+            m.pop(next(iter(m)))
+            return m
+        with pytest.raises(ValueError, match="data_basis_map"):
+            self._build_xzzx(map_edit=drop_one)
+
+    def test_xzzx_basis_map_invalid_values_rejected(self):
+        """Values outside X/Y/Z must be rejected at construction — builder.initialize()
+        would otherwise silently drop the qubit from every reset group."""
+        def corrupt(m):
+            return {q: "Q" for q in m}
+        with pytest.raises(ValueError, match="values must be"):
+            self._build_xzzx(map_edit=corrupt)
+
     def test_bb_code(self):
         from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
         from lightstim.ir.qec_system import QECSystem
