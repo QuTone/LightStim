@@ -50,6 +50,44 @@ class CSSLogicalOpSet(LogicalOpSet):
             builder.apply_unitary_block(unitary_block=circuit)
 
 
+    def logical_pauli(self, builder: CircuitBuilder, patch: QECPatch,
+                      pauli: str = "X", logical_index: int = 0,
+                      noiseless: bool = False):
+        """
+        Applies a logical Pauli operator by physically applying its Pauli
+        string across the patch.
+
+        With noiseless=True the layer is tagged 'noiseless' so noise-injection
+        rules skip it — the circuit-level equivalent of tracking the operator
+        classically in a Pauli frame (zero physical overhead). With
+        noiseless=False the string qubits pick up gate noise, modeling a
+        genuine physical application of the operator.
+
+        Args:
+            pauli: 'X' or 'Z' — which logical operator type to apply.
+            logical_index: which operator of that type, for patches with k > 1
+                logical qubits.
+            noiseless: tag the layer so noise injection skips it.
+        """
+        pauli = pauli.upper()
+        candidates = [op for op in patch.logical_ops if op["type"] == pauli]
+        if not candidates:
+            raise ValueError(f"Patch has no logical '{pauli}' operator record.")
+        if not (0 <= logical_index < len(candidates)):
+            raise ValueError(
+                f"logical_index {logical_index} out of range: patch has "
+                f"{len(candidates)} logical '{pauli}' operator(s).")
+        record = candidates[logical_index]
+
+        # The record's Pauli string may mix X/Y/Z physical gates even for a
+        # 'X'/'Z'-type logical operator; emit one instruction per gate kind.
+        block = stim.Circuit()
+        for gate in ("X", "Y", "Z"):
+            targets = sorted(q for q, p in record["pauli"].items() if p == gate)
+            if targets:
+                block.append(gate, targets)
+        builder.apply_unitary_block(block, noiseless=noiseless)
+
     def prepare_logical_z(self, builder: CircuitBuilder,patch: QECPatch):
         """
         Prepares the logical Z state for all logical qubits in a CSS code patch.

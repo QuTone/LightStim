@@ -16,6 +16,7 @@ surface code under circuit-level noise:
 | `CNOT_LS_ZZ_XX` | Lattice Surgery CNOT (ZZ-XX protocol) | same 5 sub-experiments |
 | `CNOT_LS_XX_ZZ` | Lattice Surgery CNOT (XX-ZZ protocol) | same 5 sub-experiments |
 | `memory` | Z-basis memory baseline (rounds=d) | memory_Z (1) |
+| `pauli` | Logical Pauli: physical application vs Pauli-frame tracking (rounds=d) | P{X\|Z}_{physical\|frame}_L{N} |
 
 All results are written to a single combined CSV with per-task checkpointing —
 safe to interrupt and resume.
@@ -48,12 +49,44 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \
 | `--gate` | all | Gate(s) to run: `H S CNOT_trans CNOT_LS_ZZ_XX CNOT_LS_XX_ZZ memory` |
 | `--distances` | `3 5 7` | Code distances |
 | `--p-values` | `5e-4 1e-3 2e-3 5e-3 1e-2` | Physical error rates |
-| `--rounds` | `2` | SE rounds for gate benchmarks (memory always uses rounds=d) |
+| `--rounds` | `2` | SE rounds for gate benchmarks (memory and pauli always use rounds=d) |
+| `--num-layers` | `0 1 2 4 8` | Pauli layer counts N to sweep (pauli gate only) |
 | `--decoder` | `pymatching` for memory/LS CNOT; `bposd` for other gates | Decoder |
 | `--max-shots` | `1e9` | Max shots per task |
 | `--max-errors` | `100` | Stop after this many errors |
 | `--num-workers` | `8` | Parallel workers |
 | `--quick` | off | Fast test mode |
+
+## The `pauli` experiment (Handbook §7.1)
+
+Validates that physically applying a logical Pauli costs logical fidelity while
+Pauli-frame tracking is free. A memory-like circuit (rounds = d) gets N
+consecutive logical Pauli layers inserted at the midpoint:
+
+- **physical** — the Pauli string is applied as real gates; circuit-level noise
+  adds single-qubit depolarizing on the string qubits.
+- **frame** — the same layers tagged `noiseless` (skipped by noise injection):
+  the circuit-model equivalent of a classical Pauli-frame update.
+
+The two arms build gate-for-gate identical clean circuits, so
+LER(physical) − LER(frame) isolates exactly the extra error locations of
+physical application. Plotting LER vs N gives the per-layer cost as a slope:
+positive for physical, zero for frame. X̄ runs in Z-basis memory and Z̄ in
+X-basis memory (the anticommuting pairings).
+
+Note: idle noise in this codebase is lumped once per SE round, so the layer
+tick carries gate noise on the weight-d string support only — no spectator
+idling, no extended duration. The measured per-layer cost is therefore a
+lower bound on the real physical cost of applying the operator.
+
+```bash
+PYTHONPATH=. python benchmarks/logical_ops/run_logical_ops.py \
+    --gate pauli --distances 3 5 7 --num-layers 0 1 2 4 8
+```
+
+The plot script writes a dedicated figure for this experiment
+(`results/logical_pauli_plot.png`): LER vs p at the largest N, and LER vs N
+at the median p — physical solid, frame dashed.
 
 ## How to plot results
 

@@ -16,6 +16,9 @@ Supported gates
     TwoPatchLS_XX Two-patch lattice surgery XX measurement (1 sub-experiment)
     TwoPatchLS_ZZ Two-patch lattice surgery ZZ measurement (1 sub-experiment)
     memory        Z and X basis memory baseline (rounds=d); plot scripts average.
+    pauli         §7.1 logical Pauli: physical application vs Pauli-frame
+                  tracking. Memory-like (rounds=d) with N mid-circuit logical
+                  Pauli layers; sub-experiments P{X|Z}_{physical|frame}_L{N}.
 
 For state injection benchmarks, see benchmarks/state_injection/.
 
@@ -70,6 +73,7 @@ from lightstim.protocols.fold_transversal import (
 from lightstim.protocols.cnot_trans import CNOTTransExperiment
 from lightstim.protocols.cnot_ls import CNOTLSExperiment
 from lightstim.protocols.memory import MemoryExperiment
+from lightstim.protocols.logical_pauli import build_pauli_memory_circuit
 from lightstim.protocols.ghz import GHZExperiment
 from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
 from lightstim.noise.config import NoiseConfig
@@ -82,7 +86,7 @@ from lightstim.qec_code.surface_code.unrotated import (
 
 # ── Available gates ───────────────────────────────────────────────────────────
 
-ALL_GATES = ["H", "S_oneway", "S_roundtrip", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "GHZ", "TwoPatchLS_XX", "TwoPatchLS_ZZ", "memory"]
+ALL_GATES = ["H", "S_oneway", "S_roundtrip", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "GHZ", "TwoPatchLS_XX", "TwoPatchLS_ZZ", "memory", "pauli"]
 
 # CNOT sub-experiments (shared between transversal and LS variants)
 # (label, init_control, init_target, meas_control, meas_target)
@@ -355,7 +359,48 @@ def _build_two_patch_ls_tasks(distances, p_values, rounds, interaction_type):
     return tasks
 
 
-def build_tasks(gate: str, distances, p_values, rounds: int):
+def _build_pauli_tasks(distances, p_values, num_layers_list):
+    """Handbook §7.1 — logical Pauli: physical application vs Pauli-frame tracking.
+
+    Memory-like circuit (rounds=d) with N consecutive mid-circuit logical
+    Pauli layers. X̄ runs in Z-basis memory, Z̄ in X-basis memory (the
+    anticommuting, frame-relevant pairings). 'frame' inserts the same layers
+    tagged noiseless (zero physical cost), so the two arms differ only in the
+    noise on the layers: LER(physical) − LER(frame) isolates the cost of
+    applying the operator physically. LER vs N gives the per-layer cost as a
+    slope (positive for physical, zero for frame).
+    """
+    tasks = []
+    pauli_basis = [("X", "Z"), ("Z", "X")]
+    for (pauli, basis), mode, n_layers, d, p in product(
+            pauli_basis, ["physical", "frame"], num_layers_list, distances, p_values):
+        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        with contextlib.redirect_stdout(io.StringIO()):
+            circuit = build_pauli_memory_circuit(
+                code_patch_class=UnrotatedSurfaceCode,
+                extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
+                code_params={"distance": d},
+                pauli=pauli, mode=mode, num_layers=n_layers,
+                rounds=d, basis=basis,
+                noise_params=noise, noise_model="circuit_level",
+            )
+        meta = {
+            "gate": "pauli",
+            "sub_experiment": f"P{pauli}_{mode}_L{n_layers}",
+            "init_basis": basis,
+            "measure_basis": basis,
+            "d": d,
+            "rounds": d,
+            "p": p,
+        }
+        tasks.append((circuit, meta))
+    return tasks
+
+
+DEFAULT_NUM_LAYERS = [0, 1, 2, 4, 8]
+
+
+def build_tasks(gate: str, distances, p_values, rounds: int, num_layers_list=None):
     """Dispatch to the appropriate circuit builder for a given gate."""
     if gate == "H":
         return _build_h_tasks(distances, p_values, rounds)
@@ -377,6 +422,11 @@ def build_tasks(gate: str, distances, p_values, rounds: int):
         return _build_two_patch_ls_tasks(distances, p_values, rounds, "ZZ")
     if gate == "memory":
         return _build_memory_tasks(distances, p_values)
+    if gate == "pauli":
+        return _build_pauli_tasks(
+            distances, p_values,
+            num_layers_list if num_layers_list is not None else DEFAULT_NUM_LAYERS,
+        )
     raise ValueError(f"Unknown gate: {gate!r}. Available: {ALL_GATES}")
 
 
@@ -507,7 +557,11 @@ def main():
     )
     ap.add_argument(
         "--rounds", type=int, default=2,
-        help="SE rounds for gate benchmarks (default: 2). Memory always uses rounds=d.",
+        help="SE rounds for gate benchmarks (default: 2). Memory and pauli always use rounds=d.",
+    )
+    ap.add_argument(
+        "--num-layers", nargs="+", type=int, default=DEFAULT_NUM_LAYERS,
+        help=f"Pauli layer counts N to sweep for the 'pauli' gate (default: {DEFAULT_NUM_LAYERS})",
     )
     ap.add_argument(
         "--decoder", choices=["cpu_bposd", "gpu_bposd", "pymatching", "mwpf"], default=None,
@@ -562,14 +616,15 @@ def main():
         # Choose decoder: explicit flag > sensible default per gate
         if args.decoder is not None:
             decoder_name = args.decoder
-        elif gate == "memory" or gate.startswith("CNOT_LS_"):
+        elif gate in ("memory", "pauli") or gate.startswith("CNOT_LS_"):
             decoder_name = "pymatching"
         else:
             decoder_name = "cpu_bposd"
 
         print(f"Decoder    : {decoder_name}")
 
-        tasks = build_tasks(gate, distances, p_values, args.rounds)
+        tasks = build_tasks(gate, distances, p_values, args.rounds,
+                            num_layers_list=args.num_layers)
         print(f"Tasks      : {len(tasks)}")
 
         _run_tasks(

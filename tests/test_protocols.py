@@ -230,6 +230,77 @@ class TestLogicalOps:
         assert c.num_detectors > 0; assert_noiseless(c)
 
 
+@pytest.mark.smoke
+class TestLogicalPauliMemory:
+    """Handbook §7.1 — logical Pauli: physical application vs Pauli-frame tracking.
+
+    Both modes must build tick-identical clean circuits; 'physical' differs
+    from 'frame' only by the noise channels on the inserted Pauli layer(s),
+    so any LER difference is attributable to those extra error locations.
+    """
+
+    def _build(self, mode, pauli="X", basis="Z", num_layers=1, rounds=3,
+               noise_params=None, code="rotated"):
+        from lightstim.protocols.logical_pauli import build_pauli_memory_circuit
+        if code == "rotated":
+            from lightstim.qec_code.surface_code.rotated import (
+                RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock)
+            patch_cls, block_cls = RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock
+        else:
+            from lightstim.qec_code.surface_code.unrotated import (
+                UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock)
+            patch_cls, block_cls = UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock
+        return build_quiet(lambda: build_pauli_memory_circuit(
+            code_patch_class=patch_cls,
+            extraction_block_class=block_cls,
+            code_params={"distance": 3},
+            pauli=pauli, mode=mode, num_layers=num_layers,
+            rounds=rounds, basis=basis,
+            noise_params=noise_params,
+        ))
+
+    @pytest.mark.parametrize("mode", ["physical", "frame"])
+    @pytest.mark.parametrize("pauli,basis", [("X", "Z"), ("Z", "Z"), ("X", "X"), ("Z", "X")])
+    def test_noiseless_invariants(self, mode, pauli, basis):
+        """Logical string commutes with all stabilizers (zero detectors); the
+        deterministic observable flip must be absorbed (zero observable errors)."""
+        c = self._build(mode, pauli=pauli, basis=basis)
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
+    def test_unrotated_noiseless(self):
+        c = self._build("physical", code="unrotated")
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
+    def test_multi_layer_noiseless(self):
+        c = self._build("physical", num_layers=4)
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
+    def test_arms_differ_only_in_pauli_layer_noise(self):
+        """The premise of the §7.1 LER comparison, asserted mechanically:
+        stripped of noise (and of the 'noiseless' tag), the two arms are
+        gate-for-gate identical; with noise, physical has exactly one extra
+        DEPOLARIZE1 instruction per inserted layer."""
+        import stim
+        from lightstim.noise.config import NoiseConfig
+        noise = NoiseConfig(p_idle=1e-3, p_1q=1e-3, p_2q=1e-3, p_meas=1e-3, p_reset=1e-3)
+        n_layers = 2
+        c_phys = self._build("physical", num_layers=n_layers, noise_params=noise)
+        c_frame = self._build("frame", num_layers=n_layers, noise_params=noise)
+
+        def strip_tags(c):
+            return stim.Circuit(str(c).replace("[noiseless]", ""))
+
+        assert strip_tags(c_phys.without_noise()) == strip_tags(c_frame.without_noise()), \
+            "clean circuits of the two arms must be identical"
+
+        def count_dep1(c):
+            return sum(1 for inst in c.flattened() if inst.name == "DEPOLARIZE1")
+
+        assert count_dep1(c_phys) == count_dep1(c_frame) + n_layers, \
+            "physical arm must add exactly one DEPOLARIZE1 per Pauli layer"
+        assert_dem_valid(c_phys); assert_dem_valid(c_frame)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LOGICAL CIRCUITS
 # ═══════════════════════════════════════════════════════════════════════════════
