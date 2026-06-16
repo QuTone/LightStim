@@ -1,4 +1,4 @@
-anyio==4.13.0
+anyio==4.14.0
 appnope==0.1.4
 argon2-cffi==25.1.0
 argon2-cffi-bindings==25.1.0
@@ -27,7 +27,7 @@ h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
 idna==3.18
-ipykernel==7.2.0
+ipykernel==7.3.0
 ipython==8.39.0
 ipywidgets==8.1.8
 isoduration==20.11.0
