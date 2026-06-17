@@ -147,12 +147,27 @@ class NoiseInjector:
         """
         injector = cls(config)
 
-        # 1. Idling (still typically depolarizing, or you can write a PauliIdleRule)
-        injector.add_rule(TaggedIdling(
-            target_qubits=data_qubit_indices,
-            param_name="p_idle",
-            tag="SE_start"
-        ))
+        # 1. Idling. Prefer biased X/Z idle channels when provided; otherwise
+        # preserve the older depolarizing p_idle behavior.
+        if config.get("p_idle_x") > 0 or config.get("p_idle_z") > 0:
+            injector.add_rule(TaggedIdling(
+                target_qubits=data_qubit_indices,
+                param_name="p_idle_x",
+                tag="SE_start",
+                noise_op="X_ERROR",
+            ))
+            injector.add_rule(TaggedIdling(
+                target_qubits=data_qubit_indices,
+                param_name="p_idle_z",
+                tag="SE_start",
+                noise_op="Z_ERROR",
+            ))
+        else:
+            injector.add_rule(TaggedIdling(
+                target_qubits=data_qubit_indices,
+                param_name="p_idle",
+                tag="SE_start"
+            ))
 
         # 2. Measurement & Reset (Using standard flip rules)
         injector.add_rule(FlipBeforeMeasurement(param_name="p_meas"))
@@ -189,7 +204,14 @@ class NoiseInjector:
         return injector
 
     @staticmethod
-    def compute_XZ_biased_params(p_1q: float, p_2q: float, p_meas: float, p_reset: float, eta: float) -> NoiseConfig:
+    def compute_XZ_biased_params(
+        p_1q: float,
+        p_2q: float,
+        p_meas: float,
+        p_reset: float,
+        eta: float,
+        p_idle: float = 0.0,
+    ) -> NoiseConfig:
         """
         Compute NoiseConfig for XZ-biased noise model from physical error rates and bias ratio.
 
@@ -204,6 +226,7 @@ class NoiseInjector:
             p_meas: Measurement error rate (symmetric flip).
             p_reset: Reset error rate (symmetric flip).
             eta:   Bias ratio p_X / p_Z (>1 means X-biased, <1 means Z-biased).
+            p_idle: Optional idle error budget split into biased X/Z channels.
 
         Returns:
             NoiseConfig with custom_params filled for from_XZ_biased().
@@ -218,6 +241,9 @@ class NoiseInjector:
         p_2q_z = p_2q / (2 * (1 + eta))
         p_2q_x = eta * p_2q_z
 
+        p_idle_z = p_idle / (1 + eta)
+        p_idle_x = eta * p_idle_z
+
         return NoiseConfig(
             p_meas=p_meas,
             p_reset=p_reset,
@@ -227,6 +253,8 @@ class NoiseInjector:
                 "p_1q_z": p_1q_z,
                 "p_2q_x": p_2q_x,
                 "p_2q_z": p_2q_z,
+                "p_idle_x": p_idle_x,
+                "p_idle_z": p_idle_z,
             },
         )
     
