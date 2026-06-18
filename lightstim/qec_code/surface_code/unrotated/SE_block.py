@@ -87,6 +87,7 @@ class UnrotatedSurfaceCodeExtractionBlock:
         # Get the active syndrome coordinates for X and Z stabilizers
         active_stabilizers_x = self.system.active_stabilizers_x
         active_stabilizers_z = self.system.active_stabilizers_z
+        active_stabilizers_mixed = getattr(self.system, 'active_stabilizers_mixed', [])
 
         for dx_x, dx_z in canonical_tick_deltas:
             cnot_targets = []
@@ -136,6 +137,14 @@ class UnrotatedSurfaceCodeExtractionBlock:
             
             self.circuit.append("TICK")
 
+        # --- Step 3b: Mixed X/Z stabilizers ---
+        # Mixed checks are measured from their explicit Pauli dictionaries.
+        # Compatible checks are batched so routed/mixed surgery diagrams show
+        # the ancillary patch region instead of a long sequence of single-check
+        # fragments.  Within each batch, CNOT edges are layer-colored to avoid
+        # shared-qubit conflicts in the same tick.
+        self._append_mixed_stabilizer_measurements(active_stabilizers_mixed)
+
         # --- Step 4: Basis Change (Hadamard on X-type syndromes) ---
         # Transform X-syndrome qubits back to Z basis for measurement
         self.circuit.append("H", sorted(active_x_syn_indices))
@@ -144,3 +153,79 @@ class UnrotatedSurfaceCodeExtractionBlock:
         # --- Step 5: Measurement ---
         # Measure all syndrome qubits in Z basis
         self.circuit.append("M", sorted(active_syn_indices))
+
+    def _append_mixed_stabilizer_measurements(self, stabs):
+        if not stabs:
+            return
+
+        for batch in self._batch_compatible_mixed_stabilizers(stabs):
+            x_data = sorted({
+                q
+                for stab in batch
+                for q, pauli in stab.get('pauli', {}).items()
+                if pauli == 'X'
+            })
+
+            if x_data:
+                self.circuit.append("H", x_data)
+                self.circuit.append("TICK")
+
+            for layer in self._mixed_cnot_layers(batch):
+                cnot_targets = []
+                for data_idx, syn_idx in layer:
+                    cnot_targets.extend([data_idx, syn_idx])
+                if cnot_targets:
+                    self.circuit.append("CNOT", cnot_targets)
+                self.circuit.append("TICK")
+
+            if x_data:
+                self.circuit.append("H", x_data)
+                self.circuit.append("TICK")
+
+    @staticmethod
+    def _batch_compatible_mixed_stabilizers(stabs):
+        batches = []
+        batch_paulis = []
+
+        for stab in stabs:
+            paulis = stab.get('pauli', {})
+            for pauli in paulis.values():
+                if pauli not in ('X', 'Z'):
+                    raise ValueError(f"Mixed stabilizer only supports X/Z terms, got {pauli!r}.")
+
+            placed = False
+            for batch, seen in zip(batches, batch_paulis):
+                if all(seen.get(q, pauli) == pauli for q, pauli in paulis.items()):
+                    batch.append(stab)
+                    for q, pauli in paulis.items():
+                        seen[q] = pauli
+                    placed = True
+                    break
+
+            if not placed:
+                batches.append([stab])
+                batch_paulis.append(dict(paulis))
+
+        return batches
+
+    @staticmethod
+    def _mixed_cnot_layers(stabs):
+        layers = []
+        used_by_layer = []
+
+        for stab in stabs:
+            syn_idx = stab['syn_idx']
+            for data_idx in sorted(stab.get('pauli', {})):
+                placed = False
+                for layer, used in zip(layers, used_by_layer):
+                    if data_idx not in used and syn_idx not in used:
+                        layer.append((data_idx, syn_idx))
+                        used.add(data_idx)
+                        used.add(syn_idx)
+                        placed = True
+                        break
+                if not placed:
+                    layers.append([(data_idx, syn_idx)])
+                    used_by_layer.append({data_idx, syn_idx})
+
+        return layers

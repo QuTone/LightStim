@@ -164,6 +164,247 @@ class TestLogicalOps:
         c = builder.circuit
         assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
 
+    def test_routed_multi_patch_coupler(self):
+        """Bent routed coupler can connect explicitly selected patch sides."""
+        from lightstim.qec_code.surface_code.unrotated import (
+            UnrotatedSurfaceCode, UnrotatedRoutedMultiPatchCoupler)
+        from lightstim.ir.qec_system import QECSystem
+
+        system = QECSystem()
+        layout = {
+            "p1": (0, 0),
+            "p2": (14, 2),
+            "p3": (6, 14),
+            "p4": (22, 14),
+        }
+        for name, off in layout.items():
+            system.add_patch(UnrotatedSurfaceCode(distance=3), name=name, offset=off)
+
+        system.register_coupler(
+            UnrotatedRoutedMultiPatchCoupler(),
+            ["p1", "p2", "p3", "p4"],
+            "route",
+            sides=["right", "left", "right", "left"],
+            route_padding=8,
+        )
+        cp = system.coupler_patches["route"]
+        assert cp.route_width == 5
+        assert len(cp.data_indices) > 0
+        assert len(cp.syndrome_indices) > 0
+        assert len(cp.conflicting_stabilizer_coords) > 0
+
+    def test_routed_zzzx_pauli_product(self):
+        """ZZZX is implemented as H on the X patch, routed ZZZZ, then H back."""
+        from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode
+        from lightstim.ir.qec_system import QECSystem
+        from lightstim.protocols.routed_multi_patch_ls import (
+            build_routed_pauli_product_readout_circuit)
+
+        system = QECSystem()
+        layout = {
+            "p1": (0, 0),
+            "p2": (14, 2),
+            "p3": (6, 14),
+            "p4": (22, 14),
+        }
+        for name, off in layout.items():
+            system.add_patch(UnrotatedSurfaceCode(distance=3), name=name, offset=off)
+
+        circuit, info, _ = build_quiet(lambda: build_routed_pauli_product_readout_circuit(
+            system=system,
+            patch_names=["p1", "p2", "p3", "p4"],
+            paulis="ZZZX",
+            sides=["right", "left", "right", "left"],
+            interface_paulis=["Z", "Z", "Z", "Z"],
+            rounds=2,
+            coupler_name="route",
+            route_padding=8,
+        ))
+        assert info["h_basis_change_indices"] == [3]
+        assert_valid_circuit(circuit); assert_noiseless(circuit); assert_dem_valid(circuit)
+
+    def test_routed_basis_aware_h_decision(self):
+        """H decisions compare requested Paulis against the selected interface basis."""
+        from lightstim.protocols.routed_multi_patch_ls import (
+            basis_change_indices_for_interfaces)
+
+        assert basis_change_indices_for_interfaces("XZ", ["X", "Z"]) == []
+        assert basis_change_indices_for_interfaces("XZ", ["Z", "Z"]) == [0]
+        assert basis_change_indices_for_interfaces("ZZZX", ["Z", "Z", "Z", "Z"]) == [3]
+        assert basis_change_indices_for_interfaces("ZZZX", ["Z", "Z", "Z", "X"]) == []
+
+    def test_experimental_mixed_routed_templates(self):
+        """Mixed routed coupler creates local X/Z seam templates without assuming weight 4."""
+        from lightstim.qec_code.surface_code.unrotated import (
+            UnrotatedSurfaceCode, UnrotatedRoutedMultiPatchCoupler,
+            UnrotatedSurfaceCodeExtractionBlock)
+        from lightstim.ir.qec_system import QECSystem
+
+        def commute(a, b):
+            parity = 0
+            for q, p in a["pauli"].items():
+                other = b["pauli"].get(q)
+                if other is not None and other != p:
+                    parity ^= 1
+            return parity == 0
+
+        system = QECSystem()
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p1", offset=(0, 0))
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(14, 8))
+        system.register_coupler(
+            UnrotatedRoutedMultiPatchCoupler(),
+            ["p1", "p2"],
+            "xz",
+            sides=["right", "top"],
+            interface_paulis=["X", "Z"],
+            target_paulis=["X", "Z"],
+            mixed_stabilizers=True,
+            route_padding=8,
+        )
+        cp = system.coupler_patches["xz"]
+        assert cp.route_width == 5
+        assert any(stab["type"] == "MIXED" for stab in cp.stabilizers)
+        assert any(len(stab["pauli"]) == 3 for stab in cp.stabilizers)
+
+        system.activate_coupler("xz")
+        se_ticks = sum(
+            1 for inst in UnrotatedSurfaceCodeExtractionBlock(system).circuit
+            if inst.name == "TICK"
+        )
+        assert se_ticks <= 20
+        stabs = system.active_stabilizers
+        for i, a in enumerate(stabs):
+            for b in stabs[i + 1:]:
+                assert commute(a, b)
+
+    def test_mixed_xz_syndrome_product_extractor(self):
+        """X1Z2 is recovered by solving syndrome plus full-ancilla readout algebra."""
+        from lightstim.qec_code.surface_code.unrotated import (
+            UnrotatedSurfaceCode, UnrotatedRoutedMultiPatchCoupler)
+        from lightstim.ir.qec_system import QECSystem
+        from lightstim.protocols.routed_multi_patch_ls import (
+            solve_routed_pauli_product_syndromes)
+
+        system = QECSystem()
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p1", offset=(0, 0))
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(14, 8))
+        system.register_coupler(
+            UnrotatedRoutedMultiPatchCoupler(),
+            ["p1", "p2"],
+            "xz",
+            sides=["right", "top"],
+            interface_paulis=["X", "Z"],
+            target_paulis=["X", "Z"],
+            mixed_stabilizers=True,
+            route_padding=8,
+        )
+
+        with pytest.raises(ValueError):
+            solve_routed_pauli_product_syndromes(
+                system=system,
+                patch_names=["p1", "p2"],
+                paulis="XZ",
+                coupler_name="xz",
+                include_patch_stabilizers=False,
+            )
+
+        decomp = solve_routed_pauli_product_syndromes(
+            system=system,
+            patch_names=["p1", "p2"],
+            paulis="XZ",
+            coupler_name="xz",
+            include_patch_stabilizers=True,
+        )
+        assert decomp.verified
+        assert decomp.target_paulis == ["X", "Z"]
+        assert decomp.selected_coupler_terms
+        assert decomp.selected_patch_terms
+        assert decomp.selected_ancilla_terms
+        assert decomp.uses_ancilla_readout_terms
+        assert any(term.stype == "MIXED" for term in decomp.selected_coupler_terms)
+        assert all(term.rec_offset < 0 for term in decomp.selected_terms)
+        assert "xz" not in system.paused_stabilizer_indices
+
+    def test_native_mixed_routed_tracker_observable(self):
+        """Full mixed routed ancilla closes the tracker when prep/readout bases differ."""
+        from lightstim.qec_code.surface_code.unrotated import (
+            UnrotatedSurfaceCode, UnrotatedRoutedMultiPatchCoupler,
+            UnrotatedSurfaceCodeExtractionBlock)
+        from lightstim.ir.qec_system import QECSystem
+        from lightstim.ir.tracker import SyndromeTracker
+        from lightstim.ir.builder import CircuitBuilder
+        from lightstim.protocols.routed_multi_patch_ls import (
+            infer_interface_paulis,
+            routed_coupler_data_basis,
+            solve_routed_pauli_product_syndromes,
+        )
+
+        d = 3
+        patch_names = ["p1", "p2", "p3", "p4"]
+        sides = ["bottom", "top", "top", "left"]
+        system = QECSystem()
+        for name, off in {
+            "p1": (0, 0),
+            "p2": (14, 2),
+            "p3": (6, 14),
+            "p4": (22, 14),
+        }.items():
+            system.add_patch(UnrotatedSurfaceCode(distance=d), name=name, offset=off)
+
+        native_interfaces = infer_interface_paulis(system, patch_names, sides)
+        system.register_coupler(
+            UnrotatedRoutedMultiPatchCoupler(),
+            patch_names,
+            "mixed_geom",
+            sides=sides,
+            interface_paulis=native_interfaces,
+            target_paulis=list("ZZZX"),
+            mixed_stabilizers=True,
+            route_padding=8,
+            route_width=2 * d - 1,
+        )
+
+        prep_basis = routed_coupler_data_basis(system, "mixed_geom", mode="opposite")
+        readout_basis = routed_coupler_data_basis(system, "mixed_geom", mode="same")
+        decomp = solve_routed_pauli_product_syndromes(
+            system=system,
+            patch_names=patch_names,
+            paulis="ZZZX",
+            coupler_name="mixed_geom",
+            ancilla_readout_bases=readout_basis,
+        )
+        assert decomp.verified
+        assert decomp.selected_ancilla_terms
+        assert all(readout_basis[t.global_qubit_index] == t.pauli
+                   for t in decomp.selected_ancilla_terms)
+
+        tracker = SyndromeTracker(system.num_qubits, system.num_logicals)
+        builder = CircuitBuilder(tracker=tracker, system_config=system, if_detector=True)
+        builder.write_coordinates()
+        data_prep = {
+            q: "X"
+            for q in system.data_indices
+            if system.index_to_owner_map.get(q) != "mixed_geom"
+        }
+        builder.initialize(data_prep, n=system.num_qubits)
+        builder.apply_syndrome_extraction(
+            UnrotatedSurfaceCodeExtractionBlock(system).circuit,
+            rounds=1,
+        )
+        builder.activate_coupler("mixed_geom")
+        builder.initialize(prep_basis, n=system.num_qubits)
+        builder.apply_syndrome_extraction(
+            UnrotatedSurfaceCodeExtractionBlock(system).circuit,
+            rounds=1,
+        )
+        builder.apply_data_readout({**data_prep, **readout_basis})
+
+        circuit = builder.circuit
+        assert circuit.num_observables == 1
+        assert_valid_circuit(circuit)
+        assert_noiseless(circuit)
+        assert_dem_valid(circuit)
+
     def test_transversal_cnot(self):
         from lightstim.protocols.cnot_trans import CNOTTransExperiment
         from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock

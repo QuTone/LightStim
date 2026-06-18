@@ -107,6 +107,10 @@ class QECSystem:
     def active_stabilizers_z(self) -> List[Dict[str, Any]]:
         return [self.stabilizers[idx] for idx in sorted(self.active_stabilizer_indices) if self.stabilizers[idx].get('type') == 'Z']
 
+    @ property
+    def active_stabilizers_mixed(self) -> List[Dict[str, Any]]:
+        return [self.stabilizers[idx] for idx in sorted(self.active_stabilizer_indices) if self.stabilizers[idx].get('type') == 'MIXED']
+
     @property
     def active_syndrome_indices(self) -> List[int]:
         """
@@ -140,6 +144,15 @@ class QECSystem:
             self.stabilizers[uid]['syn_idx'] 
             for uid in self.active_stabilizer_indices 
             if self.stabilizers[uid].get('type') == 'Z'
+        ]
+
+    @property
+    def active_syndrome_indices_mixed(self) -> List[int]:
+        """Returns indices of syndrome qubits measuring active mixed X/Z stabilizers."""
+        return [
+            self.stabilizers[uid]['syn_idx']
+            for uid in self.active_stabilizer_indices
+            if self.stabilizers[uid].get('type') == 'MIXED'
         ]
 
     @property
@@ -231,8 +244,8 @@ class QECSystem:
             global_stab = self._translate_record(stab, local_to_global_map)
             global_stab['patch_name'] = name
             # Generate the stabilizer signature
-            pauli_indices = sorted(global_stab['data_indices'])
-            signature = (global_stab['type'], tuple(pauli_indices))
+            pauli_signature = tuple(sorted(global_stab['pauli'].items()))
+            signature = (global_stab['type'], pauli_signature)
 
             if signature in self._stabilizer_signatures:
                 existing_uid = self._stabilizer_signatures[signature]
