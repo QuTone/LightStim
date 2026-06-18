@@ -109,6 +109,25 @@ class TestMemory:
 @pytest.mark.smoke
 class TestLogicalOps:
 
+    @staticmethod
+    def _expected_terminal_block(patch, side, width):
+        x0, x1, y0, y1 = map(lambda v: int(round(v)), patch._get_bounds())
+        if side == "left":
+            xs = range(x0 - width, x0)
+            ys = range(y0, y1 + 1)
+        elif side == "right":
+            xs = range(x1 + 1, x1 + 1 + width)
+            ys = range(y0, y1 + 1)
+        elif side == "top":
+            xs = range(x0, x1 + 1)
+            ys = range(y0 - width, y0)
+        elif side == "bottom":
+            xs = range(x0, x1 + 1)
+            ys = range(y1 + 1, y1 + 1 + width)
+        else:
+            raise ValueError(side)
+        return {(float(x), float(y)) for x in xs for y in ys}
+
     def test_two_patch_ls_zz(self):
         from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
         exp = TwoPatchLSExperiment(
@@ -173,9 +192,9 @@ class TestLogicalOps:
         system = QECSystem()
         layout = {
             "p1": (0, 0),
-            "p2": (14, 2),
-            "p3": (6, 14),
-            "p4": (22, 14),
+            "p2": (10, 0),
+            "p3": (0, 10),
+            "p4": (10, 10),
         }
         for name, off in layout.items():
             system.add_patch(UnrotatedSurfaceCode(distance=3), name=name, offset=off)
@@ -192,6 +211,28 @@ class TestLogicalOps:
         assert len(cp.data_indices) > 0
         assert len(cp.syndrome_indices) > 0
         assert len(cp.conflicting_stabilizer_coords) > 0
+        for name, side in zip(["p1", "p2", "p3", "p4"], ["right", "left", "right", "left"]):
+            expected = self._expected_terminal_block(system.patches[name][0], side, cp.route_width)
+            assert expected.issubset(set(cp.index_map.keys()))
+
+    def test_routed_full_width_requires_coarse_patch_grid(self):
+        """Full ancillary-patch routing rejects data patches between patch-block cells."""
+        from lightstim.qec_code.surface_code.unrotated import (
+            UnrotatedSurfaceCode, UnrotatedRoutedMultiPatchCoupler)
+        from lightstim.ir.qec_system import QECSystem
+
+        system = QECSystem()
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p1", offset=(0, 0))
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(14, 8))
+
+        with pytest.raises(ValueError, match="coarse grid"):
+            system.register_coupler(
+                UnrotatedRoutedMultiPatchCoupler(),
+                ["p1", "p2"],
+                "bad_route",
+                sides=["right", "top"],
+                route_width=5,
+            )
 
     def test_routed_zzzx_pauli_product(self):
         """ZZZX is implemented as H on the X patch, routed ZZZZ, then H back."""
@@ -203,9 +244,9 @@ class TestLogicalOps:
         system = QECSystem()
         layout = {
             "p1": (0, 0),
-            "p2": (14, 2),
-            "p3": (6, 14),
-            "p4": (22, 14),
+            "p2": (10, 0),
+            "p3": (0, 10),
+            "p4": (10, 10),
         }
         for name, off in layout.items():
             system.add_patch(UnrotatedSurfaceCode(distance=3), name=name, offset=off)
@@ -250,7 +291,7 @@ class TestLogicalOps:
 
         system = QECSystem()
         system.add_patch(UnrotatedSurfaceCode(distance=3), name="p1", offset=(0, 0))
-        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(14, 8))
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(10, 10))
         system.register_coupler(
             UnrotatedRoutedMultiPatchCoupler(),
             ["p1", "p2"],
@@ -265,6 +306,9 @@ class TestLogicalOps:
         assert cp.route_width == 5
         assert any(stab["type"] == "MIXED" for stab in cp.stabilizers)
         assert any(len(stab["pauli"]) == 3 for stab in cp.stabilizers)
+        for name, side in zip(["p1", "p2"], ["right", "top"]):
+            expected = self._expected_terminal_block(system.patches[name][0], side, cp.route_width)
+            assert expected.issubset(set(cp.index_map.keys()))
 
         system.activate_coupler("xz")
         se_ticks = sum(
@@ -278,16 +322,18 @@ class TestLogicalOps:
                 assert commute(a, b)
 
     def test_mixed_xz_syndrome_product_extractor(self):
-        """X1Z2 is recovered by solving syndrome plus full-ancilla readout algebra."""
+        """X1Z2 is recovered by solving routed syndrome/readout algebra."""
         from lightstim.qec_code.surface_code.unrotated import (
             UnrotatedSurfaceCode, UnrotatedRoutedMultiPatchCoupler)
         from lightstim.ir.qec_system import QECSystem
         from lightstim.protocols.routed_multi_patch_ls import (
-            solve_routed_pauli_product_syndromes)
+            routed_coupler_data_basis,
+            solve_routed_pauli_product_syndromes,
+        )
 
         system = QECSystem()
         system.add_patch(UnrotatedSurfaceCode(distance=3), name="p1", offset=(0, 0))
-        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(14, 8))
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(10, 10))
         system.register_coupler(
             UnrotatedRoutedMultiPatchCoupler(),
             ["p1", "p2"],
@@ -314,14 +360,15 @@ class TestLogicalOps:
             paulis="XZ",
             coupler_name="xz",
             include_patch_stabilizers=True,
+            ancilla_readout_bases=routed_coupler_data_basis(system, "xz", mode="same"),
         )
         assert decomp.verified
         assert decomp.target_paulis == ["X", "Z"]
         assert decomp.selected_coupler_terms
         assert decomp.selected_patch_terms
-        assert decomp.selected_ancilla_terms
-        assert decomp.uses_ancilla_readout_terms
         assert any(term.stype == "MIXED" for term in decomp.selected_coupler_terms)
+        for term in decomp.selected_ancilla_terms:
+            assert routed_coupler_data_basis(system, "xz", mode="same")[term.global_qubit_index] == term.pauli
         assert all(term.rec_offset < 0 for term in decomp.selected_terms)
         assert "xz" not in system.paused_stabilizer_indices
 
@@ -345,9 +392,9 @@ class TestLogicalOps:
         system = QECSystem()
         for name, off in {
             "p1": (0, 0),
-            "p2": (14, 2),
-            "p3": (6, 14),
-            "p4": (22, 14),
+            "p2": (20, 0),
+            "p3": (10, 20),
+            "p4": (30, 20),
         }.items():
             system.add_patch(UnrotatedSurfaceCode(distance=d), name=name, offset=off)
 

@@ -84,10 +84,22 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
 
 - `UnrotatedRoutedMultiPatchCoupler` 支持显式选择每个 patch 的接入边，
   并用 Manhattan routing 连接任意布局下的这些边。
-- direct routed coupler 默认会把 routing skeleton 膨胀成
-  `route_width = 2 * code_distance - 1` 的完整 ancillary patch 坐标跨度。
+- direct routed coupler 默认使用
+  `route_width = 2 * code_distance - 1` 的 full ancillary-patch route。
   对 d=3 的 unrotated patch，这个跨度是 5 个整数 lattice 坐标，而不是
   逻辑距离本身的 3。
+- full ancillary-patch route 不再允许 data patch 放在任意物理坐标上。
+  所有参与 routing 的 data/obstacle patch 必须落在同一个 coarse grid 上：
+  patch origin 之间的差必须是 `route_width` 的整数倍，并且每个 patch 本身
+  必须刚好占据一个 `route_width × route_width` 坐标块。此外现有
+  unrotated lattice 还要求 syndrome parity 对齐；对 d=3 来说
+  `route_width=5` 是奇数，所以同方向 patch 的常用安全间距是 10、20、30、
+  ... 个整数坐标，中间空出的 5×5 coarse cell 才是 ancillary patch block。
+- routed coupler 会先在这个 coarse grid 上做 Manhattan BFS，避开被 data
+  patch 占据的 coarse cells；然后把每个 route cell 展开成完整
+  `route_width × route_width` ancillary block。因此 selected interface 的
+  terminal region 和中间拐弯/走廊都是由完整 patch-sized blocks 拼成的，
+  不再是 thin skeleton 膨胀出来的非规整形状。
 - interface basis 可以由选中边自动推断，也可以显式传入。
 - routed Pauli-product helper 会比较 target Pauli 和 native interface
   Pauli，只在不匹配的位置插入 logical H。
@@ -124,9 +136,9 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
   退化成一长串单 check 的细线图。
 - native `X1Z2` 的 product algebra 已经测试通过：单独使用 coupler checks
   不足以生成目标 product；加入 active patch stabilizer correction 后，
-  full ancillary patch 仍会留下 ancilla boundary/logical 因子。求解器在
-  限制到实际 route-basis readout 后，仍会返回需要额外乘入的 ancilla
-  readout terms，并代数验证最终乘积等于 `X1Z2`。
+  求解器会在限制到实际 route-basis readout 的条件下验证最终乘积等于
+  `X1Z2`。是否还需要额外 ancilla readout terms 取决于具体 routed geometry；
+  当前规整 terminal-block 几何下不再强制需要这些项。
 - 四 patch native-interface `ZZZX` mixed full ancillary patch 已经能走完整
   tracker/observable 流程：ancilla 用 conjugate basis 初始化、用 route basis
   读出，`if_detector=True` 时可生成 1 个 mixed-surgery observable，并通过

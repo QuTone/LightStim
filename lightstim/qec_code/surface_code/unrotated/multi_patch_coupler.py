@@ -832,20 +832,22 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
 
         self._validate_integer_lattice(all_obstacles)
 
-        route_coords, interfaces, strips = self._route_interfaces(
+        route_coords, interfaces, strips, already_full_width = self._route_interfaces(
             patches=patches,
             sides=sides,
             route_order=route_order,
             obstacle_patches=all_obstacles,
             padding=route_padding,
-        )
-        route_coords = self._thicken_route_coords(
-            route_coords=route_coords,
-            strips=strips,
-            sides=sides,
-            obstacle_patches=all_obstacles,
             route_width=route_width,
         )
+        if not already_full_width:
+            route_coords = self._thicken_route_coords(
+                route_coords=route_coords,
+                strips=strips,
+                sides=sides,
+                obstacle_patches=all_obstacles,
+                route_width=route_width,
+            )
         coord_basis = self._label_route_coords(route_coords, strips, interface_bases)
 
         bounds = self._coords_bounds(route_coords)
@@ -887,7 +889,8 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         route_order: List[int],
         obstacle_patches: List[QECPatch],
         padding: int,
-    ) -> Tuple[Set[Tuple[float, float]], List[InterfaceInfo], List[Set[Tuple[float, float]]]]:
+        route_width: int,
+    ) -> Tuple[Set[Tuple[float, float]], List[InterfaceInfo], List[Set[Tuple[float, float]]], bool]:
         obstacle_coords = self._patch_coords(obstacle_patches)
         interfaces: List[InterfaceInfo] = []
         strips: List[Set[Tuple[float, float]]] = []
@@ -905,21 +908,55 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
             strips.append(strip)
             self._check_parity_alignment(patch, patches[route_order[0]])
 
-        ordered_strips = [strips[i] for i in route_order]
-        route_coords: Set[Tuple[float, float]] = set(ordered_strips[0])
-
         bounds = self._routing_bounds(strips, obstacle_patches, padding)
-        for target_strip in ordered_strips[1:]:
-            path = self._bfs_path(
-                sources=route_coords,
-                goals=target_strip,
-                blocked=obstacle_coords,
+        ordered_strips = [strips[i] for i in route_order]
+        if route_width <= 1:
+            route_coords: Set[Tuple[float, float]] = set(ordered_strips[0])
+            for target_strip in ordered_strips[1:]:
+                path = self._bfs_path(
+                    sources=route_coords,
+                    goals=target_strip,
+                    blocked=obstacle_coords,
+                    bounds=bounds,
+                )
+                route_coords.update(path)
+                route_coords.update(target_strip)
+            return route_coords, interfaces, strips, False
+
+        base_x, base_y, occupied_cells = self._validate_patch_block_grid(
+            obstacle_patches,
+            route_width,
+        )
+        terminal_cells = [
+            self._terminal_cell_for_side(patch, side, base_x, base_y, route_width)
+            for patch, side in zip(patches, sides)
+        ]
+        for patch, side, terminal in zip(patches, sides, terminal_cells):
+            if terminal in occupied_cells:
+                raise ValueError(
+                    f"Interface terminal for patch '{getattr(patch, 'name', '<unnamed>')}' "
+                    f"on side '{side}' overlaps an occupied data patch block {terminal}."
+                )
+
+        bounds = self._coarse_routing_bounds(
+            terminal_cells=terminal_cells,
+            occupied_cells=occupied_cells,
+            padding_blocks=max(1, math.ceil(padding / route_width) + 1),
+        )
+        ordered_terminals = [terminal_cells[i] for i in route_order]
+        route_cells: Set[Tuple[int, int]] = {ordered_terminals[0]}
+        for target_cell in ordered_terminals[1:]:
+            path = self._bfs_cell_path(
+                sources=route_cells,
+                goals={target_cell},
+                blocked=occupied_cells,
                 bounds=bounds,
             )
-            route_coords.update(path)
-            route_coords.update(target_strip)
+            route_cells.update(path)
+            route_cells.add(target_cell)
 
-        return route_coords, interfaces, strips
+        route_coords = self._expand_coarse_cells(route_cells, base_x, base_y, route_width)
+        return route_coords, interfaces, strips, True
 
     @staticmethod
     def _normalize_side(side: str) -> str:
@@ -1112,6 +1149,183 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         return coords
 
     @staticmethod
+    def _strip_center(strip: Set[Tuple[float, float]]) -> Tuple[float, float]:
+        """Return the integer-coordinate center of a selected boundary strip."""
+        xs = sorted(int(round(x)) for x, _ in strip)
+        ys = sorted(int(round(y)) for _, y in strip)
+        mid = len(xs) // 2
+        return (float(xs[mid]), float(ys[mid]))
+
+    @staticmethod
+    def _validate_patch_block_grid(
+        patches: List[QECPatch],
+        route_width: int,
+    ) -> Tuple[int, int, Set[Tuple[int, int]]]:
+        """
+        Validate full-width routed surgery uses patch-sized coarse cells.
+
+        For ``route_width > 1`` the ancillary bus is built from whole
+        patch-sized blocks, so every data/obstacle patch must occupy exactly one
+        ``route_width x route_width`` physical-coordinate block on a common
+        coarse grid.  For a distance-d unrotated square patch this width is
+        ``2*d - 1``.
+        """
+        if not patches:
+            return 0, 0, set()
+
+        first_bounds = patches[0]._get_bounds()
+        base_x = int(round(first_bounds[0]))
+        base_y = int(round(first_bounds[2]))
+        occupied_cells: Set[Tuple[int, int]] = set()
+
+        for patch in patches:
+            x0f, x1f, y0f, y1f = patch._get_bounds()
+            x0, x1 = int(round(x0f)), int(round(x1f))
+            y0, y1 = int(round(y0f)), int(round(y1f))
+            span_x = x1 - x0 + 1
+            span_y = y1 - y0 + 1
+            name = getattr(patch, 'name', '<unnamed>')
+            if span_x != route_width or span_y != route_width:
+                raise ValueError(
+                    f"Full-width routed ancillary patch requires each data/obstacle patch "
+                    f"to span exactly route_width={route_width} integer coordinates. "
+                    f"Patch '{name}' spans {span_x}x{span_y}."
+                )
+            if (x0 - base_x) % route_width != 0 or (y0 - base_y) % route_width != 0:
+                raise ValueError(
+                    f"Patch '{name}' is not aligned to the common coarse grid. "
+                    f"For route_width={route_width}, patch origins must differ by integer "
+                    f"multiples of {route_width} from base origin ({base_x}, {base_y}); "
+                    f"got origin ({x0}, {y0})."
+                )
+
+            cell = ((x0 - base_x) // route_width, (y0 - base_y) // route_width)
+            if cell in occupied_cells:
+                raise ValueError(
+                    f"Multiple patches occupy coarse grid cell {cell}; move one patch."
+                )
+            occupied_cells.add(cell)
+
+        return base_x, base_y, occupied_cells
+
+    @classmethod
+    def _patch_coarse_cell(
+        cls,
+        patch: QECPatch,
+        base_x: int,
+        base_y: int,
+        route_width: int,
+    ) -> Tuple[int, int]:
+        x0, _, y0, _ = patch._get_bounds()
+        return (
+            (int(round(x0)) - base_x) // route_width,
+            (int(round(y0)) - base_y) // route_width,
+        )
+
+    @classmethod
+    def _terminal_cell_for_side(
+        cls,
+        patch: QECPatch,
+        side: str,
+        base_x: int,
+        base_y: int,
+        route_width: int,
+    ) -> Tuple[int, int]:
+        cx, cy = cls._patch_coarse_cell(patch, base_x, base_y, route_width)
+        if side == 'left':
+            return cx - 1, cy
+        if side == 'right':
+            return cx + 1, cy
+        if side == 'top':
+            return cx, cy - 1
+        if side == 'bottom':
+            return cx, cy + 1
+        raise ValueError(f"Invalid boundary side '{side}'.")
+
+    @staticmethod
+    def _coarse_routing_bounds(
+        terminal_cells: List[Tuple[int, int]],
+        occupied_cells: Set[Tuple[int, int]],
+        padding_blocks: int,
+    ) -> Tuple[int, int, int, int]:
+        xs = [x for x, _ in terminal_cells]
+        ys = [y for _, y in terminal_cells]
+        xs.extend(x for x, _ in occupied_cells)
+        ys.extend(y for _, y in occupied_cells)
+        return (
+            min(xs) - padding_blocks,
+            max(xs) + padding_blocks,
+            min(ys) - padding_blocks,
+            max(ys) + padding_blocks,
+        )
+
+    @staticmethod
+    def _bfs_cell_path(
+        sources: Set[Tuple[int, int]],
+        goals: Set[Tuple[int, int]],
+        blocked: Set[Tuple[int, int]],
+        bounds: Tuple[int, int, int, int],
+    ) -> List[Tuple[int, int]]:
+        x_min, x_max, y_min, y_max = bounds
+        allowed_blocked = set(sources) | set(goals)
+        queue = deque()
+        prev: Dict[Tuple[int, int], Optional[Tuple[int, int]]] = {}
+
+        for node in sorted(sources):
+            queue.append(node)
+            prev[node] = None
+
+        found = None
+        while queue:
+            node = queue.popleft()
+            if node in goals:
+                found = node
+                break
+
+            x, y = node
+            for nxt in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                nx, ny = nxt
+                if nx < x_min or nx > x_max or ny < y_min or ny > y_max:
+                    continue
+                if nxt in prev:
+                    continue
+                if nxt in blocked and nxt not in allowed_blocked:
+                    continue
+                prev[nxt] = node
+                queue.append(nxt)
+
+        if found is None:
+            raise ValueError(
+                "Unable to route a connected full-width ancillary patch between the selected "
+                "coarse-grid interfaces. Try different sides, increase route_padding, or move "
+                "blocking patches."
+            )
+
+        path = []
+        node = found
+        while node is not None:
+            path.append(node)
+            node = prev[node]
+        path.reverse()
+        return path
+
+    @staticmethod
+    def _expand_coarse_cells(
+        cells: Set[Tuple[int, int]],
+        base_x: int,
+        base_y: int,
+        route_width: int,
+    ) -> Set[Tuple[float, float]]:
+        coords: Set[Tuple[float, float]] = set()
+        for cx, cy in cells:
+            x_start = base_x + cx * route_width
+            y_start = base_y + cy * route_width
+            for x in range(x_start, x_start + route_width):
+                for y in range(y_start, y_start + route_width):
+                    coords.add((float(x), float(y)))
+        return coords
+
+    @staticmethod
     def _routing_bounds(
         strips: List[Set[Tuple[float, float]]],
         obstacle_patches: List[QECPatch],
@@ -1192,12 +1406,13 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         route_width: int,
     ) -> Set[Tuple[float, float]]:
         """
-        Expand a one-coordinate routing skeleton into a patch-width region.
+        Expand a centerline skeleton into a patch-width ancillary region.
 
-        The BFS path is only a centerline/skeleton.  A physical surgery bus must
-        be a filled ancillary patch region with the same coordinate span as the
-        neighboring distance-d data patches.  We thicken the skeleton and
-        explicitly grow each interface outward from the selected data-patch side.
+        Each selected interface first becomes a terminal block with the same
+        coordinate span as the neighboring distance-d patch.  Centerline edges
+        then become rectangular corridors of the same width.  This avoids the
+        older "union of many local squares" thickening, which made terminal
+        regions longer than a distance-d patch.
         """
         if route_width <= 1:
             obstacle_coords = cls._patch_coords(obstacle_patches)
@@ -1207,27 +1422,67 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         after = route_width - 1 - before
         thick: Set[Tuple[float, float]] = set()
 
-        for x, y in route_coords:
-            ix, iy = int(round(x)), int(round(y))
-            for dx in range(-before, after + 1):
-                for dy in range(-before, after + 1):
-                    thick.add((float(ix + dx), float(iy + dy)))
-
         for strip, side in zip(strips, sides):
-            for x, y in strip:
-                ix, iy = int(round(x)), int(round(y))
-                for k in range(route_width):
-                    if side == 'left':
-                        thick.add((float(ix - k), float(iy)))
-                    elif side == 'right':
-                        thick.add((float(ix + k), float(iy)))
-                    elif side == 'top':
-                        thick.add((float(ix), float(iy - k)))
-                    elif side == 'bottom':
-                        thick.add((float(ix), float(iy + k)))
+            thick.update(cls._terminal_block_coords(strip, side, route_width))
+
+        route_nodes = {(int(round(x)), int(round(y))) for x, y in route_coords}
+        incident_axes: Dict[Tuple[int, int], Set[str]] = {node: set() for node in route_nodes}
+        for x, y in sorted(route_nodes):
+            for nx, ny, axis in ((x + 1, y, 'horizontal'), (x, y + 1, 'vertical')):
+                if (nx, ny) not in route_nodes:
+                    continue
+                if axis == 'horizontal':
+                    for xx in range(x, nx + 1):
+                        for yy in range(y - before, y + after + 1):
+                            thick.add((float(xx), float(yy)))
+                else:
+                    for xx in range(x - before, x + after + 1):
+                        for yy in range(y, ny + 1):
+                            thick.add((float(xx), float(yy)))
+                incident_axes[(x, y)].add(axis)
+                incident_axes[(nx, ny)].add(axis)
+
+        for (x, y), axes in incident_axes.items():
+            if len(axes) > 1:
+                for dx in range(-before, after + 1):
+                    for dy in range(-before, after + 1):
+                        thick.add((float(x + dx), float(y + dy)))
 
         obstacle_coords = cls._patch_coords(obstacle_patches)
         return {coord for coord in thick if coord not in obstacle_coords}
+
+    @staticmethod
+    def _terminal_block_coords(
+        strip: Set[Tuple[float, float]],
+        side: str,
+        route_width: int,
+    ) -> Set[Tuple[float, float]]:
+        """Return the flush ancillary block attached to one data-patch side."""
+        xs = [int(round(x)) for x, _ in strip]
+        ys = [int(round(y)) for _, y in strip]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        block = set()
+
+        if side == 'left':
+            xr = range(x0 - route_width + 1, x0 + 1)
+            yr = range(y0, y1 + 1)
+        elif side == 'right':
+            xr = range(x0, x0 + route_width)
+            yr = range(y0, y1 + 1)
+        elif side == 'top':
+            xr = range(x0, x1 + 1)
+            yr = range(y0 - route_width + 1, y0 + 1)
+        elif side == 'bottom':
+            xr = range(x0, x1 + 1)
+            yr = range(y0, y0 + route_width)
+        else:
+            raise ValueError(f"Invalid boundary side '{side}'.")
+
+        for x in xr:
+            for y in yr:
+                block.add((float(x), float(y)))
+        return block
 
     @staticmethod
     def _label_route_coords(
