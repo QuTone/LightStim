@@ -31,6 +31,8 @@ class RoutedPathInfo(PathInfo):
     route_coords: Set[Tuple[float, float]] = field(default_factory=set)
     coord_basis: Dict[Tuple[float, float], str] = field(default_factory=dict)
     interface_bases: List[str] = field(default_factory=list)
+    route_width: int = 1
+    route_base_origin: Optional[Tuple[int, int]] = None
 
 
 # -----------------------------------------------------------------------------
@@ -832,7 +834,7 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
 
         self._validate_integer_lattice(all_obstacles)
 
-        route_coords, interfaces, strips, already_full_width = self._route_interfaces(
+        route_coords, interfaces, strips, already_full_width, route_base_origin = self._route_interfaces(
             patches=patches,
             sides=sides,
             route_order=route_order,
@@ -859,6 +861,8 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
             route_coords=route_coords,
             coord_basis=coord_basis,
             interface_bases=interface_bases,
+            route_width=route_width,
+            route_base_origin=route_base_origin,
         )
 
         coupler_patch.is_transposed = anchor_patch.is_transposed
@@ -867,6 +871,7 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         coupler_patch.target_paulis = list(target_paulis) if target_paulis is not None else None
         coupler_patch.boundary_sides = list(sides)
         coupler_patch.route_width = route_width
+        coupler_patch.route_base_origin = route_base_origin
         coupler_patch.route_coord_basis = dict(coord_basis)
 
         self._construct_routed_region(coupler_patch, all_obstacles, anchor_patch, route_coords)
@@ -890,7 +895,13 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         obstacle_patches: List[QECPatch],
         padding: int,
         route_width: int,
-    ) -> Tuple[Set[Tuple[float, float]], List[InterfaceInfo], List[Set[Tuple[float, float]]], bool]:
+    ) -> Tuple[
+        Set[Tuple[float, float]],
+        List[InterfaceInfo],
+        List[Set[Tuple[float, float]]],
+        bool,
+        Optional[Tuple[int, int]],
+    ]:
         obstacle_coords = self._patch_coords(obstacle_patches)
         interfaces: List[InterfaceInfo] = []
         strips: List[Set[Tuple[float, float]]] = []
@@ -921,7 +932,7 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
                 )
                 route_coords.update(path)
                 route_coords.update(target_strip)
-            return route_coords, interfaces, strips, False
+            return route_coords, interfaces, strips, False, None
 
         base_x, base_y, occupied_cells = self._validate_patch_block_grid(
             obstacle_patches,
@@ -956,7 +967,7 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
             route_cells.add(target_cell)
 
         route_coords = self._expand_coarse_cells(route_cells, base_x, base_y, route_width)
-        return route_coords, interfaces, strips, True
+        return route_coords, interfaces, strips, True, (base_x, base_y)
 
     @staticmethod
     def _normalize_side(side: str) -> str:
@@ -1539,12 +1550,39 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         route_coords: Set[Tuple[float, float]],
     ):
         obstacle_coords = self._patch_coords(obstacle_patches)
+        route_width = int(getattr(coupler_patch, 'route_width', 1))
+        route_base_origin = getattr(coupler_patch, 'route_base_origin', None)
         for x, y in sorted(route_coords, key=lambda c: (c[1], c[0])):
             if (x, y) in obstacle_coords:
                 continue
-            role = UnrotatedTwoPatchCoupler._infer_role_from_anchor(anchor_patch, x, y)
+            if route_width > 1 and route_base_origin is not None:
+                role = self._infer_full_width_cell_role(x, y, route_base_origin, route_width)
+            else:
+                role = UnrotatedTwoPatchCoupler._infer_role_from_anchor(anchor_patch, x, y)
             if role:
                 coupler_patch.add_qubit(x, y, role=role)
+
+    @staticmethod
+    def _infer_full_width_cell_role(
+        x: float,
+        y: float,
+        base_origin: Tuple[int, int],
+        route_width: int,
+    ) -> Optional[str]:
+        """
+        Infer a qubit role on the global merged-lattice checkerboard.
+
+        Full-width routed surgery uses patch-sized coarse cells for geometry,
+        but the stabilizer checkerboard must stay phase-continuous across cell
+        seams.  Resetting the parity inside each coarse cell makes square
+        pictures, but it disconnects the algebraic merge: the boundary checks no
+        longer multiply to the intended logical product.
+        """
+        lx = int(round(x)) - base_origin[0]
+        ly = int(round(y)) - base_origin[1]
+        if ly % 2 == 0:
+            return 'data' if lx % 2 == 0 else 'syndrome_x'
+        return 'data' if lx % 2 == 1 else 'syndrome_z'
 
     def _init_routed_stabilizers(self, coupler_patch: QECPatch, patches: List[QECPatch], path_info: RoutedPathInfo):
         """Create local pure/mixed stabilizers from routed basis labels."""
@@ -1556,20 +1594,44 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
 
         boundary_candidates = self._find_boundary_syndrome_candidates(patches, path_info)
         for syn_coord in boundary_candidates:
-            success = self._probe_and_create_routed_stabilizer(coupler_patch, patches, syn_coord, path_info)
+            native_type = UnrotatedTwoPatchCoupler._resolve_existing_syndrome_type(patches, syn_coord)
+            interface_basis = self._boundary_candidate_interface_basis(syn_coord, path_info)
+            if native_type != self._opposite_interface_stabilizer_basis(interface_basis):
+                continue
+            success = self._probe_and_create_routed_stabilizer(
+                coupler_patch,
+                patches,
+                syn_coord,
+                path_info,
+                forced_basis=native_type,
+            )
             if success:
                 coupler_patch.conflicting_stabilizer_coords.add(syn_coord)
+        self._prune_anticommuting_routed_coupler_stabilizers(coupler_patch)
 
-    def _probe_and_create_routed_stabilizer(self, coupler_patch, patches, syn_coord, path_info: RoutedPathInfo) -> bool:
+    def _probe_and_create_routed_stabilizer(
+        self,
+        coupler_patch,
+        patches,
+        syn_coord,
+        path_info: RoutedPathInfo,
+        forced_basis: Optional[str] = None,
+    ) -> bool:
         pauli = {}
+        native_basis = forced_basis or self._coupler_syndrome_native_basis(coupler_patch, syn_coord)
+        neighbor_bases = {}
         for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
             tx, ty = QECPatch.snap_coord((syn_coord[0] + dx, syn_coord[1] + dy))
             if UnrotatedTwoPatchCoupler._is_data_qubit_at(coupler_patch, patches, tx, ty):
-                basis = self._neighbor_basis((tx, ty), syn_coord, patches, path_info)
-                pauli[(tx, ty)] = basis
+                neighbor_bases[(tx, ty)] = self._neighbor_basis((tx, ty), syn_coord, patches, path_info)
 
-        if len(pauli) < 2:
+        if len(neighbor_bases) < 2:
             return False
+
+        if forced_basis is not None or len(set(neighbor_bases.values())) <= 1:
+            pauli = {coord: native_basis for coord in neighbor_bases}
+        else:
+            pauli = dict(neighbor_bases)
 
         bases = set(pauli.values())
         if bases == {'X'}:
@@ -1585,6 +1647,97 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
             'syn_coord': syn_coord,
         })
         return True
+
+    @staticmethod
+    def _coupler_syndrome_native_basis(coupler_patch: QECPatch, syn_coord: Tuple[float, float]) -> str:
+        uid = coupler_patch.index_map.get(syn_coord)
+        if uid in coupler_patch.syndrome_indices_x:
+            return 'X'
+        if uid in coupler_patch.syndrome_indices_z:
+            return 'Z'
+        return 'Z'
+
+    @staticmethod
+    def _boundary_candidate_interface_basis(
+        syn_coord: Tuple[float, float],
+        path_info: RoutedPathInfo,
+    ) -> Optional[str]:
+        """Return the routed interface basis for an existing boundary syndrome."""
+        for iface, basis in zip(path_info.interfaces, path_info.interface_bases):
+            edge = iface.boundary_edge_coord
+            x, y = syn_coord
+            if iface.side in ('left', 'right') and math.isclose(x, edge, abs_tol=1e-3):
+                return basis
+            if iface.side in ('top', 'bottom') and math.isclose(y, edge, abs_tol=1e-3):
+                return basis
+        return None
+
+    @staticmethod
+    def _opposite_interface_stabilizer_basis(interface_basis: Optional[str]) -> Optional[str]:
+        if interface_basis == 'X':
+            return 'Z'
+        if interface_basis == 'Z':
+            return 'X'
+        return None
+
+    def _prune_anticommuting_routed_coupler_stabilizers(self, coupler_patch: QECPatch):
+        """
+        Remove pure routed checks replaced by local mixed/twist templates.
+
+        Around an X/Z seam the naive full-lattice checkerboard may create both a
+        pure CSS check and a neighboring mixed check that overlap on one data
+        qubit with different Paulis.  They cannot be measured in the same
+        stabilizer round.  The mixed template is the intended local surgery
+        check, so the conflicting pure coupler check is dropped.
+        """
+        if not any(stab.get('type') == 'MIXED' for stab in coupler_patch.stabilizers):
+            return
+
+        stabs = list(coupler_patch.stabilizers)
+        while True:
+            removed = False
+            for i, a in enumerate(stabs):
+                for j in range(i + 1, len(stabs)):
+                    b = stabs[j]
+                    if self._stabilizer_records_commute(a, b):
+                        continue
+
+                    a_mixed = a.get('type') == 'MIXED'
+                    b_mixed = b.get('type') == 'MIXED'
+                    if a_mixed and b_mixed:
+                        raise ValueError(
+                            "Routed mixed coupler produced anticommuting mixed stabilizers "
+                            f"at {a.get('syn_coord')} and {b.get('syn_coord')}."
+                        )
+
+                    if a_mixed and not b_mixed:
+                        del stabs[j]
+                    elif b_mixed and not a_mixed:
+                        del stabs[i]
+                    else:
+                        # At routed corners a naive CSS checkerboard can create
+                        # one extra pure X/Z pair with odd overlap.  One of the
+                        # pair must be absent from the local corner template; use
+                        # scan order as the deterministic tie break.
+                        del stabs[j]
+                    removed = True
+                    break
+                if removed:
+                    break
+
+            if not removed:
+                break
+
+        coupler_patch.stabilizers = stabs
+
+    @staticmethod
+    def _stabilizer_records_commute(a, b) -> bool:
+        parity = 0
+        for coord, pauli in a.get('pauli', {}).items():
+            other = b.get('pauli', {}).get(coord)
+            if other is not None and other != pauli:
+                parity ^= 1
+        return parity == 0
 
     def _neighbor_basis(
         self,

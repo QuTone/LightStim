@@ -7,7 +7,7 @@ that native interface basis.  If X and Z interfaces both connect to the same
 ancillary region, the coupler creates local mixed XZ stabilizers at the seams and
 corners of the routed path.
 """
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Set, Tuple
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -60,6 +60,24 @@ class AncillaReadoutTerm:
 
 
 @dataclass(frozen=True)
+class AncillaKnownTerm:
+    """
+    One known ancillary-patch initialization eigenvalue used by a decomposition.
+
+    These terms are not final readout outcomes.  They are deterministic +1
+    factors supplied by the chosen ancillary preparation basis, so the measured
+    logical-product bit still comes only from the selected syndrome outcomes.
+    """
+
+    source: str
+    coupler_name: str
+    local_qubit_index: int
+    global_qubit_index: int
+    coord: Tuple[float, float]
+    pauli: str
+
+
+@dataclass(frozen=True)
 class SyndromeProductDecomposition:
     """
     Algebraic expression for a logical product as measured outcomes.
@@ -78,6 +96,7 @@ class SyndromeProductDecomposition:
     selected_patch_terms: List[SyndromeProductTerm]
     verified: bool
     selected_ancilla_terms: List[AncillaReadoutTerm] = field(default_factory=list)
+    selected_ancilla_known_terms: List[AncillaKnownTerm] = field(default_factory=list)
 
     @property
     def selected_terms(self) -> List[SyndromeProductTerm]:
@@ -86,6 +105,47 @@ class SyndromeProductDecomposition:
     @property
     def uses_ancilla_readout_terms(self) -> bool:
         return bool(self.selected_ancilla_terms)
+
+
+@dataclass(frozen=True)
+class MergeCheckProductTerm:
+    """One local green/merge check used in a routed product measurement."""
+
+    source: str
+    patch_name: str
+    stabilizer_uid: int
+    local_stabilizer_index: int
+    stype: str
+    syn_idx: int
+    syn_coord: Tuple[float, float]
+    weight: int
+    rec_offset: int
+    pauli: Dict[int, str]
+    base_weight: int
+
+
+@dataclass(frozen=True)
+class MergeCheckProductDecomposition:
+    """
+    Green-check expression for a routed logical product.
+
+    ``selected_merge_terms`` are the measured local merge checks.  The
+    ``patch_correction_terms`` are original code stabilizers used only for the
+    algebraic equivalence ``product(green checks) = logical × stabilizers``;
+    they are not part of the green-check outcome product.
+    """
+
+    coupler_name: str
+    patch_names: List[str]
+    target_paulis: List[str]
+    selected_merge_terms: List[MergeCheckProductTerm]
+    patch_correction_terms: List[SyndromeProductTerm]
+    verified: bool
+    trimmed_boundary_terms: List[AncillaKnownTerm] = field(default_factory=list)
+
+    @property
+    def selected_terms(self) -> List[MergeCheckProductTerm]:
+        return list(self.selected_merge_terms)
 
 
 def x_to_z_basis_change_indices(paulis: Sequence[str]) -> List[int]:
@@ -254,6 +314,8 @@ def solve_routed_pauli_product_syndromes(
     include_patch_stabilizers: bool = True,
     include_ancilla_readout_terms: bool = True,
     ancilla_readout_bases: Optional[Mapping[int, str]] = None,
+    include_ancilla_known_terms: bool = False,
+    ancilla_known_bases: Optional[Mapping[int, str]] = None,
     reduce_weight: bool = True,
 ) -> SyndromeProductDecomposition:
     """
@@ -266,16 +328,23 @@ def solve_routed_pauli_product_syndromes(
     mixed geometries where the coupler checks alone leave boundary stabilizer
     factors.
 
-    For full-width ancillary-patch geometries, a pure syndrome product can
-    leave an ancillary logical boundary factor.  When
-    ``include_ancilla_readout_terms`` is true, the solver falls back to allowing
-    ancillary-patch data readout/known-boundary terms and reports them
-    separately in ``selected_ancilla_terms``.
+    For full-width ancillary-patch geometries, a pure syndrome product can need
+    deterministic ancillary initialization eigenvalues to close the algebra.
+    When ``include_ancilla_known_terms`` is true, those +1 preparation factors
+    are allowed and reported separately in ``selected_ancilla_known_terms``;
+    they are not readout terms and do not change the measured syndrome product.
+
+    If that is still insufficient and ``include_ancilla_readout_terms`` is true,
+    the solver falls back to allowing ancillary-patch data readout terms and
+    reports them separately in ``selected_ancilla_terms``.
 
     If ``ancilla_readout_bases`` is provided, only those actual readout bases are
     allowed.  Keys are global qubit indices and values are ``'X'`` or ``'Z'``.
     This prevents solving with an unphysical mixture where the same data qubit
     contributes both X and Z readout outcomes.
+
+    ``ancilla_known_bases`` has the same shape, but represents deterministic
+    preparation eigenvalues instead of final readout outcomes.
     """
     if coupler_name not in system.coupler_patches:
         raise ValueError(f"Coupler {coupler_name!r} is not registered.")
@@ -306,8 +375,37 @@ def solve_routed_pauli_product_syndromes(
         targets=target,
         reduce_weight=reduce_weight,
     )
+    ancilla_known_labels: List[AncillaKnownTerm] = []
     ancilla_labels: List[AncillaReadoutTerm] = []
     combined_basis = basis
+    known_start = None
+    readout_start = None
+
+    if not is_dependent[0] and include_ancilla_known_terms:
+        known_basis, known_readout_labels = _coupler_data_readout_basis(
+            system,
+            coupler_name,
+            readout_bases=ancilla_known_bases,
+        )
+        ancilla_known_labels = [
+            AncillaKnownTerm(
+                source="ancilla_initialization",
+                coupler_name=label.coupler_name,
+                local_qubit_index=label.local_qubit_index,
+                global_qubit_index=label.global_qubit_index,
+                coord=label.coord,
+                pauli=label.pauli,
+            )
+            for label in known_readout_labels
+        ]
+        if known_basis.shape[0]:
+            known_start = combined_basis.shape[0]
+            combined_basis = np.vstack([combined_basis, known_basis])
+            coeffs, is_dependent, _ = solve_linear_decomposition(
+                basis=combined_basis,
+                targets=target,
+                reduce_weight=reduce_weight,
+            )
 
     if not is_dependent[0] and include_ancilla_readout_terms:
         ancilla_basis, ancilla_labels = _coupler_data_readout_basis(
@@ -316,7 +414,14 @@ def solve_routed_pauli_product_syndromes(
             readout_bases=ancilla_readout_bases,
         )
         if ancilla_basis.shape[0]:
+            readout_start = combined_basis.shape[0]
             combined_basis = np.vstack([basis, ancilla_basis])
+            if known_start is not None:
+                combined_basis = np.vstack([
+                    basis,
+                    known_basis,
+                    ancilla_basis,
+                ])
             coeffs, is_dependent, _ = solve_linear_decomposition(
                 basis=combined_basis,
                 targets=target,
@@ -325,6 +430,8 @@ def solve_routed_pauli_product_syndromes(
 
     if not is_dependent[0]:
         mode = "coupler plus active patch stabilizers" if include_patch_stabilizers else "coupler stabilizers only"
+        if include_ancilla_known_terms:
+            mode += " plus known ancillary initialization terms"
         if include_ancilla_readout_terms:
             mode += " plus ancillary readout terms"
         raise ValueError(
@@ -343,10 +450,15 @@ def solve_routed_pauli_product_syndromes(
     selected_coupler_terms: List[SyndromeProductTerm] = []
     selected_patch_terms: List[SyndromeProductTerm] = []
     selected_ancilla_terms: List[AncillaReadoutTerm] = []
+    selected_ancilla_known_terms: List[AncillaKnownTerm] = []
 
     for pos in selected_positions:
-        if pos >= len(basis_uids):
-            ancilla_pos = pos - len(basis_uids)
+        if known_start is not None and known_start <= pos < known_start + len(ancilla_known_labels):
+            known_pos = pos - known_start
+            selected_ancilla_known_terms.append(ancilla_known_labels[known_pos])
+            continue
+        if readout_start is not None and pos >= readout_start:
+            ancilla_pos = pos - readout_start
             selected_ancilla_terms.append(ancilla_labels[ancilla_pos])
             continue
         uid = basis_uids[pos]
@@ -371,6 +483,125 @@ def solve_routed_pauli_product_syndromes(
         selected_patch_terms=selected_patch_terms,
         verified=verified,
         selected_ancilla_terms=selected_ancilla_terms,
+        selected_ancilla_known_terms=selected_ancilla_known_terms,
+    )
+
+
+def solve_routed_pauli_product_merge_checks(
+    system: QECSystem,
+    patch_names: Sequence[str],
+    paulis: Sequence[str],
+    coupler_name: str,
+    boundary_basis: Optional[Mapping[int, str]] = None,
+    reduce_weight: bool = True,
+) -> MergeCheckProductDecomposition:
+    """
+    Derive the local green/merge checks for a routed logical product.
+
+    This implements the lattice-surgery identity used in the usual pictures:
+    the product of the newly measured merge checks equals the target logical
+    product up to original code stabilizers.  Operationally this starts from the
+    full-routed decomposition, identifies ancillary boundary factors that would
+    otherwise be treated as known preparation eigenvalues, and truncates the
+    corresponding local merge checks at that boundary.  The resulting measured
+    terms are local weight-2/3/4 checks and require no ancillary data readout or
+    known ancillary initialization factors in the final outcome product.
+    """
+    if boundary_basis is None:
+        boundary_basis = routed_coupler_data_basis(system, coupler_name, mode="same")
+
+    seed = solve_routed_pauli_product_syndromes(
+        system=system,
+        patch_names=patch_names,
+        paulis=paulis,
+        coupler_name=coupler_name,
+        include_patch_stabilizers=True,
+        include_ancilla_readout_terms=False,
+        include_ancilla_known_terms=True,
+        ancilla_known_bases=boundary_basis,
+        reduce_weight=reduce_weight,
+    )
+    if seed.selected_ancilla_terms:
+        raise ValueError(
+            "Merge-check decomposition must not use ancillary data readout terms."
+        )
+
+    target_paulis = [p.upper() for p in paulis]
+    target = logical_pauli_product_vector(system, patch_names, target_paulis)
+    active_uids = _coupler_on_active_stabilizer_uids(system, coupler_name)
+    rec_offsets = _single_round_record_offsets(system, active_uids)
+
+    to_trim: Set[Tuple[int, str]] = {
+        (term.global_qubit_index, term.pauli)
+        for term in seed.selected_ancilla_known_terms
+    }
+    remaining = set(to_trim)
+    selected_merge_terms: List[MergeCheckProductTerm] = []
+    trimmed_records = []
+
+    for term in seed.selected_coupler_terms:
+        stab = system.stabilizers[term.stabilizer_uid]
+        pauli = dict(stab.get("pauli", {}))
+        for key in list(remaining):
+            q, p = key
+            if pauli.get(q) == p:
+                del pauli[q]
+                remaining.remove(key)
+
+        if not pauli:
+            continue
+
+        trimmed_record = dict(stab)
+        trimmed_record["pauli"] = pauli
+        trimmed_record["data_indices"] = sorted(pauli)
+        trimmed_records.append(trimmed_record)
+
+        selected_merge_terms.append(MergeCheckProductTerm(
+            source="coupler_merge",
+            patch_name=stab.get("patch_name"),
+            stabilizer_uid=term.stabilizer_uid,
+            local_stabilizer_index=term.local_stabilizer_index,
+            stype=stab.get("type"),
+            syn_idx=stab.get("syn_idx"),
+            syn_coord=stab.get("syn_coord"),
+            weight=len(pauli),
+            rec_offset=rec_offsets[stab.get("syn_idx")],
+            pauli=pauli,
+            base_weight=len(stab.get("pauli", {})),
+        ))
+
+    if remaining:
+        examples = sorted(remaining)[:5]
+        raise ValueError(
+            "Could not attach all routed boundary terms to local merge checks; "
+            f"examples: {examples}."
+        )
+
+    patch_records = [
+        system.stabilizers[term.stabilizer_uid]
+        for term in seed.selected_patch_terms
+    ]
+    verify_records = [*trimmed_records, *patch_records]
+    if not verify_records:
+        raise ValueError("No merge-check terms were selected.")
+
+    rows = stabilizers_to_symplectic(system, verify_records, system.num_qubits)
+    product = np.bitwise_xor.reduce(rows, axis=0).reshape(1, -1)
+    verified = bool(np.array_equal(product, target))
+    if not verified:
+        raise ValueError(
+            f"Trimmed merge checks do not generate target logical product "
+            f"{''.join(target_paulis)} for coupler {coupler_name!r}."
+        )
+
+    return MergeCheckProductDecomposition(
+        coupler_name=coupler_name,
+        patch_names=list(patch_names),
+        target_paulis=target_paulis,
+        selected_merge_terms=selected_merge_terms,
+        patch_correction_terms=seed.selected_patch_terms,
+        verified=verified,
+        trimmed_boundary_terms=seed.selected_ancilla_known_terms,
     )
 
 

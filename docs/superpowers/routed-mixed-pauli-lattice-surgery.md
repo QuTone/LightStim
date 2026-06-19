@@ -100,6 +100,10 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
   `route_width × route_width` ancillary block。因此 selected interface 的
   terminal region 和中间拐弯/走廊都是由完整 patch-sized blocks 拼成的，
   不再是 thin skeleton 膨胀出来的非规整形状。
+- route cell 是几何 coarse block，不是独立重新初始化 checkerboard phase
+  的小 patch。full ancillary region 的 data/X-syndrome/Z-syndrome parity
+  必须在整个 merged lattice 上连续；如果每个 5×5 cell 内重新起相位，
+  图形上仍是方块，但边界 merge 的 Pauli product algebra 会断掉。
 - interface basis 可以由选中边自动推断，也可以显式传入。
 - routed Pauli-product helper 会比较 target Pauli 和 native interface
   Pauli，只在不匹配的位置插入 logical H。
@@ -107,21 +111,41 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
   模板生成。
 - mixed-template 路径会用代数方式暂停与 routed check 反对易的原 patch
   stabilizer，使测试过的 active stabilizer set 保持对易。
+- mixed-template 路径还会在 coupler 内部做本地 pruning：X/Z seam 上与 mixed
+  check 反对易的纯 coupler check 会被 mixed/twist template 替换；拐弯处若
+  naive CSS checkerboard 生成一对反对易的 pure X/Z corner checks，也会按
+  固定局部规则删去其中一个。这个 pruning 不引入高权重 closure。
 - `solve_routed_pauli_product_syndromes` 可以自动求解并验证目标 logical
-  product 的 outcome 分解。它会先尝试纯 syndrome outcomes；如果 full
-  ancillary patch 几何留下 ancilla 自身的 boundary/logical 因子，则会额外
-  返回 `selected_ancilla_terms`，表示需要乘入的 ancilla data readout 或
-  known-boundary terms。对于当前测试的 full patch-span `X1Z2` 几何，它会
-  返回 coupler stabilizer outcomes、active patch stabilizer correction
-  outcomes，以及必要的 ancilla terms。
+  product 的 outcome 分解。正常的 routed/mixed lattice surgery 应该在
+  `include_ancilla_readout_terms=False` 时成功；如果失败，则说明当前局部
+  stabilizer template 没有让 ancillary Pauli 在 product 中全部抵消。
+- 之前尝试过的 high-weight closure syndrome 已经移除。它只能把 residual
+  代数上补掉，不是合理的局部 lattice-surgery stabilizer 设计。
+- mixed-interface boundary 现在不会再把 data patch 自己的 boundary syndrome
+  任意重新涂色。只有当原生 boundary syndrome 类型是该 logical interface
+  的互补 stabilizer 类型时，才允许复用这个边界 syndrome；例如 Z interface
+  上复用 X boundary checks，X interface 上复用 Z boundary checks。对 d=3
+  的一条 selected edge，这样的 boundary checks 数量是 `d-1=2`，不是把整条
+  几何边界上所有 syndrome 都拿进来。
 - `routed_coupler_data_basis` 会根据 routed ancillary region 的局部
   `route_coord_basis` 生成物理 basis map：
   - `mode="opposite"` 用于初始化：`Z` route 区域准备在 `X`，`X` route
     区域准备在 `Z`。
   - `mode="same"` 用于读出：`Z` route 区域读 `Z`，`X` route 区域读 `X`。
-- product 分解器现在可以传入 `ancilla_readout_bases`，只允许使用实际会被
-  读出的 ancillary data Pauli，避免数学上同时使用同一 qubit 的 `X` 和 `Z`
-  readout。
+- `solve_routed_pauli_product_syndromes` 仍把两类 ancillary diagnostic 项分开：
+  - `selected_ancilla_known_terms` 是由 chosen ancillary initialization
+    basis 提供的确定性 +1 本征值，不是 readout。
+  - `selected_ancilla_terms` 才是 residual ancillary data readout terms；
+    对目标 native full-width mixed measurement，应当为 0。
+- 真正对应“绿色点 stabilizer 乘积”的接口是
+  `solve_routed_pauli_product_merge_checks`。它先识别 full ancillary-patch
+  span 中会跑到外侧 boundary 的 ancillary Pauli，然后把对应 local merge
+  checks 在该 measured surface 边界处截断，得到只由 weight-2/3/4 local
+  green checks 组成的 product。截断掉的 boundary Pauli 不再作为 known
+  initialization outcome 参与结果。
+- product 分解器仍可以传入 `ancilla_readout_bases` 做 residual diagnostic：
+  如果 syndrome-only 失败，它能告诉我们还剩哪些 ancillary Pauli 没有被
+  局部 checks 抵消。但这只是诊断，不是最终实现路径。
 
 已经验证：
 
@@ -131,25 +155,26 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
   `route_width=1`，以保持 tracker/DEM 验证闭合。
 - mixed-template scaffold 已经测试了 mixed check 的生成、非 weight-4
   check 的存在，以及 active stabilizer set 的两两对易。
-- mixed-check extraction 现在按 compatible stabilizer batch 执行，并对
-  batch 内 CNOT edges 做 layer coloring，避免 `detslice-with-ops-svg`
-  退化成一长串单 check 的细线图。
-- native `X1Z2` 的 product algebra 已经测试通过：单独使用 coupler checks
-  不足以生成目标 product；加入 active patch stabilizer correction 后，
-  求解器会在限制到实际 route-basis readout 的条件下验证最终乘积等于
-  `X1Z2`。是否还需要额外 ancilla readout terms 取决于具体 routed geometry；
-  当前规整 terminal-block 几何下不再强制需要这些项。
-- 四 patch native-interface `ZZZX` mixed full ancillary patch 已经能走完整
-  tracker/observable 流程：ancilla 用 conjugate basis 初始化、用 route basis
-  读出，`if_detector=True` 时可生成 1 个 mixed-surgery observable，并通过
-  detector error model。`routed_ZZZX_LS.ipynb` 的 Exp 2 会显示完整
-  `detslice-with-ops-svg` 彩色图。
+- mixed-check extraction 现在按 compatible stabilizer batch 执行；每个
+  mixed syndrome 使用 X-basis ancilla，`Z` 项用 `CZ(data, syndrome)`，
+  `X` 项用 `CNOT(syndrome, data)`，并对 batch 内 entangling edges 做
+  layer coloring，避免 `detslice-with-ops-svg` 退化成一长串单 check 的细线图。
+- native `X1Z2` 的 product algebra 已经测试通过：coupler checks 加 active
+  patch stabilizer correction 后，求解器可以 syndrome-only 验证最终乘积等于
+  `X1Z2`。
+- 四 patch native-interface `ZZZX` mixed full ancillary patch 的 green-check
+  product decomposition 现在可以验证：20 个 measured local merge checks
+  modulo 6 个原 code stabilizer equivalence terms 生成 `ZZZX`。这些 merge
+  checks 的权重分布是 weight-2/3/4，不需要 ancillary data readout，也不把
+  ancillary initialization eigenvalue 当成 outcome。这里没有引入 high-weight
+  closure syndrome。
 
 尚未宣称完全完成：
 
 - patch-span 的 routed ancillary region 已经用于 direct mixed coupler
-  geometry；但 patch-span Z-normalized final-readout helper 还没有完成
-  tracker/DEM 验证，所以 validated helper 暂时保留 thin route 选项。
+  geometry；但 patch-span native mixed tracker/observable 与 detector error
+  model schedule 还没有完成闭合验证，所以 notebook 里不再宣称 full mixed
+  `detslice-with-ops-svg` 是最终 DEM 图。
 - 当前 unrotated SE block 中的 mixed-check extraction 已经不是单 check
   串行；它会 batch compatible mixed checks 并 layer CNOT edges。不过这仍
   不是最终宣称 fault-tolerant 的 mixed-boundary lattice-surgery schedule。

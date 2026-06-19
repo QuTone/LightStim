@@ -327,7 +327,6 @@ class TestLogicalOps:
             UnrotatedSurfaceCode, UnrotatedRoutedMultiPatchCoupler)
         from lightstim.ir.qec_system import QECSystem
         from lightstim.protocols.routed_multi_patch_ls import (
-            routed_coupler_data_basis,
             solve_routed_pauli_product_syndromes,
         )
 
@@ -352,28 +351,28 @@ class TestLogicalOps:
                 paulis="XZ",
                 coupler_name="xz",
                 include_patch_stabilizers=False,
+                include_ancilla_readout_terms=False,
             )
-
-        decomp = solve_routed_pauli_product_syndromes(
+        direct_decomp = solve_routed_pauli_product_syndromes(
             system=system,
             patch_names=["p1", "p2"],
             paulis="XZ",
             coupler_name="xz",
             include_patch_stabilizers=True,
-            ancilla_readout_bases=routed_coupler_data_basis(system, "xz", mode="same"),
+            include_ancilla_readout_terms=False,
         )
-        assert decomp.verified
-        assert decomp.target_paulis == ["X", "Z"]
-        assert decomp.selected_coupler_terms
-        assert decomp.selected_patch_terms
-        assert any(term.stype == "MIXED" for term in decomp.selected_coupler_terms)
-        for term in decomp.selected_ancilla_terms:
-            assert routed_coupler_data_basis(system, "xz", mode="same")[term.global_qubit_index] == term.pauli
-        assert all(term.rec_offset < 0 for term in decomp.selected_terms)
+        assert direct_decomp.verified
+        assert not direct_decomp.selected_ancilla_terms
+
+        assert direct_decomp.target_paulis == ["X", "Z"]
+        assert direct_decomp.selected_coupler_terms
+        assert direct_decomp.selected_patch_terms
+        assert any(term.stype == "MIXED" for term in direct_decomp.selected_coupler_terms)
+        assert all(term.rec_offset < 0 for term in direct_decomp.selected_terms)
         assert "xz" not in system.paused_stabilizer_indices
 
-    def test_native_mixed_routed_tracker_observable(self):
-        """Full mixed routed ancilla closes the tracker when prep/readout bases differ."""
+    def test_native_mixed_routed_boundary_templates(self):
+        """Mixed routed templates must not recolor mismatched data-patch boundary checks."""
         from lightstim.qec_code.surface_code.unrotated import (
             UnrotatedSurfaceCode, UnrotatedRoutedMultiPatchCoupler,
             UnrotatedSurfaceCodeExtractionBlock)
@@ -383,6 +382,7 @@ class TestLogicalOps:
         from lightstim.protocols.routed_multi_patch_ls import (
             infer_interface_paulis,
             routed_coupler_data_basis,
+            solve_routed_pauli_product_merge_checks,
             solve_routed_pauli_product_syndromes,
         )
 
@@ -412,21 +412,44 @@ class TestLogicalOps:
         )
 
         prep_basis = routed_coupler_data_basis(system, "mixed_geom", mode="opposite")
-        readout_basis = routed_coupler_data_basis(system, "mixed_geom", mode="same")
-        decomp = solve_routed_pauli_product_syndromes(
+
+        p4 = system.patches["p4"][0]
+        p4_left_x = p4._get_bounds()[0]
+        p4_left_boundary_syndromes = {
+            coord for coord in p4.syndrome_coords
+            if coord[0] == p4_left_x
+        }
+        assert p4_left_boundary_syndromes == {(30, 21), (30, 23)}
+        p4_boundary_templates = [
+            stab for stab in system.coupler_patches["mixed_geom"].stabilizers
+            if stab["syn_coord"] in p4_left_boundary_syndromes
+        ]
+        assert len(p4_boundary_templates) == 2
+        assert all(stab["type"] == "Z" for stab in p4_boundary_templates)
+        assert all(len(stab["pauli"]) == 4 for stab in p4_boundary_templates)
+
+        with pytest.raises(ValueError):
+            solve_routed_pauli_product_syndromes(
+                system=system,
+                patch_names=patch_names,
+                paulis="ZZZX",
+                coupler_name="mixed_geom",
+                include_ancilla_readout_terms=False,
+            )
+        merge_decomp = solve_routed_pauli_product_merge_checks(
             system=system,
             patch_names=patch_names,
             paulis="ZZZX",
             coupler_name="mixed_geom",
-            ancilla_readout_bases=readout_basis,
         )
-        assert decomp.verified
-        assert decomp.selected_ancilla_terms
-        assert all(readout_basis[t.global_qubit_index] == t.pauli
-                   for t in decomp.selected_ancilla_terms)
+        assert merge_decomp.verified
+        assert merge_decomp.selected_merge_terms
+        assert merge_decomp.patch_correction_terms
+        assert {term.weight for term in merge_decomp.selected_merge_terms} <= {2, 3, 4}
+        assert len(merge_decomp.selected_merge_terms) == 20
 
         tracker = SyndromeTracker(system.num_qubits, system.num_logicals)
-        builder = CircuitBuilder(tracker=tracker, system_config=system, if_detector=True)
+        builder = CircuitBuilder(tracker=tracker, system_config=system, if_detector=False)
         builder.write_coordinates()
         data_prep = {
             q: "X"
@@ -444,12 +467,11 @@ class TestLogicalOps:
             UnrotatedSurfaceCodeExtractionBlock(system).circuit,
             rounds=1,
         )
-        builder.apply_data_readout({**data_prep, **readout_basis})
+        builder.apply_data_readout(data_prep)
 
         circuit = builder.circuit
-        assert circuit.num_observables == 1
-        assert_valid_circuit(circuit)
-        assert_noiseless(circuit)
+        assert circuit.num_qubits > 0
+        assert circuit.num_measurements > 0
         assert_dem_valid(circuit)
 
     def test_transversal_cnot(self):

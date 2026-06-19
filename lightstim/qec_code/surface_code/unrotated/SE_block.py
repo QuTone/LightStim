@@ -141,7 +141,9 @@ class UnrotatedSurfaceCodeExtractionBlock:
         # Mixed checks are measured from their explicit Pauli dictionaries.
         # Compatible checks are batched so routed/mixed surgery diagrams show
         # the ancillary patch region instead of a long sequence of single-check
-        # fragments.  Within each batch, CNOT edges are layer-colored to avoid
+        # fragments.  Mixed checks use an X-basis syndrome ancilla: Z terms
+        # couple via CZ(data, syndrome), while X terms couple via
+        # CNOT(syndrome, data).  Entangling edges are layer-colored to avoid
         # shared-qubit conflicts in the same tick.
         self._append_mixed_stabilizer_measurements(active_stabilizers_mixed)
 
@@ -159,28 +161,29 @@ class UnrotatedSurfaceCodeExtractionBlock:
             return
 
         for batch in self._batch_compatible_mixed_stabilizers(stabs):
-            x_data = sorted({
-                q
-                for stab in batch
-                for q, pauli in stab.get('pauli', {}).items()
-                if pauli == 'X'
-            })
+            mixed_syn = sorted({stab['syn_idx'] for stab in batch})
 
-            if x_data:
-                self.circuit.append("H", x_data)
-                self.circuit.append("TICK")
+            self.circuit.append("H", mixed_syn)
+            self.circuit.append("TICK")
 
-            for layer in self._mixed_cnot_layers(batch):
+            for layer in self._mixed_entangling_layers(batch):
                 cnot_targets = []
-                for data_idx, syn_idx in layer:
-                    cnot_targets.extend([data_idx, syn_idx])
+                cz_targets = []
+                for data_idx, syn_idx, pauli in layer:
+                    if pauli == 'X':
+                        cnot_targets.extend([syn_idx, data_idx])
+                    elif pauli == 'Z':
+                        cz_targets.extend([data_idx, syn_idx])
+                    else:
+                        raise ValueError(f"Mixed stabilizer only supports X/Z terms, got {pauli!r}.")
                 if cnot_targets:
                     self.circuit.append("CNOT", cnot_targets)
+                if cz_targets:
+                    self.circuit.append("CZ", cz_targets)
                 self.circuit.append("TICK")
 
-            if x_data:
-                self.circuit.append("H", x_data)
-                self.circuit.append("TICK")
+            self.circuit.append("H", mixed_syn)
+            self.circuit.append("TICK")
 
     @staticmethod
     def _batch_compatible_mixed_stabilizers(stabs):
@@ -209,23 +212,23 @@ class UnrotatedSurfaceCodeExtractionBlock:
         return batches
 
     @staticmethod
-    def _mixed_cnot_layers(stabs):
+    def _mixed_entangling_layers(stabs):
         layers = []
         used_by_layer = []
 
         for stab in stabs:
             syn_idx = stab['syn_idx']
-            for data_idx in sorted(stab.get('pauli', {})):
+            for data_idx, pauli in sorted(stab.get('pauli', {}).items()):
                 placed = False
                 for layer, used in zip(layers, used_by_layer):
                     if data_idx not in used and syn_idx not in used:
-                        layer.append((data_idx, syn_idx))
+                        layer.append((data_idx, syn_idx, pauli))
                         used.add(data_idx)
                         used.add(syn_idx)
                         placed = True
                         break
                 if not placed:
-                    layers.append([(data_idx, syn_idx)])
+                    layers.append([(data_idx, syn_idx, pauli)])
                     used_by_layer.append({data_idx, syn_idx})
 
         return layers
