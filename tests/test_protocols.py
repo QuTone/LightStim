@@ -192,9 +192,9 @@ class TestLogicalOps:
         system = QECSystem()
         layout = {
             "p1": (0, 0),
-            "p2": (10, 0),
-            "p3": (0, 10),
-            "p4": (10, 10),
+            "p2": (12, 0),
+            "p3": (0, 12),
+            "p4": (12, 12),
         }
         for name, off in layout.items():
             system.add_patch(UnrotatedSurfaceCode(distance=3), name=name, offset=off)
@@ -244,9 +244,9 @@ class TestLogicalOps:
         system = QECSystem()
         layout = {
             "p1": (0, 0),
-            "p2": (10, 0),
-            "p3": (0, 10),
-            "p4": (10, 10),
+            "p2": (12, 0),
+            "p3": (0, 12),
+            "p4": (12, 12),
         }
         for name, off in layout.items():
             system.add_patch(UnrotatedSurfaceCode(distance=3), name=name, offset=off)
@@ -291,7 +291,7 @@ class TestLogicalOps:
 
         system = QECSystem()
         system.add_patch(UnrotatedSurfaceCode(distance=3), name="p1", offset=(0, 0))
-        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(10, 10))
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(12, 12))
         system.register_coupler(
             UnrotatedRoutedMultiPatchCoupler(),
             ["p1", "p2"],
@@ -332,7 +332,7 @@ class TestLogicalOps:
 
         system = QECSystem()
         system.add_patch(UnrotatedSurfaceCode(distance=3), name="p1", offset=(0, 0))
-        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(10, 10))
+        system.add_patch(UnrotatedSurfaceCode(distance=3), name="p2", offset=(12, 12))
         system.register_coupler(
             UnrotatedRoutedMultiPatchCoupler(),
             ["p1", "p2"],
@@ -382,6 +382,7 @@ class TestLogicalOps:
         from lightstim.protocols.routed_multi_patch_ls import (
             infer_interface_paulis,
             routed_coupler_data_basis,
+            solve_routed_pauli_product_long_ancilla,
             solve_routed_pauli_product_merge_checks,
             solve_routed_pauli_product_syndromes,
         )
@@ -392,9 +393,9 @@ class TestLogicalOps:
         system = QECSystem()
         for name, off in {
             "p1": (0, 0),
-            "p2": (20, 0),
-            "p3": (10, 20),
-            "p4": (30, 20),
+            "p2": (24, 0),
+            "p3": (12, 24),
+            "p4": (36, 24),
         }.items():
             system.add_patch(UnrotatedSurfaceCode(distance=d), name=name, offset=off)
 
@@ -419,13 +420,13 @@ class TestLogicalOps:
             coord for coord in p4.syndrome_coords
             if coord[0] == p4_left_x
         }
-        assert p4_left_boundary_syndromes == {(30, 21), (30, 23)}
+        assert p4_left_boundary_syndromes == {(36, 25), (36, 27)}
         p4_boundary_templates = [
             stab for stab in system.coupler_patches["mixed_geom"].stabilizers
             if stab["syn_coord"] in p4_left_boundary_syndromes
         ]
         assert len(p4_boundary_templates) == 2
-        assert all(stab["type"] == "Z" for stab in p4_boundary_templates)
+        assert all(stab["type"] == "X" for stab in p4_boundary_templates)
         assert all(len(stab["pauli"]) == 4 for stab in p4_boundary_templates)
 
         with pytest.raises(ValueError):
@@ -442,17 +443,70 @@ class TestLogicalOps:
             paulis="ZZZX",
             coupler_name="mixed_geom",
         )
-        assert merge_decomp.verified
+        assert not merge_decomp.verified
         assert merge_decomp.selected_merge_terms
-        assert merge_decomp.patch_correction_terms
-        assert {term.weight for term in merge_decomp.selected_merge_terms} <= {2, 3, 4}
-        assert len(merge_decomp.selected_merge_terms) == 20
+        assert merge_decomp.selection_rule == "basis_matched_geometry_no_trim"
+        assert not merge_decomp.trimmed_boundary_terms
+        assert merge_decomp.residual_terms
+        selected_records = [
+            system.stabilizers[term.stabilizer_uid]
+            for term in merge_decomp.selected_merge_terms
+            if term.patch_name == "mixed_geom"
+        ]
+        route_basis = system.coupler_patches["mixed_geom"].route_coord_basis
+        for stab in selected_records:
+            if stab["type"] in ("X", "Z"):
+                assert route_basis[stab["syn_coord"]] == stab["type"]
+        assert len(merge_decomp.patch_correction_terms) == 6
+        assert all(term.weight == term.base_weight for term in merge_decomp.selected_merge_terms)
+
+        paper_system = QECSystem()
+        for name, off in {
+            "p1": (0, 0),
+            "p2": (24, 0),
+            "p3": (12, 24),
+            "p4": (36, 24),
+        }.items():
+            paper_system.add_patch(UnrotatedSurfaceCode(distance=d), name=name, offset=off)
+        paper_interfaces = infer_interface_paulis(paper_system, patch_names, sides)
+        paper_system.register_coupler(
+            UnrotatedRoutedMultiPatchCoupler(),
+            patch_names,
+            "paper_long_ancilla",
+            sides=sides,
+            interface_paulis=paper_interfaces,
+            target_paulis=list("ZZZX"),
+            mixed_stabilizers=True,
+            route_padding=8,
+            route_width=2 * d - 1,
+        )
+        long_ancilla_decomp = solve_routed_pauli_product_long_ancilla(
+            system=paper_system,
+            patch_names=patch_names,
+            paulis="ZZZX",
+            coupler_name="paper_long_ancilla",
+        )
+        assert long_ancilla_decomp.verified
+        assert len(long_ancilla_decomp.selected_coupler_terms) > 50
+        assert len(long_ancilla_decomp.selected_patch_terms) == 6
+        assert any(term.stype == "MIXED" for term in long_ancilla_decomp.selected_coupler_terms)
+        assert len(long_ancilla_decomp.selected_ancilla_logical_terms) == 1
+        logical_factor = long_ancilla_decomp.selected_ancilla_logical_terms[0]
+        assert logical_factor.pauli == "MIXED"
+        assert len(logical_factor.support_terms) == 69
+        assert {
+            term.pauli for term in logical_factor.support_terms
+        } == {"X", "Z"}
+        assert all(
+            paper_system.index_to_owner_map[term.global_qubit_index] == "paper_long_ancilla"
+            for term in logical_factor.support_terms
+        )
 
         tracker = SyndromeTracker(system.num_qubits, system.num_logicals)
         builder = CircuitBuilder(tracker=tracker, system_config=system, if_detector=False)
         builder.write_coordinates()
         data_prep = {
-            q: "X"
+            q: "Z"
             for q in system.data_indices
             if system.index_to_owner_map.get(q) != "mixed_geom"
         }

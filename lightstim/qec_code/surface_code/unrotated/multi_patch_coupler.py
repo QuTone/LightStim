@@ -761,6 +761,9 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
             Filled width of the ancillary patch in integer lattice-coordinate
             rows/columns.  Defaults to the full coordinate span of a
             distance-d unrotated patch, not the logical distance d itself.
+            In full-width routing, adjacent block origins are separated by
+            ``route_width + 1`` so the intervening seam row/column is included
+            in the merged unrotated lattice.
         route_padding: int = 4
             Extra grid margin around terminals during routing.
         obstacle_patches: list[QECPatch] = []
@@ -934,12 +937,13 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
                 route_coords.update(target_strip)
             return route_coords, interfaces, strips, False, None
 
+        route_pitch = route_width + 1
         base_x, base_y, occupied_cells = self._validate_patch_block_grid(
             obstacle_patches,
             route_width,
         )
         terminal_cells = [
-            self._terminal_cell_for_side(patch, side, base_x, base_y, route_width)
+            self._terminal_cell_for_side(patch, side, base_x, base_y, route_width, route_pitch)
             for patch, side in zip(patches, sides)
         ]
         for patch, side, terminal in zip(patches, sides, terminal_cells):
@@ -952,7 +956,7 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         bounds = self._coarse_routing_bounds(
             terminal_cells=terminal_cells,
             occupied_cells=occupied_cells,
-            padding_blocks=max(1, math.ceil(padding / route_width) + 1),
+            padding_blocks=max(1, math.ceil(padding / route_pitch) + 1),
         )
         ordered_terminals = [terminal_cells[i] for i in route_order]
         route_cells: Set[Tuple[int, int]] = {ordered_terminals[0]}
@@ -966,7 +970,9 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
             route_cells.update(path)
             route_cells.add(target_cell)
 
-        route_coords = self._expand_coarse_cells(route_cells, base_x, base_y, route_width)
+        route_coords = self._expand_coarse_cells(route_cells, base_x, base_y, route_width, route_pitch)
+        for strip in strips:
+            route_coords.update(strip)
         return route_coords, interfaces, strips, True, (base_x, base_y)
 
     @staticmethod
@@ -1179,7 +1185,9 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         patch-sized blocks, so every data/obstacle patch must occupy exactly one
         ``route_width x route_width`` physical-coordinate block on a common
         coarse grid.  For a distance-d unrotated square patch this width is
-        ``2*d - 1``.
+        ``2*d - 1``.  Adjacent block origins are separated by
+        ``route_width + 1`` because the extra coordinate is the shared seam
+        row/column needed for standard patch plaquettes across the join.
         """
         if not patches:
             return 0, 0, set()
@@ -1202,15 +1210,16 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
                     f"to span exactly route_width={route_width} integer coordinates. "
                     f"Patch '{name}' spans {span_x}x{span_y}."
                 )
-            if (x0 - base_x) % route_width != 0 or (y0 - base_y) % route_width != 0:
+            route_pitch = route_width + 1
+            if (x0 - base_x) % route_pitch != 0 or (y0 - base_y) % route_pitch != 0:
                 raise ValueError(
                     f"Patch '{name}' is not aligned to the common coarse grid. "
                     f"For route_width={route_width}, patch origins must differ by integer "
-                    f"multiples of {route_width} from base origin ({base_x}, {base_y}); "
+                    f"multiples of route_pitch={route_pitch} from base origin ({base_x}, {base_y}); "
                     f"got origin ({x0}, {y0})."
                 )
 
-            cell = ((x0 - base_x) // route_width, (y0 - base_y) // route_width)
+            cell = ((x0 - base_x) // route_pitch, (y0 - base_y) // route_pitch)
             if cell in occupied_cells:
                 raise ValueError(
                     f"Multiple patches occupy coarse grid cell {cell}; move one patch."
@@ -1226,11 +1235,14 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         base_x: int,
         base_y: int,
         route_width: int,
+        route_pitch: Optional[int] = None,
     ) -> Tuple[int, int]:
+        if route_pitch is None:
+            route_pitch = route_width + 1
         x0, _, y0, _ = patch._get_bounds()
         return (
-            (int(round(x0)) - base_x) // route_width,
-            (int(round(y0)) - base_y) // route_width,
+            (int(round(x0)) - base_x) // route_pitch,
+            (int(round(y0)) - base_y) // route_pitch,
         )
 
     @classmethod
@@ -1241,8 +1253,11 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         base_x: int,
         base_y: int,
         route_width: int,
+        route_pitch: Optional[int] = None,
     ) -> Tuple[int, int]:
-        cx, cy = cls._patch_coarse_cell(patch, base_x, base_y, route_width)
+        if route_pitch is None:
+            route_pitch = route_width + 1
+        cx, cy = cls._patch_coarse_cell(patch, base_x, base_y, route_width, route_pitch)
         if side == 'left':
             return cx - 1, cy
         if side == 'right':
@@ -1326,14 +1341,44 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         base_x: int,
         base_y: int,
         route_width: int,
+        route_pitch: Optional[int] = None,
     ) -> Set[Tuple[float, float]]:
+        if route_pitch is None:
+            route_pitch = route_width + 1
         coords: Set[Tuple[float, float]] = set()
         for cx, cy in cells:
-            x_start = base_x + cx * route_width
-            y_start = base_y + cy * route_width
+            x_start = base_x + cx * route_pitch
+            y_start = base_y + cy * route_pitch
             for x in range(x_start, x_start + route_width):
                 for y in range(y_start, y_start + route_width):
                     coords.add((float(x), float(y)))
+
+        for cx, cy in cells:
+            x_start = base_x + cx * route_pitch
+            y_start = base_y + cy * route_pitch
+            if (cx + 1, cy) in cells:
+                seam_x = x_start + route_width
+                for y in range(y_start, y_start + route_width):
+                    coords.add((float(seam_x), float(y)))
+            if (cx, cy + 1) in cells:
+                seam_y = y_start + route_width
+                for x in range(x_start, x_start + route_width):
+                    coords.add((float(x), float(seam_y)))
+
+        for cx, cy in cells:
+            x_start = base_x + cx * route_pitch
+            y_start = base_y + cy * route_pitch
+            seam_x = x_start + route_width
+            seam_y = y_start + route_width
+            horizontal = (cx + 1, cy) in cells
+            vertical = (cx, cy + 1) in cells
+            around_corner = (
+                horizontal and ((cx, cy + 1) in cells or (cx + 1, cy + 1) in cells)
+            ) or (
+                vertical and ((cx + 1, cy) in cells or (cx + 1, cy + 1) in cells)
+            )
+            if around_corner:
+                coords.add((float(seam_x), float(seam_y)))
         return coords
 
     @staticmethod
@@ -1603,7 +1648,6 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
                 patches,
                 syn_coord,
                 path_info,
-                forced_basis=native_type,
             )
             if success:
                 coupler_patch.conflicting_stabilizer_coords.add(syn_coord)
@@ -1628,8 +1672,11 @@ class UnrotatedRoutedMultiPatchCoupler(UnrotatedMultiPatchCoupler):
         if len(neighbor_bases) < 2:
             return False
 
-        if forced_basis is not None or len(set(neighbor_bases.values())) <= 1:
+        if forced_basis is not None:
             pauli = {coord: native_basis for coord in neighbor_bases}
+        elif len(set(neighbor_bases.values())) <= 1:
+            common_basis = next(iter(neighbor_bases.values()))
+            pauli = {coord: common_basis for coord in neighbor_bases}
         else:
             pauli = dict(neighbor_bases)
 

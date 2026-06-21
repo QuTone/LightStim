@@ -19,6 +19,7 @@ from .routed_multi_patch_ls import (
     AncillaReadoutTerm,
     MergeCheckProductDecomposition,
     MergeCheckProductTerm,
+    ResidualPauliTerm,
     SyndromeProductDecomposition,
     SyndromeProductTerm,
     apply_logical_h_on_patches,

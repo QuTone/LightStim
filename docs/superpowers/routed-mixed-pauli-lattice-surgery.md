@@ -33,31 +33,45 @@ frame，不应该额外做 H。
 
 ## 几何规则
 
-ancilla 区域不是只能是单纯竖直或单纯水平 corridor。更一般地，它应当
-是一个 routed、basis-labeled 的 ancillary region。
+ancilla 区域不是只能是单纯竖直或单纯水平 corridor。参考
+Litinski/von Oppen 的 long-range multi-target CNOT 图，更合适的解释是：
+这条会拐弯的 bus 本身是一个完整的 long ancillary surface-code patch。
 
-参与测量的 data patch 可以放在任意位置，只要被选中的 boundary strip
-能够通过一条 Manhattan route 连通，并且这条 route 不穿过已有 patch
-占据的坐标。
+因此 full-width route 的首要几何规则不是“给每个坐标按最近 interface
+染成 X/Z 区域”，而是：
 
-route 上的每个坐标会被标记成离它最近的 interface basis。这样同一个
-ancilla region 内会自然出现 `X` 区域、`Z` 区域，以及二者交界处的
-mixed X/Z seam。
+1. ancilla bus 具有 code-distance 级别的固定宽度。
+2. data / syndrome checkerboard 在整条 bent patch 上连续延伸。
+3. 90 度拐角按普通 surface-code patch corner 处理，自然允许 weight-2 /
+   weight-3 边界 stabilizer。
+4. 相邻 patch-sized route blocks 之间必须包含 seam 行/列，使整条 bus 等价
+   于一个标准 unrotated rectangular / bent patch，而不是一串互相重启相位
+   的小 patch。
+
+data patch 的 selected interface window 与这个 long ancilla patch 做
+merge。merge-check product 可以留下一个 long ancilla 的 logical boundary
+factor；这个 factor 由 ancilla 的初始化/测量 frame 给出，而不是逐个读出
+ancilla data qubit。
 
 ## Stabilizer 模板规则
 
-stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共用同
-一种模板：
+paper-style long ancilla 的 stabilizer 设计按 unrotated surface-code patch
+生成，但 X/Z sheet 交界处必须使用 mixed/domain-wall stabilizer：
 
-- 纯 `X` 邻域生成普通 X check。
-- 纯 `Z` 邻域生成普通 Z check。
-- `X/Z` seam 处生成 mixed XZ check。
-- endpoint、拐弯、被裁剪的局部邻域可能自然产生 weight-2 或 weight-3
-  check，不能假设所有 ancilla stabilizer 都是 weight 4。
+- bulk plaquette 仍是标准 weight-4 X/Z checkerboard。
+- X/Z route label 改变的 seam/corner 附近使用 mixed stabilizer；不能把
+  这些位置强行保持成纯 CSS X/Z check。
+- 外边界、内边界、接口窗口边界和拐角处自然出现 weight-2 / weight-3
+  stabilizer。
+- 拐弯处不重新初始化 checkerboard phase；它只是同一个 patch 的 corner。
+- 参与 logical product 的是 data-ancilla 接触窗口上的 merge-check
+  syndrome product。ancilla 内部 stabilizer 负责保持 bus 是一个 code patch，
+  不应被解释成独立的 data readout。
 
-因此，像 `X1` 和 `Z2` 中间有多个 ancilla patch，或者 route 发生拐弯
-的情况，stabilizer 类型和 weight 都会依赖局部几何；不能把整条 bus
-粗暴地看成同一种 `XXXX` 或 `ZZZZ` 模板。
+如果确实需要在同一个局部位置把 X 边界和 Z 边界通过 domain wall/twist
+相连，才需要 mixed X/Z stabilizer 模板。当前代码仍保留
+`mixed_stabilizers=True` 作为实验性 scaffold，但参考 Figure 10 的 bent
+long ancilla 首选普通 CSS patch stabilizer。
 
 ## 例子
 
@@ -90,16 +104,19 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
   逻辑距离本身的 3。
 - full ancillary-patch route 不再允许 data patch 放在任意物理坐标上。
   所有参与 routing 的 data/obstacle patch 必须落在同一个 coarse grid 上：
-  patch origin 之间的差必须是 `route_width` 的整数倍，并且每个 patch 本身
-  必须刚好占据一个 `route_width × route_width` 坐标块。此外现有
-  unrotated lattice 还要求 syndrome parity 对齐；对 d=3 来说
-  `route_width=5` 是奇数，所以同方向 patch 的常用安全间距是 10、20、30、
-  ... 个整数坐标，中间空出的 5×5 coarse cell 才是 ancillary patch block。
+  每个 patch 本身必须刚好占据一个 `route_width × route_width` 坐标块，
+  但相邻 coarse cell 的 origin pitch 是 `route_pitch = route_width + 1 = 2d`，
+  不是 `route_width`。多出来的 1 个整数坐标就是两个标准 patch block
+  拼接时共享的 seam 行/列；没有这条 seam，边界 weight-3/weight-4
+  stabilizer 就会错位。对 d=3 来说，`route_width=5`、`route_pitch=6`，
+  所以同方向 patch 的常用安全间距是 12、24、36、... 个整数坐标。
 - routed coupler 会先在这个 coarse grid 上做 Manhattan BFS，避开被 data
   patch 占据的 coarse cells；然后把每个 route cell 展开成完整
-  `route_width × route_width` ancillary block。因此 selected interface 的
-  terminal region 和中间拐弯/走廊都是由完整 patch-sized blocks 拼成的，
-  不再是 thin skeleton 膨胀出来的非规整形状。
+  `route_width × route_width` ancillary block，并在相邻 route cells
+  之间显式加入 seam 行/列。因此 selected interface 的 terminal region
+  和中间拐弯/走廊都是由标准 patch blocks 拼成的，不再是 thin skeleton
+  膨胀出来的非规整形状。两个水平相邻的 d=3 blocks 在偶数 data 行上会连成
+  6 个 data qubit，对应一个标准 `distance_z=6` 的 unrotated rectangular patch。
 - route cell 是几何 coarse block，不是独立重新初始化 checkerboard phase
   的小 patch。full ancillary region 的 data/X-syndrome/Z-syndrome parity
   必须在整个 merged lattice 上连续；如果每个 5×5 cell 内重新起相位，
@@ -107,8 +124,21 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
 - interface basis 可以由选中边自动推断，也可以显式传入。
 - routed Pauli-product helper 会比较 target Pauli 和 native interface
   Pauli，只在不匹配的位置插入 logical H。
-- `mixed_stabilizers=True` 时会启用实验性的 mixed X/Z local stabilizer
-  模板生成。
+- `mixed_stabilizers=True` 的 full-width routed coupler 是 notebook 当前的
+  paper-style long ancillary patch 路径：它在 bulk 中生成 X/Z checks，
+  在 X/Z sheet seam 上生成 mixed checks，拐角自然出现 low-weight boundary
+  stabilizer。
+- `solve_routed_pauli_product_long_ancilla` 会把 syndrome product 里剩下的
+  ancillary boundary support 压缩成一个 `AncillaLogicalTerm`。这表示
+  long ancilla patch 的已知 logical boundary factor，而不是独立的
+  ancillary data readout terms。
+- long-ancilla helper 现在使用 paper-style 几何 product：它选中整条
+  connected ancillary bus 上属于目标 product sheet 的 stabilizer，而不是
+  用最小权重线性代数解只在 data-patch 接口附近挑少数 stabilizer。notebook
+  里高亮的 X/Z plaquette 就是实际进入 syndrome product 的 stabilizer。
+- `mixed_stabilizers=False` 只适合纯 CSS / 同 basis 的 routed check；对
+  `ZZZX` 这种 mixed-interface bus 会在 seam/corner 处产生错误的纯 X/Z
+  stabilizer。
 - mixed-template 路径会用代数方式暂停与 routed check 反对易的原 patch
   stabilizer，使测试过的 active stabilizer set 保持对易。
 - mixed-template 路径还会在 coupler 内部做本地 pruning：X/Z seam 上与 mixed
@@ -132,23 +162,35 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
   - `mode="opposite"` 用于初始化：`Z` route 区域准备在 `X`，`X` route
     区域准备在 `Z`。
   - `mode="same"` 用于读出：`Z` route 区域读 `Z`，`X` route 区域读 `X`。
+- `multi_patch_LS.ipynb` 的 `build_zz_circuit` 默认把非 coupler/data patch
+  qubit 初始化在 `Z` basis；只有 coupler ancillary data 会为 ZZ surgery
+  单独初始化在 `X` basis。`routed_ZZZX_LS.ipynb` 的 full ancillary patch
+  可视化也应沿用这个约定，而不是把普通 data patch 默认初始化成 `X`。
 - `solve_routed_pauli_product_syndromes` 仍把两类 ancillary diagnostic 项分开：
   - `selected_ancilla_known_terms` 是由 chosen ancillary initialization
     basis 提供的确定性 +1 本征值，不是 readout。
   - `selected_ancilla_terms` 才是 residual ancillary data readout terms；
     对目标 native full-width mixed measurement，应当为 0。
 - 真正对应“绿色点 stabilizer 乘积”的接口是
-  `solve_routed_pauli_product_merge_checks`。它先识别 full ancillary-patch
-  span 中会跑到外侧 boundary 的 ancillary Pauli，然后把对应 local merge
-  checks 在该 measured surface 边界处截断，得到只由 weight-2/3/4 local
-  green checks 组成的 product。截断掉的 boundary Pauli 不再作为 known
-  initialization outcome 参与结果。
+  `solve_routed_pauli_product_merge_checks`。它现在使用 basis-aware no-trim
+  diagnostic：按几何选择完整 coupler stabilizer，但还要按 local route label
+  选择 product sheet。在 `Z`-labeled 区域只乘 `Z` checks，在 `X`-labeled
+  区域只乘 `X` checks，`MIXED` seam checks 保留；反过来的 interleaved
+  checks 不属于该 logical-product sheet，不能乘进去。只允许原始 data patch
+  stabilizer 作为 code-space equivalence 项。若 product 仍留下 ancillary/data
+  residual Pauli，就返回 `verified=False` 并列出 `residual_terms`。这避免把
+  本来没有自然抵消的 boundary Pauli 人为截断后误报成功，也避免把不属于当前
+  sheet 的 X/Z checks 误乘进去。
 - product 分解器仍可以传入 `ancilla_readout_bases` 做 residual diagnostic：
   如果 syndrome-only 失败，它能告诉我们还剩哪些 ancillary Pauli 没有被
   局部 checks 抵消。但这只是诊断，不是最终实现路径。
 
 已经验证：
 
+- paper-style long ancillary patch 的 `ZZZX` product algebra 已经通过：
+  d=3 示例中，mixed-domain-wall bent ancilla 的 syndrome product 加 1 个
+  `AncillaLogicalTerm` 后验证为目标 `ZZZX`。这个 logical factor 是 long
+  ancilla 的已知边界逻辑量，不是一组独立 ancillary data readout。
 - Z-normalized 的 `ZZZX` final-readout 路径已经通过 detector error model
   验证。在这个模式下，helper 等价于测 routed `ZZZZ`，并且只在目标为
   `X` 的 patch 上做 H。这个 legacy validated helper 当前显式使用
@@ -162,12 +204,15 @@ stabilizer 必须根据局部 labeled geometry 生成，而不是整条 bus 共�
 - native `X1Z2` 的 product algebra 已经测试通过：coupler checks 加 active
   patch stabilizer correction 后，求解器可以 syndrome-only 验证最终乘积等于
   `X1Z2`。
-- 四 patch native-interface `ZZZX` mixed full ancillary patch 的 green-check
-  product decomposition 现在可以验证：20 个 measured local merge checks
-  modulo 6 个原 code stabilizer equivalence terms 生成 `ZZZX`。这些 merge
-  checks 的权重分布是 weight-2/3/4，不需要 ancillary data readout，也不把
-  ancillary initialization eigenvalue 当成 outcome。这里没有引入 high-weight
-  closure syndrome。
+- 四 patch native-interface `ZZZX` mixed full ancillary patch 之前的
+  “20 个 measured local merge checks 验证通过”结论是错误的：那条路径把
+  一些 ancillary boundary Pauli 从 local check 中 trim 掉了。后来“全选所有
+  coupler checks”的 strict diagnostic 也不正确，因为它会把 Z-side 上的
+  interleaved X checks、X-side 上的 interleaved Z checks 一起乘进去。当前
+  paper-style long-ancilla path 会先过滤到正确 product sheet，并用原始
+  patch stabilizer 扣除 code-space equivalence；在 d=3 示例中剩下的是
+  long ancillary patch 的一个已知 logical boundary factor，而不是额外 data
+  readout。
 
 尚未宣称完全完成：
 
