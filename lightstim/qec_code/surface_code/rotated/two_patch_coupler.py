@@ -16,11 +16,15 @@ class RotatedTwoPatchCoupler(LogicalCouplerProtocol):
     row/column + the seam stabilizers + the fused weight-4 boundary stabilizers) becomes
     the coupler.  Correctness of the seam follows from ``M`` being a valid code.
 
-    Layout / handbook §7.2 mapping:
-      - interaction_type='XX'  -> measure X̄₁X̄₂, patches stacked vertically (share X-edges),
-        merged distance_x = d_xA + d_xB + 1, intermediate data row initialized |0⟩.
-      - interaction_type='ZZ'  -> measure Z̄₁Z̄₂, patches side-by-side (share Z-edges),
-        merged distance_z = d_zA + d_zB + 1, intermediate data column initialized |+⟩.
+    Layout / handbook §7.2 mapping (verified by Stim peek_observable_expectation; matches the
+    unrotated convention). Because the rotated code has X̄ vertical / Z̄ horizontal, measuring
+    Z̄₁Z̄₂ requires a VERTICAL stack (the two parallel horizontal Z̄'s have their product
+    measured) and X̄₁X̄₂ a SIDE-BY-SIDE placement — i.e. the merge geometry is the transpose of
+    the naive "merge along same-type edges" intuition:
+      - interaction_type='ZZ'  -> measure Z̄₁Z̄₂, patches stacked VERTICALLY (offset in y),
+        merged distance_x = d_xA + d_xB + 1, shared transverse distance_z.
+      - interaction_type='XX'  -> measure X̄₁X̄₂, patches SIDE-BY-SIDE (offset in x),
+        merged distance_z = d_zA + d_zB + 1, shared transverse distance_x.
     """
 
     EXPECTED_PATCH_COUNT = 2
@@ -50,7 +54,7 @@ class RotatedTwoPatchCoupler(LogicalCouplerProtocol):
                 "(check offset / same transverse distance)."
             )
         intermediate_data = merged_data - patch_data
-        expected = merged.distance_z if interaction_type == "XX" else merged.distance_x
+        expected = merged.distance_z if interaction_type == "ZZ" else merged.distance_x
         if len(intermediate_data) != expected:
             raise ValueError(
                 f"Expected {expected} intermediate data qubits in the seam, "
@@ -96,10 +100,10 @@ class RotatedTwoPatchCoupler(LogicalCouplerProtocol):
     @staticmethod
     def _order_patches(patches: List[QECPatch], interaction_type: str) -> Tuple[QECPatch, QECPatch]:
         """Return (low, high) ordered by position along the merge axis
-        (y for XX = vertical stack, x for ZZ = side-by-side)."""
+        (y for ZZ = vertical stack, x for XX = side-by-side)."""
         p0, p1 = patches
         b0, b1 = p0._get_bounds(), p1._get_bounds()  # (min_x, max_x, min_y, max_y)
-        lo_idx = 2 if interaction_type == "XX" else 0  # min_y vs min_x
+        lo_idx = 2 if interaction_type == "ZZ" else 0  # min_y vs min_x
         return (p0, p1) if b0[lo_idx] <= b1[lo_idx] else (p1, p0)
 
     @staticmethod
@@ -109,16 +113,16 @@ class RotatedTwoPatchCoupler(LogicalCouplerProtocol):
         dz_high, dx_high = p_high.distance_z, p_high.distance_x
         shift = getattr(p_low, "shift", (0, 0))
 
-        if interaction_type == "XX":
+        if interaction_type == "ZZ":   # ZZ = vertical stack -> grow distance_x
             if dz_low != dz_high:
                 raise ValueError(
-                    f"XX merge requires equal distance_z; got {dz_low} and {dz_high}."
+                    f"ZZ merge (vertical stack) requires equal distance_z; got {dz_low} and {dz_high}."
                 )
             return RotatedSurfaceCode(distance_z=dz_low, distance_x=dx_low + dx_high + 1, shift=shift)
-        else:  # ZZ
+        else:  # XX = side-by-side -> grow distance_z
             if dx_low != dx_high:
                 raise ValueError(
-                    f"ZZ merge requires equal distance_x; got {dx_low} and {dx_high}."
+                    f"XX merge (side-by-side) requires equal distance_x; got {dx_low} and {dx_high}."
                 )
             return RotatedSurfaceCode(distance_z=dz_low + dz_high + 1, distance_x=dx_low, shift=shift)
 

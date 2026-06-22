@@ -24,9 +24,10 @@ from lightstim.noise.config import NoiseConfig
 OUT = Path(__file__).resolve().parent / "results"
 
 # interaction_type -> (offset, init1, init2)  (complementary bases avoid the joint-logical degeneracy)
+# Rotated convention (verified via Stim peek): ZZ = vertical stack, XX = side-by-side.
 MERGES = {
-    "XX": (lambda d: (0, 2 * d + 2), "Z", "X"),
-    "ZZ": (lambda d: (2 * d + 2, 0), "X", "Z"),
+    "XX": (lambda d: (2 * d + 2, 0), "Z", "X"),
+    "ZZ": (lambda d: (0, 2 * d + 2), "X", "Z"),
 }
 
 

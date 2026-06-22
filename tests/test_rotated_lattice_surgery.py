@@ -47,14 +47,14 @@ class TestRotatedTwoPatchCouplerGeometry:
     def test_xx_merge_reproduces_merged_code(self, d):
         from lightstim.qec_code.surface_code.rotated import RotatedTwoPatchCoupler
 
-        # XX merge = vertical stack; B sits one intermediate data row below A.
+        # XX merge = side-by-side; B sits one intermediate data column right of A.
         a = RotatedSurfaceCode(distance=d)
         b = RotatedSurfaceCode(distance=d)
-        b.shift_coords(0, 2 * d + 2)
+        b.shift_coords(2 * d + 2, 0)
 
         coupler = RotatedTwoPatchCoupler().create_coupler_patch([a, b], name="c", interaction_type="XX")
 
-        merged = RotatedSurfaceCode(distance_z=d, distance_x=2 * d + 1)
+        merged = RotatedSurfaceCode(distance_z=2 * d + 1, distance_x=d)
 
         conflicts = coupler.conflicting_stabilizer_coords
         got = (
@@ -68,14 +68,14 @@ class TestRotatedTwoPatchCouplerGeometry:
     def test_zz_merge_reproduces_merged_code(self, d):
         from lightstim.qec_code.surface_code.rotated import RotatedTwoPatchCoupler
 
-        # ZZ merge = side-by-side; B sits one intermediate data column right of A.
+        # ZZ merge = vertical stack; B sits one intermediate data row above A.
         a = RotatedSurfaceCode(distance=d)
         b = RotatedSurfaceCode(distance=d)
-        b.shift_coords(2 * d + 2, 0)
+        b.shift_coords(0, 2 * d + 2)
 
         coupler = RotatedTwoPatchCoupler().create_coupler_patch([a, b], name="c", interaction_type="ZZ")
 
-        merged = RotatedSurfaceCode(distance_z=2 * d + 1, distance_x=d)
+        merged = RotatedSurfaceCode(distance_z=d, distance_x=2 * d + 1)
 
         conflicts = coupler.conflicting_stabilizer_coords
         got = (
@@ -85,15 +85,15 @@ class TestRotatedTwoPatchCouplerGeometry:
         )
         assert got == _code_sigs(merged), "merged stabilizers != RotatedSurfaceCode(merged)"
 
-    def test_xx_intermediate_data_row(self):
+    def test_xx_intermediate_data_column(self):
         from lightstim.qec_code.surface_code.rotated import RotatedTwoPatchCoupler
 
         a = RotatedSurfaceCode(distance=3)
         b = RotatedSurfaceCode(distance=3)
-        b.shift_coords(0, 8)
+        b.shift_coords(8, 0)
         coupler = RotatedTwoPatchCoupler().create_coupler_patch([a, b], name="c", interaction_type="XX")
 
-        assert set(coupler.data_coords) == {(1.0, 7.0), (3.0, 7.0), (5.0, 7.0)}
+        assert set(coupler.data_coords) == {(7.0, 1.0), (7.0, 3.0), (7.0, 5.0)}
 
 
 class TestRotatedTwoPatchLSCircuit:
@@ -120,11 +120,12 @@ class TestRotatedTwoPatchLSCircuit:
 
     @pytest.mark.smoke
     def test_xx_merge_noiseless(self):
-        # X̄₁X̄₂ merge: patches in complementary bases (matches working unrotated convention)
-        c = self._build("XX", (0, 8), "Z", "X")
+        # X̄₁X̄₂ merge = side-by-side; patches in complementary bases
+        c = self._build("XX", (8, 0), "Z", "X")
         assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
 
     @pytest.mark.smoke
     def test_zz_merge_noiseless(self):
-        c = self._build("ZZ", (8, 0), "X", "Z")
+        # Z̄₁Z̄₂ merge = vertical stack
+        c = self._build("ZZ", (0, 8), "X", "Z")
         assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
