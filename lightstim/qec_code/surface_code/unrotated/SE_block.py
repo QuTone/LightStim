@@ -156,30 +156,100 @@ class UnrotatedSurfaceCodeExtractionBlock:
         # Measure all syndrome qubits in Z basis
         self.circuit.append("M", sorted(active_syn_indices))
 
+    # Hook-benign directional schedule for MIXED (domain-wall) checks.
+    # Each mixed check is measured with ONE X-basis ancilla: X terms couple via
+    # CNOT(ancilla -> data), Z terms via CZ(ancilla, data).  The only undetected
+    # single-fault hook is an X (or Y) error on the ancilla mid-sequence; by exact
+    # tableau propagation it deposits X on every *subsequent* CNOT-data qubit and Z on
+    # every *subsequent* CZ-data qubit.  Its geometry is therefore fixed entirely by the
+    # gate ORDER.  We schedule each entangling gate in the SAME direction-by-tick slot
+    # the corresponding pure check uses (SCHEDULES['6tick']), so the mixed hook inherits
+    # the pure checks' benign (logical-perpendicular) orientation by construction instead
+    # of the previous ad-hoc per-data-index order.  Each entry is
+    # (x_term_direction, z_term_direction) as the (dx, dy) offset of the data qubit from
+    # the ancilla; None means that Pauli type does nothing on that tick.
+    MIXED_TICKS = [
+        (None,    (-1, 0)),   # tick 1: Z term West
+        (None,    (+1, 0)),   # tick 2: Z term East
+        ((0, +1), (0, +1)),   # tick 3: X term North, Z term North
+        ((0, -1), (0, -1)),   # tick 4: X term South, Z term South
+        ((-1, 0), None),      # tick 5: X term West
+        ((+1, 0), None),      # tick 6: X term East
+    ]
+
     def _append_mixed_stabilizer_measurements(self, stabs):
         if not stabs:
             return
 
+        coords = self.system.qubit_coords
+
+        def direction(anc_coord, data_idx):
+            ax, ay = anc_coord[0], anc_coord[1]
+            dx, dy = coords[data_idx][0], coords[data_idx][1]
+            return ((dx > ax) - (dx < ax), (dy > ay) - (dy < ay))
+
+        # Checks are grouped into compatibility batches: within a batch every shared data
+        # qubit carries the SAME Pauli, so all CNOT/CZ on a shared qubit commute and the
+        # gates may be freely reordered.  (Across batches a shared qubit can have opposite
+        # Paulis -- CNOT and CZ there do NOT commute -- so those checks must be measured in
+        # separate H...H blocks; that is exactly what the batching guarantees.)  Within
+        # each batch we apply the hook-benign directional schedule.
         for batch in self._batch_compatible_mixed_stabilizers(stabs):
             mixed_syn = sorted({stab['syn_idx'] for stab in batch})
-
             self.circuit.append("H", mixed_syn)
             self.circuit.append("TICK")
 
-            for layer in self._mixed_entangling_layers(batch):
+            emitted = set()
+            for x_dir, z_dir in self.MIXED_TICKS:
                 cnot_targets = []
                 cz_targets = []
-                for data_idx, syn_idx, pauli in layer:
+                for stab in batch:
+                    syn_idx = stab['syn_idx']
+                    syn_coord = stab['syn_coord']
+                    for data_idx, pauli in stab['pauli'].items():
+                        if (syn_idx, data_idx) in emitted:
+                            continue
+                        dvec = direction(syn_coord, data_idx)
+                        if pauli == 'X' and x_dir is not None and dvec == x_dir:
+                            cnot_targets.extend([syn_idx, data_idx])      # CNOT(anc -> data)
+                            emitted.add((syn_idx, data_idx))
+                        elif pauli == 'Z' and z_dir is not None and dvec == z_dir:
+                            cz_targets.extend([data_idx, syn_idx])        # CZ(data, anc)
+                            emitted.add((syn_idx, data_idx))
+                # Batch-level empty-tick compression: emit the TICK only when this
+                # direction slot carries at least one gate for SOME check in the batch.
+                # A fully-empty column is pure idle; dropping it removes no gate and
+                # changes no gate's relative order, so per-check hook structure and the
+                # cross-check directional synchronization are preserved -- only idle
+                # (and its idling noise) is removed.  (A column that is empty for only
+                # some checks is kept: those checks simply idle that tick.)
+                if cnot_targets or cz_targets:
+                    if cnot_targets:
+                        self.circuit.append("CNOT", cnot_targets)
+                    if cz_targets:
+                        self.circuit.append("CZ", cz_targets)
+                    self.circuit.append("TICK")
+
+            # Safety net: a term whose data qubit is not an axis-unit neighbour of the
+            # ancilla (unusual geometry) matches no direction slot; emit it last so the
+            # stabilizer is always measured in full.
+            leftover_cnot = []
+            leftover_cz = []
+            for stab in batch:
+                syn_idx = stab['syn_idx']
+                for data_idx, pauli in stab['pauli'].items():
+                    if (syn_idx, data_idx) in emitted:
+                        continue
                     if pauli == 'X':
-                        cnot_targets.extend([syn_idx, data_idx])
-                    elif pauli == 'Z':
-                        cz_targets.extend([data_idx, syn_idx])
+                        leftover_cnot.extend([syn_idx, data_idx])
                     else:
-                        raise ValueError(f"Mixed stabilizer only supports X/Z terms, got {pauli!r}.")
-                if cnot_targets:
-                    self.circuit.append("CNOT", cnot_targets)
-                if cz_targets:
-                    self.circuit.append("CZ", cz_targets)
+                        leftover_cz.extend([data_idx, syn_idx])
+                    emitted.add((syn_idx, data_idx))
+            if leftover_cnot or leftover_cz:
+                if leftover_cnot:
+                    self.circuit.append("CNOT", leftover_cnot)
+                if leftover_cz:
+                    self.circuit.append("CZ", leftover_cz)
                 self.circuit.append("TICK")
 
             self.circuit.append("H", mixed_syn)
@@ -187,6 +257,10 @@ class UnrotatedSurfaceCodeExtractionBlock:
 
     @staticmethod
     def _batch_compatible_mixed_stabilizers(stabs):
+        """Group mixed checks so that within a batch every shared data qubit carries the
+        same Pauli.  This keeps all intra-batch CNOT/CZ on shared qubits mutually
+        commuting (so the directional reorder is safe) and forces checks that disagree on
+        a shared qubit into separate H...H measurement blocks."""
         batches = []
         batch_paulis = []
 
@@ -210,25 +284,3 @@ class UnrotatedSurfaceCodeExtractionBlock:
                 batch_paulis.append(dict(paulis))
 
         return batches
-
-    @staticmethod
-    def _mixed_entangling_layers(stabs):
-        layers = []
-        used_by_layer = []
-
-        for stab in stabs:
-            syn_idx = stab['syn_idx']
-            for data_idx, pauli in sorted(stab.get('pauli', {}).items()):
-                placed = False
-                for layer, used in zip(layers, used_by_layer):
-                    if data_idx not in used and syn_idx not in used:
-                        layer.append((data_idx, syn_idx, pauli))
-                        used.add(data_idx)
-                        used.add(syn_idx)
-                        placed = True
-                        break
-                if not placed:
-                    layers.append([(data_idx, syn_idx, pauli)])
-                    used_by_layer.append({data_idx, syn_idx})
-
-        return layers
