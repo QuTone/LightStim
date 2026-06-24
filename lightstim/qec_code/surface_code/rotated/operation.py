@@ -263,17 +263,104 @@ class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
         return injection_gidx
 
     # ------------------------------------------------------------------
-    # Gate operations (stubs for future implementation)
+    # Fold-transversal Hadamard
     # ------------------------------------------------------------------
 
-    def transversal_Hadamard(self, builder: CircuitBuilder, patch: QECPatch) -> stim.Circuit:
+    def _rot90_swap_layers(self, system, patch: QECPatch):
         """
-        Applies a fold-transversal Hadamard gate using H-SWAP gates.
-        """
-        pass
+        Partition the data qubits of `patch` into disjoint SWAP layers that
+        realize a 90-degree rotation of the patch about its center.
 
-    def LS_Hadamard(self, builder: CircuitBuilder, patch: QECPatch) -> stim.Circuit:
+        The rotated surface code's ZX-duality is the 90-degree rotation: its
+        diagonal reflections are CSS automorphisms, NOT dualities, so the
+        handbook's diagonal-reflection fold does not preserve the stabilizer
+        group on this layout. The valid fold-transversal Hadamard therefore uses
+        the rotation as its qubit permutation (cf. handbook Fig. 24, "a SWAP
+        permutation then rotates the patch").
+
+        Local-frame rotation (square patch, distance D, data coords in [1, 2D-1]):
+            (x, y) -> (2D - y, x)
+
+        Returns a list of layers, each a list of disjoint (idx_a, idx_b) pairs.
         """
-        Applies a Hadamard gate using transversal H with patch rotation.
+        if patch.distance_z != patch.distance_x:
+            raise ValueError(
+                "Fold-transversal Hadamard requires a square patch "
+                f"(distance_z == distance_x). Got {patch.distance_z} != {patch.distance_x}."
+            )
+        sx, sy = patch.shift
+        D = patch.distance_z
+        s = 2 * D
+        index_map = system.index_map
+
+        # Build the 90-degree rotation permutation (global idx -> global idx).
+        perm = {}
+        for g in sorted(patch.data_indices):
+            gx, gy = patch.qubit_coords[g]
+            lx, ly = gx - sx, gy - sy
+            rcoord = QECPatch.snap_coord((s - ly + sx, lx + sy))
+            if rcoord not in index_map:
+                raise ValueError(
+                    f"Rotated image {rcoord} of data qubit at {(gx, gy)} not found. "
+                    "Fold-transversal Hadamard requires a square, odd-distance patch."
+                )
+            perm[g] = index_map[rcoord]
+
+        # Decompose the permutation into ordered transpositions, cycle by cycle.
+        swaps, visited = [], set()
+        for start in perm:
+            if start in visited:
+                continue
+            cycle, nxt = [start], perm[start]
+            visited.add(start)
+            while nxt != start:
+                cycle.append(nxt)
+                visited.add(nxt)
+                nxt = perm[nxt]
+            # reversed-order transpositions realize the cycle (forward = inverse)
+            for j in range(len(cycle) - 2, -1, -1):
+                swaps.append((cycle[j], cycle[j + 1]))
+
+        # Pack transpositions into disjoint parallel layers (respecting deps).
+        last, layer_map = {}, {}
+        for a, b in swaps:
+            lyr = max(last.get(a, 0), last.get(b, 0)) + 1
+            last[a] = last[b] = lyr
+            layer_map.setdefault(lyr, []).append((a, b))
+        return [layer_map[k] for k in sorted(layer_map)]
+
+    def fold_transversal_hadamard(self, builder: CircuitBuilder, patch: QECPatch,
+                                  noiseless: bool = False):
         """
-        pass
+        Implement the logical Hadamard H_L on the rotated surface code.
+
+        Physical circuit:
+          Layer 0    — transversal H : H on every data qubit (X <-> Z)
+          Layers 1.. — fold (SWAP)   : a 90-degree rotation of the patch,
+                                       emitted as disjoint SWAP layers.
+
+        Logical action: X_L <-> Z_L. Verified (tableau) to preserve the stabilizer
+        group and exchange the logical operators for the LightStim rotated layout
+        at d = 3, 5, 7. Unlike the unrotated code (y=x diagonal reflection), the
+        rotated code's only ZX-duality is this 90-degree rotation.
+
+        Args:
+            builder: CircuitBuilder driving the experiment.
+            patch:   The (global) RotatedSurfaceCode patch (must be square, odd d).
+            noiseless: If True, tag gate instructions as noiseless.
+        """
+        if not isinstance(patch, RotatedSurfaceCode):
+            raise TypeError(
+                f"Expected RotatedSurfaceCode patch, got {type(patch).__name__}"
+            )
+        system = builder.system
+        all_data = sorted(patch.data_indices)
+        layers = self._rot90_swap_layers(system, patch)
+
+        unitary = stim.Circuit()
+        unitary.append("H", all_data)
+        for layer in layers:
+            unitary.append("TICK")
+            unitary.append("SWAP", [q for pair in layer for q in pair])
+
+        builder.apply_unitary_block(unitary, noiseless=noiseless)
