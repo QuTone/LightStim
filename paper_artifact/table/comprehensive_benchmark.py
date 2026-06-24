@@ -4,15 +4,18 @@ Comprehensive Compilation Performance Benchmark — Table 3
 Covers all protocols in the paper: Memory, BB Code, TG CNOT, LS CNOT,
 Bell Teleportation (TG + LS), Steane Distillation (TG + LS), CrossLS.
 
-Measures: compile time (median of N_TRIALS), qubit count, detector count,
+Measures: compile time, qubit count, detector count,
           observable count, annotation LoC (DETECTOR + OBSERVABLE_INCLUDE).
 
-Results saved per-entry to precompute/table3.json (checkpoint: never loses
-completed work on restart). To regenerate a single entry, delete its key.
+Results are checkpointed per entry under paper_artifact/table/results/.
+The committed reference data used by the paper lives in precompute/table3.json.
 
 Usage:
     venv/bin/python paper_artifact/table/comprehensive_benchmark.py
+    venv/bin/python paper_artifact/table/comprehensive_benchmark.py --trials 3
+    venv/bin/python paper_artifact/table/comprehensive_benchmark.py --backend python
 """
+import argparse
 import sys, time, json, signal
 from pathlib import Path
 
@@ -21,15 +24,62 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Remeasure Table 3 compilation performance with a fixed GF(2) backend."
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["cpp", "python"],
+        default="cpp",
+        help="GF(2) RREF backend. Defaults to cpp; python is a fallback/debug baseline.",
+    )
+    parser.add_argument("--trials", type=int, default=1, help="Timing trials per row.")
+    parser.add_argument("--timeout-sec", type=int, default=1200, help="Per-trial timeout for marked slow rows.")
+    parser.add_argument("--force", action="store_true", help="Rerun rows already present in the checkpoint.")
+    parser.add_argument("--keys", nargs="*", help="Optional specific benchmark keys to run.")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+
+def configure_backend(backend: str):
+    """Select the GF(2) backend explicitly.
+
+    The paper baseline should use the C++ backend. If the C++ extension is not
+    importable, fail loudly instead of silently falling back to Python.
+    """
+    from lightstim.utils import linear_algebra as la
+
+    if backend == "cpp":
+        if not la._CPP_AVAILABLE:
+            raise RuntimeError(
+                "LightStim C++ GF(2) RREF backend is not importable. "
+                "Build it first with: "
+                "`venv/bin/python lightstim/utils/cpp/build.py`."
+            )
+    elif backend == "python":
+        la._CPP_AVAILABLE = False
+        la._row_echelon_cpp = None
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+
+    return la._CPP_AVAILABLE
+
+
+CPP_AVAILABLE = configure_backend(ARGS.backend)
+
 # ── Output ───────────────────────────────────────────────────────────────────
 # results/ is gitignored — this is the reviewer's local output.
 # The canonical reference data lives in precompute/table3.json (committed).
 OUT_DIR = Path(__file__).resolve().parent / 'results'
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-CKPT_PATH = OUT_DIR / 'table3.json'
+CKPT_PATH = OUT_DIR / f'table3_{ARGS.backend}.json'
 
-N_TRIALS = 3
-TIMEOUT_SEC = 600  # 10 minutes; TG Distill d=7 is expected to timeout
+N_TRIALS = ARGS.trials
+TIMEOUT_SEC = ARGS.timeout_sec
 
 # ── Checkpoint helpers ────────────────────────────────────────────────────────
 
@@ -44,6 +94,7 @@ def save_checkpoint(results):
         json.dump(results, f, indent=2)
 
 results = load_checkpoint()
+SELECTED_KEYS = set(ARGS.keys or [])
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -57,7 +108,10 @@ def count_annotation_loc(circuit):
 def bench(key, label, build_fn, d_label="", timeout=False):
     """Run N_TRIALS timing trials. Saves checkpoint after completion.
     Skips if key already in results. If timeout=True, wraps with SIGALRM."""
-    if key in results:
+    if SELECTED_KEYS and key not in SELECTED_KEYS:
+        return None
+
+    if key in results and not ARGS.force:
         print(f"  [skip] {label} d={d_label} (already in checkpoint)")
         return results[key]
 
@@ -90,6 +144,8 @@ def bench(key, label, build_fn, d_label="", timeout=False):
             'compile_ms': None, 'timeout': True, 'timeout_sec': TIMEOUT_SEC,
             'num_qubits': None, 'num_detectors': None,
             'num_observables': None, 'annotation_loc': None,
+            'backend': ARGS.backend,
+            'trials': N_TRIALS,
         }
     else:
         t_med = np.median(times)
@@ -101,14 +157,25 @@ def bench(key, label, build_fn, d_label="", timeout=False):
             'num_detectors': circuit.num_detectors,
             'num_observables': circuit.num_observables,
             'annotation_loc': ann_loc,
+            'backend': ARGS.backend,
+            'trials': N_TRIALS,
+            'times_ms': [round(t * 1000, 1) for t in times],
         }
         print(f"  {label} d={d_label}: {circuit.num_qubits}q, "
               f"{circuit.num_detectors}det, {circuit.num_observables}obs, "
               f"annot={ann_loc}, compile={t_med*1000:.1f}ms")
 
-    results[key] = info
+    if info is not None:
+        results[key] = info
     save_checkpoint(results)
     return info
+
+
+print(
+    f"\n=== Table 3 benchmark: backend={ARGS.backend}, "
+    f"cpp_available={CPP_AVAILABLE}, trials={N_TRIALS}, "
+    f"timeout={TIMEOUT_SEC}s ==="
+)
 
 
 # =============================================================================
@@ -123,7 +190,7 @@ from lightstim.noise.config import NoiseConfig
 
 _NC = NoiseConfig(p_1q=0, p_2q=0, p_meas=0, p_reset=0)
 
-for d in [3, 5, 7, 9, 11]:
+for d in [3, 5, 7, 9, 11, 31]:
     def build_surface_mem(d=d):
         patch = RotatedSurfaceCode(distance=d)
         system = QECSystem()
@@ -312,13 +379,13 @@ for d in [7, 15]:
     bench(f'bell_ls_d{d}', 'Bell Tele. (LS)', build_bell_ls_zz, d_label=d)
 
 # =============================================================================
-# 7. Steane 7-to-1 Distillation — TG variant  — d=3 (fast), d=7 (may timeout)
+# 7. Steane 7-to-1 Distillation — TG variant  — d=3, 5, 7
 # =============================================================================
 print("\n=== 7. Steane 7-to-1 Distillation TG ===")
 try:
     from lightstim.protocols.tg_distillation import build_distillation_circuit as _build_tg_dist
 
-    for d in [3, 7]:
+    for d in [3, 5, 7]:
         def build_tg_7to1(d=d):
             circuit, _, _ = _build_tg_dist(d=d, rounds_init=d, rounds_gate=1)
             return circuit
@@ -329,13 +396,13 @@ except Exception as e:
     import traceback; traceback.print_exc()
 
 # =============================================================================
-# 8. Steane 7-to-1 Distillation — LS variant  — d=5, 9
+# 8. Steane 7-to-1 Distillation — LS variant  — d=3, 5, 9
 # =============================================================================
 print("\n=== 8. Steane 7-to-1 Distillation LS ===")
 try:
     from lightstim.protocols.ls_distillation import build_distillation_circuit as _build_ls_dist
 
-    for d in [5, 9]:
+    for d in [3, 5, 9]:
         def build_ls_7to1(d=d):
             circuit, _, _ = _build_ls_dist(d=d, rounds=d)
             return circuit
