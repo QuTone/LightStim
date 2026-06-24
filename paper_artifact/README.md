@@ -19,7 +19,7 @@ paper_artifact/
 ├── state_injection/    Figs 7–10:  State injection (rotated SC)
 ├── cross_ls/           Fig 11:     CrossLS — Surface–PQRM lattice surgery
 ├── logical_circuits/   Figs 12–14: Bell teleportation & magic-state distillation
-└── table/              Table 1, 2:    Correctness validation, Compilation efficiency
+└── table/              Tables 2–3:    Correctness validation, compilation efficiency
 ```
 
 Each section has:
@@ -70,6 +70,29 @@ PYTHONPATH=. venv/bin/python paper_artifact/memory/run_all.py --figures 2
 > committed figures. To use new data for plotting, replace the `precomputed/` CSV
 > with the new file, or pass the path directly to the plot script.
 
+### Rerunning Table 3 compilation benchmarks
+
+The committed Table 3 reference data is stored in
+`paper_artifact/table/precompute/table3.json`. It was generated with the
+LightStim C++ GF(2) RREF backend, using one timing trial per row.
+
+```bash
+# Build the optional C++ RREF extension first. Install pybind11 if needed.
+venv/bin/pip install pybind11
+venv/bin/python lightstim/utils/cpp/build.py
+
+# Reproduce Table 3 timings with the C++ backend.
+PYTHONPATH=. venv/bin/python paper_artifact/table/comprehensive_benchmark.py
+
+# Optional debug baseline using the pure Python/NumPy fallback.
+PYTHONPATH=. venv/bin/python paper_artifact/table/comprehensive_benchmark.py --backend python
+```
+
+The rerun output is written to `paper_artifact/table/results/table3_<backend>.json`
+so the committed reference data is not overwritten accidentally. Use `--trials 3`
+to collect a median over three runs, or `--keys <row_key> ...` to rerun selected
+rows only.
+
 ---
 
 ## Section summaries
@@ -81,4 +104,4 @@ PYTHONPATH=. venv/bin/python paper_artifact/memory/run_all.py --figures 2
 | `state_injection/` | 7–10 | Non-FT state injection LER and post-selection overhead |
 | `cross_ls/` | 11 | CrossLS: LER for Z/X/Y states, distance scaling |
 | `logical_circuits/` | 12–14 | Bell teleportation (TG, ZZ-LS, XX-LS); distillation output fidelity |
-| `table/` | Table 2 | Correctness validation against Stim reference circuits and PyMatching |
+| `table/` | Tables 2–3 | Correctness validation against Stim reference circuits and PyMatching; compilation benchmark reference data |
