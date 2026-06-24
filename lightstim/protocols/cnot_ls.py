@@ -34,6 +34,8 @@ class CNOTLSExperiment:
                  offset_ca: Tuple[float, float],   # Offset for Control relative to Ancilla
                  initial_state_dict: Dict[str, Literal["X", "Z"]] = {"a": "X", "c": "X", "t": "X"},
                  measure_state_dict: Dict[str, Literal["X", "Z"]] = {"a": "Z", "c": "X", "t": "X"},
+                 code_patch_class: Type = UnrotatedSurfaceCode,
+                 coupler_class: Type = UnrotatedTwoPatchCoupler,
                  extraction_block_class: Type = UnrotatedSurfaceCodeExtractionBlock,
                  rounds: int = 2,
                  noise_params: Optional[NoiseConfig] = None,
@@ -70,6 +72,8 @@ class CNOTLSExperiment:
         self.offset_ca = offset_ca
         self.initial_state_dict = initial_state_dict
         self.measure_state_dict = measure_state_dict
+        self.code_patch_class = code_patch_class
+        self.coupler_class = coupler_class
         self.extraction_block_class = extraction_block_class
         self.rounds = rounds
         self.noise_params = noise_params
@@ -107,9 +111,9 @@ class CNOTLSExperiment:
         # 1. Create patches
         # ----------------------------------------------------------------------
         print("Creating patches...")
-        patch_c = UnrotatedSurfaceCode(**self.patch_configs["c"])
-        patch_t = UnrotatedSurfaceCode(**self.patch_configs["t"])
-        patch_a = UnrotatedSurfaceCode(**self.patch_configs["a"])
+        patch_c = self.code_patch_class(**self.patch_configs["c"])
+        patch_t = self.code_patch_class(**self.patch_configs["t"])
+        patch_a = self.code_patch_class(**self.patch_configs["a"])
         
         # Rotate Ancilla patch if requested (to align logical operators with the interacting patches)
         if self.rotate_patches:
@@ -133,7 +137,7 @@ class CNOTLSExperiment:
         # 3. Register couplers
         # ----------------------------------------------------------------------
         print("Registering couplers...")
-        coupler_protocol = UnrotatedTwoPatchCoupler()
+        coupler_protocol = self.coupler_class()
         
         # Control-Ancilla coupler for ZZ measurement
         self.system.register_coupler(

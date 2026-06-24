@@ -37,6 +37,7 @@ class TwoPatchLSExperiment:
                  initial_state_patch2: Literal["X", "Z"] = "X",
                  measure_state_patch1: Literal["X", "Z"] = "X",
                  measure_state_patch2: Literal["X", "Z"] = "X",
+                 code_patch_class: Type = UnrotatedSurfaceCode,
                  extraction_block_class: Type = UnrotatedSurfaceCodeExtractionBlock,
                  rounds: int = 2,
                  noise_params: Optional[NoiseConfig] = None,
@@ -77,6 +78,7 @@ class TwoPatchLSExperiment:
         self.initial_state_patch2 = initial_state_patch2.upper()
         self.measure_state_patch1 = measure_state_patch1.upper()
         self.measure_state_patch2 = measure_state_patch2.upper()
+        self.code_patch_class = code_patch_class
         self.extraction_block_class = extraction_block_class
         self.rounds = rounds
         self.noise_params = noise_params
@@ -99,8 +101,8 @@ class TwoPatchLSExperiment:
         # 1. Create patches
         # ----------------------------------------------------------------------
         print("Creating patches...")
-        surface_code_1 = UnrotatedSurfaceCode(**self.patch1_config)
-        surface_code_2 = UnrotatedSurfaceCode(**self.patch2_config)
+        surface_code_1 = self.code_patch_class(**self.patch1_config)
+        surface_code_2 = self.code_patch_class(**self.patch2_config)
         
         # Rotate patch1 if requested (to move logical operators closer)
         if self.rotate_patch1:

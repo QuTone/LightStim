@@ -249,6 +249,22 @@ class TestLogicalOps:
         ))
         assert c.num_detectors > 0; assert_noiseless(c); assert_dem_valid(c)
 
+    @pytest.mark.parametrize("init_meas", [("Z", "X"), ("X", "Z")])
+    def test_logical_h_rotated(self, init_meas):
+        """Rotated logical H via transversal-H + 90-degree rotation (X_L <-> Z_L)."""
+        from lightstim.protocols.fold_transversal import build_gate_verification_circuit
+        from lightstim.qec_code.surface_code.rotated import (
+            RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock,
+        )
+        ib, mb = init_meas
+        c = build_quiet(lambda: build_gate_verification_circuit(
+            distance=3, gates=["fold_transversal_hadamard"],
+            init_basis=ib, measure_basis=mb, rounds=2, unencode=False, noise_params=None,
+            code_patch_class=RotatedSurfaceCode,
+            extraction_block_class=RotatedSurfaceCodeExtractionBlock,
+        ))
+        assert c.num_detectors > 0; assert_noiseless(c); assert_dem_valid(c)
+
     def test_logical_s_roundtrip(self):
         from lightstim.protocols.fold_transversal import build_s_roundtrip_circuit
         c = build_quiet(lambda: build_s_roundtrip_circuit(distance=3, rounds=2, noise_params=None))
