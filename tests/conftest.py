@@ -11,6 +11,8 @@ CI command:
 """
 import io
 import contextlib
+import subprocess
+import sys
 import pytest
 import stim
 import numpy as np
@@ -20,6 +22,45 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "smoke: fast tests (<60s total), safe for every commit")
     config.addinivalue_line("markers", "integration: moderate tests (<5min), run before merge")
     config.addinivalue_line("markers", "slow: long-running tests (>5min), run manually")
+
+
+# ── Safe native-import guard (importable by all test modules) ─────────────────
+
+def importorskip_safe(module_name: str, reason: str | None = None):
+    """Like ``pytest.importorskip``, but survives a native import that *aborts*
+    the interpreter instead of raising ``ImportError``.
+
+    Some prebuilt C-extension wheels (e.g. ``tesseract_decoder``, ``relay_bp``)
+    are compiled with CPU instructions the host may not support. Importing such
+    a wheel raises SIGILL ("illegal instruction"), which kills the whole process
+    and core-dumps *below* the Python exception layer — so ``try/except`` and
+    ``pytest.importorskip`` cannot catch it, and the entire pytest session dies
+    (exit 132). GitHub's ``ubuntu-latest`` pool mixes CPU generations, so this
+    surfaces as a flaky, runner-dependent CI failure.
+
+    We first probe the import in a throwaway subprocess. If that subprocess
+    crashes or exits non-zero (missing module, SIGILL, segfault, timeout) we
+    skip; only on a clean probe do we import the module for real in-process —
+    safe, because the same binary on the same CPU just imported cleanly.
+    """
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", f"import {module_name}"],
+            capture_output=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip(reason or f"{module_name!r} import probe timed out")
+
+    if probe.returncode != 0:
+        pytest.skip(
+            reason
+            or f"{module_name!r} is not safely importable here "
+            f"(import probe exited {probe.returncode}); a prebuilt wheel that "
+            f"doesn't match this CPU can abort the process with SIGILL — build "
+            f"{module_name!r} from source on this machine to run this test."
+        )
+    return pytest.importorskip(module_name)
 
 
 # ── Shared assertion helpers (importable by all test modules) ─────────────────

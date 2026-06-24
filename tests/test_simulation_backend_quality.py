@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import stim
 
+from conftest import importorskip_safe
 from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeline, list_decoders
 from lightstim.simulation.decoder_backend._accounting import count_batch
 from lightstim.simulation.decoder_backend.dem_matrices import dem_to_matrices
@@ -75,7 +76,7 @@ def test_legacy_nvidia_gpu_backend_is_disabled():
 
 def test_relay_bp_registered_and_runs():
     """Relay-BP (sinter-native, Pattern A) registers and decodes when installed."""
-    pytest.importorskip("relay_bp")
+    importorskip_safe("relay_bp")
 
     assert "relay-bp" in list_decoders()
     pipeline = SimulationPipeline(
@@ -93,11 +94,13 @@ def test_relay_bp_registered_and_runs():
 def test_tesseract_registered_and_runs():
     """Tesseract (sinter-native, Pattern A, lazy import) registers and decodes.
 
-    importorskip imports tesseract_decoder; if the installed wheel doesn't match
-    your CPU it may fail to import here — build tesseract_decoder from source in
-    that case.
+    A prebuilt tesseract_decoder wheel may use CPU instructions this host lacks,
+    in which case importing it aborts the process with SIGILL — not a catchable
+    ImportError. importorskip_safe probes the import in a subprocess first and
+    skips cleanly instead of crashing the whole session; build tesseract_decoder
+    from source on this machine to actually run this test.
     """
-    pytest.importorskip("tesseract_decoder")
+    importorskip_safe("tesseract_decoder")
 
     assert "tesseract" in list_decoders()
     pipeline = SimulationPipeline(
