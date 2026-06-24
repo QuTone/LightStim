@@ -1,6 +1,6 @@
 import logging
 import stim
-from typing import Type, Literal, Optional, Any
+from typing import Type, Literal, Optional, Any, Dict
 
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.tracker import SyndromeTracker
@@ -25,7 +25,8 @@ class MemoryExperiment:
                  basis: Literal['X', 'Z'] = 'Z',
                  if_detector: bool = True,
                  se_block_kwargs: Optional[dict] = None,
-                 z_only: bool = False):
+                 z_only: bool = False,
+                 data_basis_map: Optional[Dict[int, str]] = None):
         """
         Args:
             qec_patch: The system configuration object (contains coords, indices, map).
@@ -33,14 +34,36 @@ class MemoryExperiment:
             rounds: Number of QEC rounds (d).
             noise_params: Parameters for noise injection.
             noise_model: Strategy string ('code_capacity', 'phenomenological', etc.)
-            basis: Memory basis to preserve ('X' or 'Z').
+            basis: Memory basis to preserve ('X' or 'Z'). Ignored when data_basis_map
+                is provided — the per-qubit map then fully determines both the
+                initialization and readout bases.
             if_detector: If True, emit DETECTOR and OBSERVABLE_INCLUDE instructions.
             se_block_kwargs: Extra keyword arguments passed to extraction_block_class constructor.
                 e.g. {'scheduling': 'parallel'} for RotatedSurfaceCodeExtractionBlock.
             z_only: If True, only Z-ancilla measurements emit DETECTOR instructions.
                 Produces a smaller DEM matching Z-basis-only decoding (e.g. gong_circuit style).
+            data_basis_map: Optional per-qubit init/readout basis override, mapping
+                GLOBAL data qubit index -> 'X' | 'Y' | 'Z'. Keys must be exactly the
+                system's data qubit indices, so generate it AFTER system.add_patch()
+                (e.g. xzzx_memory_basis(system, basis) for the XZZX surface code,
+                whose mixed X/Z checks need a checkerboard of bases to be
+                deterministic). The same map is used for initialization and final
+                readout. When None, all data qubits use the uniform `basis`.
+                Incompatible with z_only=True.
         """
         self._log = logging.getLogger(__name__)
+        if data_basis_map is not None:
+            if z_only:
+                raise ValueError(
+                    "data_basis_map is incompatible with z_only=True: the z_only "
+                    "readout path reconstructs detectors assuming a uniform Z-basis "
+                    "data measurement."
+                )
+            data_basis_map = {q: str(b).upper() for q, b in data_basis_map.items()}
+            bad = sorted({b for b in data_basis_map.values() if b not in ('X', 'Y', 'Z')})
+            if bad:
+                raise ValueError(f"data_basis_map values must be 'X', 'Y' or 'Z'; got {bad}")
+        self.data_basis_map = data_basis_map
         self.system = qec_system
         self.block_class = extraction_block_class
         self.rounds = rounds
@@ -77,7 +100,20 @@ class MemoryExperiment:
         # The Tracker will automatically register the initial stabilizers.
         self._log.debug("Initializing...")
         data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
-        init_dict = {q: self.basis for q in data_indices}
+        if self.data_basis_map is not None:
+            missing = set(data_indices) - self.data_basis_map.keys()
+            extra = self.data_basis_map.keys() - set(data_indices)
+            if missing or extra:
+                raise ValueError(
+                    f"data_basis_map keys must be exactly the system's data qubit indices "
+                    f"(missing: {sorted(missing)}, unexpected: {sorted(extra)}). "
+                    "Generate the map AFTER system.add_patch(), e.g. "
+                    "xzzx_memory_basis(system, basis)."
+                )
+            data_basis = {q: self.data_basis_map[q] for q in data_indices}
+        else:
+            data_basis = {q: self.basis for q in data_indices}
+        init_dict = dict(data_basis)
         self.builder.initialize(init_dict=init_dict, n=num_qubits)
 
         # 4. Syndrome Extraction Loop
@@ -97,8 +133,10 @@ class MemoryExperiment:
         # 5. Final Readout
         # ----------------------------------------------------------------------
         # Measure data qubits in the memory basis. Construct detectors and logical observables.
+        # Same per-qubit map as initialization: both time boundaries must agree for the
+        # final stabilizer reconstruction (detectors + observable) to be deterministic.
         self._log.debug("Measuring data qubits...")
-        measurements = {q: self.basis for q in data_indices}
+        measurements = dict(data_basis)
         self.builder.apply_data_readout(final_measurements=measurements, z_only=self.z_only)
 
         # 6. Noise Injection

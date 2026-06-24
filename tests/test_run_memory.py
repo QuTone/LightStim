@@ -61,6 +61,7 @@ def _has_bposd() -> bool:
     ("unrotated_sc", 3),
     ("toric",        3),
     ("color",        3),
+    ("xzzx_sc",      3),
 ])
 def test_build_circuit_topo(code, dist):
     circuit, n_data, n_total, k = build_circuit(code, dist, p=1e-2)
@@ -77,6 +78,14 @@ def test_build_circuit_bb(code):
     circuit, n_data, n_total, k = build_circuit(code, d, p=1e-2)
     assert circuit.num_qubits > 0
     assert k > 1  # BB codes are high-rate
+
+
+def test_build_circuit_xzzx_gets_checkerboard_basis():
+    """build_circuit must wire the checkerboard map for xzzx_sc: without it the
+    circuit still builds but degenerates to 16 detectors / distance 1."""
+    circuit, *_ = build_circuit("xzzx_sc", 3, p=1e-2)
+    assert circuit.num_detectors == 24
+    assert len(circuit.shortest_graphlike_error()) == 3
 
 
 @pytest.mark.parametrize("noise_model", ["circuit_level", "phenomenological", "code_capacity"])

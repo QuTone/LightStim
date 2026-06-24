@@ -26,6 +26,7 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | Unrotated Surface Code | `unrotated_sc` | yes |
 | Toric Code | `toric` | yes |
 | Color Code (6-6-6) | `color` | yes |
+| XZZX Surface Code | `xzzx_sc` | yes |
 | BB [[72,12,6]] | `bb_72_12_6` | no (d=6 fixed) |
 | BB [[90,8,10]] | `bb_90_8_10` | no (d=10 fixed) |
 | BB [[108,8,10]] | `bb_108_8_10` | no (d=10 fixed) |
