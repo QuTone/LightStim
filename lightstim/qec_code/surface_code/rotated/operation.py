@@ -9,7 +9,7 @@ callable via LogicalExecutor.apply_logical_operation().
 
 from typing import Literal, Tuple, Dict, Any, Type
 
-from lightstim.ir.operation import LogicalOpSet
+from lightstim.ir.operation import CSSLogicalOpSet
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
@@ -130,7 +130,7 @@ def _get_injection_init(
 # LogicalOpSet implementation
 # ------------------------------------------------------------------------------
 
-class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
+class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
     """
     Logical operation set for Rotated Surface Code.
 
@@ -144,7 +144,8 @@ class RotatedSurfaceCodeLogicalOpSet(LogicalOpSet):
             extraction_block_class: SE block class for this code
                 (e.g. RotatedSurfaceCodeExtractionBlock). Takes system, has .circuit.
         """
-        super().__init__("RotatedSurfaceCode")
+        super().__init__()
+        self.name = "RotatedSurfaceCode"
         self.extraction_block_class = extraction_block_class
 
     # ------------------------------------------------------------------
