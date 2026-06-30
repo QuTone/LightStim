@@ -18,7 +18,7 @@ class MemoryExperiment:
 
     def __init__(self,
                  qec_system: Any,  # The System/Geometry object
-                 extraction_block_class: Type, # Class ref, e.g. RotatedSurfaceCodeExtractionBlock
+                 extraction_block_class: Optional[Type] = None, # Class ref, e.g. RotatedSurfaceCodeExtractionBlock
                  rounds: int = 2,
                  noise_params: Optional[NoiseConfig] = None,
                  noise_model: Optional[str] = 'circuit_level',
@@ -31,6 +31,8 @@ class MemoryExperiment:
         Args:
             qec_patch: The system configuration object (contains coords, indices, map).
             extraction_block_class: The class used to generate the SE circuit chunk.
+                If omitted, a patch-provided default is used when present,
+                otherwise GenericCSSColorationExtractionBlock is used.
             rounds: Number of QEC rounds (d).
             noise_params: Parameters for noise injection.
             noise_model: Strategy string ('code_capacity', 'phenomenological', etc.)
@@ -121,7 +123,8 @@ class MemoryExperiment:
         # Instantiate the block to get the unit-cell circuit (One Round)
         # We pass self.patch because the Block needs coordinate info
         self._log.debug("Building syndrome extraction rounds...")
-        se_block = self.block_class(self.system, **self.se_block_kwargs)
+        block_class = self.block_class or self._infer_extraction_block_class()
+        se_block = block_class(self.system, **self.se_block_kwargs)
 
         # Apply the loop using Builder, construct detectors
         self.builder.apply_syndrome_extraction(
@@ -152,5 +155,22 @@ class MemoryExperiment:
         else:
             return self.builder.circuit
 
+    def _infer_extraction_block_class(self) -> Type:
+        defaults = set()
+        for patch, _ in self.system.patches.values():
+            block_class = getattr(patch, "default_extraction_block_class", None)
+            if block_class is not None:
+                defaults.add(block_class)
+
+        if len(defaults) == 1:
+            return defaults.pop()
+        if len(defaults) > 1:
+            raise ValueError(
+                "Multiple patch default extraction blocks are present. "
+                "Pass extraction_block_class explicitly."
+            )
+
+        from lightstim.qec_code.generic_css import GenericCSSColorationExtractionBlock
+        return GenericCSSColorationExtractionBlock
 
     # Log Helper Functions
