@@ -55,6 +55,7 @@ They compare LER vs PER and show distance scaling for each code family.
 | Notebook | Code family |
 |---|---|
 | `memory_surface_family.ipynb` | Rotated SC, unrotated SC, toric code |
+| `memory_xzzx.ipynb` | Rotated XZZX surface code |
 | `memory_BB.ipynb` | Bivariate Bicycle codes ([[72,12,6]] … [[288,12,18]]) |
 | `memory_color.ipynb` | Triangular color code (6-6-6) |
 | `memory_PQRM.ipynb` | PQRM codes (1,2,4), (1,3,5), (1,4,6) |

@@ -63,6 +63,9 @@ Thumbs.db
 !paper_artifact/*/precompute/*.json
 !paper_artifact/*/precompute/*.csv
 
+# Test fixtures (golden regression data) must be tracked
+!tests/fixtures/*.json
+
 # Local simulation outputs (not pushed; archived separately)
 benchmarks/*/results/
 paper_artifact/table/results/*.txt

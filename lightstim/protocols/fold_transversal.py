@@ -14,18 +14,29 @@ S gate circuits
 """
 
 import stim
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Type
 
 from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode,
     UnrotatedSurfaceCodeExtractionBlock,
     UnrotatedSurfaceCodeLogicalOpSet,
 )
+from lightstim.qec_code.surface_code.rotated import (
+    RotatedSurfaceCode,
+    RotatedSurfaceCodeLogicalOpSet,
+)
 from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.logical_executor import LogicalExecutor
 from lightstim.noise.config import NoiseConfig
+
+
+def _make_op_set(code_patch_class: Type, extraction_block_class: Type):
+    """Construct the LogicalOpSet appropriate for the given surface-code class."""
+    if code_patch_class is RotatedSurfaceCode:
+        return RotatedSurfaceCodeLogicalOpSet(extraction_block_class=extraction_block_class)
+    return UnrotatedSurfaceCodeLogicalOpSet()
 
 
 def build_gate_verification_circuit(
@@ -37,6 +48,8 @@ def build_gate_verification_circuit(
     unencode: bool = False,
     noise_params: Optional[NoiseConfig] = None,
     noise_model: str = "circuit_level",
+    code_patch_class: Type = UnrotatedSurfaceCode,
+    extraction_block_class: Type = UnrotatedSurfaceCodeExtractionBlock,
 ) -> stim.Circuit:
     """
     Build a single-patch circuit for gate verification:
@@ -52,14 +65,18 @@ def build_gate_verification_circuit(
         init_basis:    'Z' or 'X' for all data qubits.
         measure_basis: Final measurement basis ('Z', 'X', or 'Y').
         rounds:        SE rounds before and after gates.
-        unencode:      If True, use diagonal unencode + single-qubit measurement.
+        unencode:      If True, use diagonal unencode + single-qubit measurement
+                       (unrotated corner-injection layout only).
         noise_params:  Optional NoiseConfig for noise injection.
         noise_model:   Noise model string (default 'circuit_level').
+        code_patch_class:       Surface-code patch class (default UnrotatedSurfaceCode;
+                                pass RotatedSurfaceCode for the rotated layout).
+        extraction_block_class: Matching syndrome-extraction block class.
 
     Returns:
         stim.Circuit
     """
-    patch_local = UnrotatedSurfaceCode(distance=distance)
+    patch_local = code_patch_class(distance=distance)
     system = QECSystem()
     patch = system.add_patch(patch_local, name="patch")
 
@@ -72,7 +89,9 @@ def build_gate_verification_circuit(
     system.register_builder(builder)
 
     executor = LogicalExecutor(builder)
-    executor.register_op_set(UnrotatedSurfaceCode, UnrotatedSurfaceCodeLogicalOpSet())
+    executor.register_op_set(
+        code_patch_class, _make_op_set(code_patch_class, extraction_block_class)
+    )
 
     builder.write_coordinates()
     builder.initialize(
@@ -80,7 +99,7 @@ def build_gate_verification_circuit(
         system.num_qubits,
     )
 
-    se_block = UnrotatedSurfaceCodeExtractionBlock(system)
+    se_block = extraction_block_class(system)
     builder.apply_syndrome_extraction(se_block.circuit, rounds=rounds)
 
     for gate in gates:
