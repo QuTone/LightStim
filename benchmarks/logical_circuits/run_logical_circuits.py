@@ -4,6 +4,7 @@ General logical circuits benchmark runner for LightStim.
 Experiments
 -----------
     bell_tele   Bell-state teleportation (TG / ZZ-LS / XX-LS)
+    s_gate_tele Logical S-gate teleportation (ZZ-LS / transversal CNOT)
     distill_ls  LS 7-to-1 |Y⟩ distillation (Steane)
     distill_tg  TG 7-to-1 |Y⟩ distillation (hypercube PQRM)
 
@@ -11,6 +12,10 @@ CSV output
 ----------
     bell_tele → results/bell_tele_results.csv
         experiment, protocol, state, routing_mult, d, rounds, p,
+        shots, errors, logical_error_rate, decoder, seconds
+
+    s_gate_tele → results/s_gate_tele_results.csv
+        experiment, code, method, state_prep, d, rounds, p,
         shots, errors, logical_error_rate, decoder, seconds
 
     distill_ls / distill_tg → results/{distill_ls|distill_tg}_results.csv
@@ -40,6 +45,7 @@ import argparse
 import contextlib
 import csv
 import io
+import subprocess
 import sys
 import time
 from itertools import product
@@ -64,6 +70,7 @@ from lightstim.protocols.bell_teleportation import (
     BellTeleportZZLS,
     BellTeleportXXLS,
 )
+from lightstim.protocols.gate_teleport import SGateTeleportExperiment
 
 
 def _build_bell_circuit(protocol: str, d: int, state: str) -> "stim.Circuit":
@@ -99,12 +106,17 @@ _BELL_COLS = [
     "experiment", "protocol", "state", "routing_mult", "d", "rounds", "p",
     "shots", "errors", "logical_error_rate", "decoder", "seconds",
 ]
+_S_GATE_COLS = [
+    "experiment", "code", "method", "state_prep", "d", "rounds", "p",
+    "shots", "errors", "logical_error_rate", "decoder", "seconds",
+]
 _DISTILL_COLS = [
     "experiment", "d", "rounds", "p_injected", "noise_mode", "p", "p_in",
     "shots", "post_selected_shots", "post_selection_rate",
     "errors", "logical_error_rate", "decoder", "seconds",
 ]
 _BELL_RESULT_KEYS = frozenset({"shots", "errors", "logical_error_rate", "decoder", "seconds"})
+_S_GATE_RESULT_KEYS = _BELL_RESULT_KEYS
 _DISTILL_RESULT_KEYS = frozenset({
     "shots", "post_selected_shots", "post_selection_rate",
     "errors", "logical_error_rate", "decoder", "seconds",
@@ -137,10 +149,38 @@ def _append_row(path: Path, row: dict, cols: list) -> None:
         w.writerow(row)
 
 
+def _checked_decoder_config(name: str) -> DecoderConfig:
+    cfg = _decoder_config(name)
+    if cfg.backend != "gpu":
+        return cfg
+
+    try:
+        probe = subprocess.run(
+            ["nvidia-smi", "-L"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"Decoder {name!r} requires an NVIDIA GPU, but `nvidia-smi -L` "
+            "did not complete on this machine."
+        ) from exc
+
+    if probe.returncode != 0 or "GPU" not in probe.stdout:
+        detail = (probe.stderr or probe.stdout).strip()
+        raise RuntimeError(
+            f"Decoder {name!r} requires an NVIDIA GPU, but none is visible. "
+            f"`nvidia-smi -L` returned: {detail or '<empty>'}"
+        )
+    return cfg
+
+
 # ── Bell teleportation ─────────────────────────────────────────────────────────
 
 _BELL_DEFAULT_DECODER = {
-    "tg":    "bposd",
+    "tg":    "cpu_bposd",
     "ls_zz": "pymatching",
     "ls_xx": "pymatching",
 }
@@ -176,12 +216,13 @@ def _run_bell_tele(args, output_path: Path) -> None:
 
         if decoder_name not in pipeline_cache:
             pipeline_cache[decoder_name] = SimulationPipeline(
-                decoder_config=_decoder_config(decoder_name),
+                decoder_config=_checked_decoder_config(decoder_name),
                 max_shots=args.max_shots,
                 max_errors=args.max_errors,
-                batch_size=10_000,
+                batch_size=args.batch_size,
                 num_workers=args.num_workers,
-                print_progress=False,
+                print_progress=args.progress,
+                progress_interval_sec=args.progress_interval,
             )
         pipeline = pipeline_cache[decoder_name]
 
@@ -211,6 +252,96 @@ def _inject_bell(circuit, p: float):
     return injector.inject_noise(circuit)
 
 
+# ── S-gate teleportation ──────────────────────────────────────────────────────
+
+_S_GATE_DEFAULT_DECODER = {
+    "ZZ": "pymatching",
+    "cnot_trans": "cpu_bposd",
+}
+
+
+def _valid_s_gate_combos(args):
+    codes = args.codes or ["unrotated_sc"]
+    methods = args.s_gate_methods or ["ZZ", "cnot_trans"]
+    preps = args.state_preps or ["logical_gate"]
+
+    for code, method, state_prep in product(codes, methods, preps):
+        yield code, method, state_prep
+
+
+def _s_gate_rounds(d: int, method: str) -> tuple[int, int]:
+    rounds_prep = d
+    rounds_gate = d if method == "ZZ" else 1
+    return rounds_prep, rounds_gate
+
+
+def _run_s_gate_tele(args, output_path: Path) -> None:
+    done = _load_done(output_path, _S_GATE_RESULT_KEYS)
+    pipeline_cache: dict = {}
+
+    for code, method, state_prep in _valid_s_gate_combos(args):
+        for d, p in product(args.distances, args.p_values):
+            decoder_name = args.decoder or _S_GATE_DEFAULT_DECODER[method]
+            rounds_prep, rounds_gate = _s_gate_rounds(d, method)
+            row_proto = {
+                "experiment": "s_gate_tele",
+                "code": code,
+                "method": method,
+                "state_prep": state_prep,
+                "d": d,
+                "rounds": f"prep={rounds_prep} gate={rounds_gate}",
+                "p": p,
+                "decoder": decoder_name,
+            }
+            if _ck_key(row_proto, _S_GATE_RESULT_KEYS) in done:
+                print(f"  SKIP {code} {method} {state_prep} d={d} p={p:.0e}")
+                continue
+
+            print(
+                f"  [{method}] code={code} prep={state_prep} "
+                f"d={d} p={p:.0e} decoder={decoder_name}"
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                circuit = SGateTeleportExperiment(
+                    distance=d,
+                    code=code,
+                    method=method,
+                    state_prep=state_prep,
+                    rounds_prep=rounds_prep,
+                    rounds_gate=rounds_gate,
+                ).build()
+            noisy = _inject_bell(circuit, p)
+
+            if decoder_name not in pipeline_cache:
+                pipeline_cache[decoder_name] = SimulationPipeline(
+                    decoder_config=_checked_decoder_config(decoder_name),
+                    max_shots=args.max_shots,
+                    max_errors=args.max_errors,
+                    batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    print_progress=args.progress,
+                    progress_interval_sec=args.progress_interval,
+                )
+            pipeline = pipeline_cache[decoder_name]
+
+            t0 = time.perf_counter()
+            stats = pipeline.run(noisy)
+            elapsed = time.perf_counter() - t0
+
+            row = {
+                **row_proto,
+                "shots": stats.shots,
+                "errors": stats.errors,
+                "logical_error_rate": stats.logical_error_rate,
+                "seconds": round(elapsed, 2),
+            }
+            _append_row(output_path, row, _S_GATE_COLS)
+            print(
+                f"    LER={stats.logical_error_rate:.2e}  "
+                f"({stats.errors}/{stats.shots:,})  {elapsed:.1f}s"
+            )
+
+
 # ── Distillation ──────────────────────────────────────────────────────────────
 
 def _run_distillation(args, which: str, output_path: Path) -> None:
@@ -233,6 +364,10 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
     p_injected_list = args.p_injected or [1e-3, 5e-3, 2e-2]
     p_list = args.p_values if args.p_values else [1e-3]
     decoder_name = args.decoder or "pymatching"
+    decoder_cfg = _checked_decoder_config(decoder_name)
+
+    if which == "ls" and decoder_cfg.backend != "cpu":
+        raise ValueError("LS distillation currently expects a CPU decoder; use `pymatching`.")
 
     for d in args.distances:
         rounds_init = d
@@ -290,7 +425,7 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                 if which == "ls":
                     stats = _run_ls_sim(
                         circuit, magic_qubits, p, p_inj, mode,
-                        ps_obs, target_obs, decoder_name,
+                        ps_obs, target_obs, decoder_cfg.name,
                         args.max_shots, args.max_errors,
                         batch_size=50_000, num_workers=args.num_workers,
                         data_indices=magic_data,
@@ -298,10 +433,12 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                 else:
                     stats = _run_tg_sim(
                         circuit, magic_qubits, p, p_inj, mode,
-                        T, ps_obs, target_obs, decoder_name,
+                        T, ps_obs, target_obs, decoder_cfg.name,
                         args.max_shots, args.max_errors,
                         num_workers=args.num_workers,
-                        backend="cpu", batch_size=50_000,
+                        backend=decoder_cfg.backend,
+                        batch_size=50_000,
+                        decoder_params=decoder_cfg.params,
                     )
                 row = {
                     **row_proto,
@@ -324,20 +461,36 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
 def _decoder_config(name: str) -> DecoderConfig:
     if name == "pymatching":
         return DecoderConfig("pymatching", backend="cpu")
-    if name == "bposd":
+    if name in ("bposd", "cpu_bposd"):
         return DecoderConfig("bposd", backend="cpu", params={
             "max_iterations": 1000, "osd_order": 10,
             "bp_method": "min_sum", "ms_scaling_factor": 0,
             "osd_method": "osd_cs",
         })
+    if name in ("gpu_bposd", "nv-qldpc-decoder"):
+        return DecoderConfig(
+            "nv-qldpc-decoder",
+            backend="gpu",
+            params={
+                "max_iterations": 1000,
+                "osd_order": 10,
+                "bp_method": "min_sum",
+                "ms_scaling_factor": 0,
+                "osd_method": "osd_cs",
+                "use_osd": True,
+            },
+        )
     if name == "mwpf":
         return DecoderConfig("mwpf", backend="cpu", params={"cluster_node_limit": 50})
-    raise ValueError(f"Unknown decoder: {name!r}")
+    raise ValueError(
+        f"Unknown decoder: {name!r}. "
+        "Choose: pymatching, mwpf, cpu_bposd, gpu_bposd"
+    )
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
-ALL_EXPERIMENTS = ["bell_tele", "distill_ls", "distill_tg"]
+ALL_EXPERIMENTS = ["bell_tele", "s_gate_tele", "distill_ls", "distill_tg"]
 
 
 def main():
@@ -371,6 +524,24 @@ def main():
         help="Protocols for bell_tele (default: tg ls_zz ls_xx)",
     )
     ap.add_argument(
+        "--codes", nargs="+",
+        choices=["unrotated_sc"],
+        default=None,
+        help="Codes for s_gate_tele (default: unrotated_sc)",
+    )
+    ap.add_argument(
+        "--s-gate-methods", nargs="+",
+        choices=["ZZ", "cnot_trans"],
+        default=None,
+        help="Methods for s_gate_tele (default: ZZ cnot_trans)",
+    )
+    ap.add_argument(
+        "--state-preps", nargs="+",
+        choices=["logical_gate", "inject"],
+        default=None,
+        help="Resource-state preparation modes for s_gate_tele (default: logical_gate)",
+    )
+    ap.add_argument(
         "--p-injected", nargs="+", type=float, default=None,
         help="Injection noise rates for distillation (default: 1e-3 5e-3 2e-2)",
     )
@@ -382,12 +553,21 @@ def main():
     )
     ap.add_argument(
         "--decoder", default=None,
-        choices=["pymatching", "bposd", "mwpf"],
+        choices=["pymatching", "mwpf", "bposd", "cpu_bposd", "gpu_bposd", "nv-qldpc-decoder"],
         help="Override decoder for all experiments (default: per-experiment default)",
     )
     ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
     ap.add_argument("--max-errors",  type=int, default=100)
+    ap.add_argument("--batch-size",  type=int, default=10_000)
     ap.add_argument("--num-workers", type=int, default=8)
+    ap.add_argument(
+        "--progress", action="store_true",
+        help="Print periodic SimulationPipeline progress for long runs",
+    )
+    ap.add_argument(
+        "--progress-interval", type=float, default=30.0,
+        help="Seconds between progress updates when --progress is set",
+    )
     ap.add_argument(
         "--quick", action="store_true",
         help="Quick mode: d=[3], 2 p-values, max_shots=100k, max_errors=20",
@@ -403,6 +583,7 @@ def main():
         args.p_values   = [1e-3, 5e-3]
         args.max_shots  = 100_000
         args.max_errors = 20
+        args.batch_size = min(args.batch_size, 10_000)
         if args.p_injected is None:
             args.p_injected = [5e-3, 2e-2]
         if args.noise_mode is None:
@@ -414,11 +595,12 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     bell_csv    = out_dir / "bell_tele_results.csv"
+    s_gate_csv  = out_dir / "s_gate_tele_results.csv"
     distill_ls_csv = out_dir / "distill_ls_results.csv"
     distill_tg_csv = out_dir / "distill_tg_results.csv"
 
     print("=" * 60)
-    print("Logical Circuits Benchmark — Unrotated Surface Code")
+    print("Logical Circuits Benchmark")
     print(f"Experiments : {experiments}")
     print(f"Distances   : {args.distances}")
     print(f"p values    : {args.p_values}")
@@ -433,6 +615,8 @@ def main():
         print(f"Experiment: {exp}")
         if exp == "bell_tele":
             _run_bell_tele(args, bell_csv)
+        elif exp == "s_gate_tele":
+            _run_s_gate_tele(args, s_gate_csv)
         elif exp == "distill_ls":
             _run_distillation(args, "ls", distill_ls_csv)
         elif exp == "distill_tg":

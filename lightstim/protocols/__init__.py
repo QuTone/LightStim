@@ -1,4 +1,5 @@
 from .bell_teleportation import BellTeleportTG, BellTeleportZZLS, BellTeleportXXLS
+from .gate_teleport import SGateTeleportExperiment
 from .ls_distillation import (
     build_distillation_circuit as build_ls_distillation_circuit,
     inject_noise as inject_ls_noise,

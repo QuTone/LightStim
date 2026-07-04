@@ -686,6 +686,51 @@ class TestLogicalCircuits:
         c = build_quiet(exp.build)
         assert c.num_detectors > 0; assert_noiseless(c); assert_dem_valid(c)
 
+    @pytest.mark.parametrize("method,state_prep", [
+        ("ZZ", "logical_gate"),
+        ("ZZ", "inject"),
+        ("cnot_trans", "logical_gate"),
+        ("cnot_trans", "inject"),
+    ])
+    def test_s_gate_teleport_unrotated(self, method, state_prep):
+        from lightstim.protocols.gate_teleport import SGateTeleportExperiment
+        exp = SGateTeleportExperiment(
+            distance=3,
+            code="unrotated_sc",
+            method=method,
+            state_prep=state_prep,
+            rounds_prep=2,
+            rounds_gate=2,
+            noise_params=None,
+        )
+        c = build_quiet(exp.build)
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
+    @pytest.mark.parametrize("method", ["ZZ", "cnot_trans"])
+    def test_s_gate_teleport_rotated_injection(self, method):
+        from lightstim.protocols.gate_teleport import SGateTeleportExperiment
+        exp = SGateTeleportExperiment(
+            distance=3,
+            code="rotated_sc",
+            method=method,
+            state_prep="inject",
+            rounds_prep=2,
+            rounds_gate=2,
+            noise_params=None,
+        )
+        c = build_quiet(exp.build)
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
+    def test_s_gate_teleport_rotated_logical_gate_rejected(self):
+        from lightstim.protocols.gate_teleport import SGateTeleportExperiment
+        with pytest.raises(ValueError, match="logical S support"):
+            SGateTeleportExperiment(
+                distance=3,
+                code="rotated_sc",
+                method="ZZ",
+                state_prep="logical_gate",
+            )
+
     def test_tg_distillation_build(self):
         """Noiseless circuit structure only — noise injection tested separately."""
         from lightstim.protocols.tg_distillation import build_distillation_circuit

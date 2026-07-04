@@ -293,7 +293,8 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
 def run_simulation(circuit, magic_qubits, p, p_injected, mode,
                    T, ps_indices, target_indices, decoder_name,
                    max_shots=10_000_000, max_errors=200,
-                   num_workers=32, backend="cpu", batch_size=50_000):
+                   num_workers=32, backend="cpu", batch_size=50_000,
+                   decoder_params=None):
     """
     Run noisy TG simulation with GF(2)-transformed post-selection.
 
@@ -302,13 +303,18 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
     """
     import math
 
+    decoder_params = decoder_params or {}
     noisy = inject_noise(circuit, magic_qubits, p, p_injected, mode)
     n_obs = circuit.num_observables
     n_det = circuit.num_detectors
 
     if np.array_equal(T, np.eye(T.shape[0], dtype=int)):
         pipeline = SimulationPipeline(
-            decoder_config=DecoderConfig(decoder_name, backend=backend),
+            decoder_config=DecoderConfig(
+                decoder_name,
+                backend=backend,
+                params=decoder_params,
+            ),
             max_shots=max_shots,
             max_errors=max_errors,
             batch_size=batch_size,
@@ -322,7 +328,7 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
 
     from lightstim.simulation.decoder_backend.registry import get_decoder
 
-    decoder = get_decoder(decoder_name, backend=backend)
+    decoder = get_decoder(decoder_name, backend=backend, **decoder_params)
     dem = noisy.detector_error_model(
         decompose_errors=getattr(decoder, "decompose_errors", False),
         approximate_disjoint_errors=True,

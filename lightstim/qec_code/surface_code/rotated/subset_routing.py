@@ -36,9 +36,10 @@ from .multi_patch import (
     MultiPatchLayout, _connected, _collapse_check, _int_symplectic, _IntBasis, _icommute,
 )
 
-__all__ = ["PatchSpec", "cell", "origin_of", "cell_index", "route_subset", "classify_route",
-           "trace_physics", "complete_code", "verify_report", "acceptance", "ACCEPTANCE_ITEMS",
-           "local_plaquette_types", "collision_report", "selection_search", "SubsetRoute"]
+__all__ = ["PatchSpec", "cell", "origin_of", "cell_index", "route_subset", "route_and_build",
+           "classify_route", "trace_physics", "complete_code", "verify_report", "acceptance",
+           "ACCEPTANCE_ITEMS", "local_plaquette_types", "collision_report", "selection_search",
+           "SubsetRoute"]
 
 NEIGH = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
@@ -300,6 +301,8 @@ class SubsetRoute:
     obstacle_fp: set = field(default_factory=set)     # non-target patch data qubits
     corridor: set = field(default_factory=set)        # all corridor-eligible cells
     tried: int = 0
+    how: str = "standard"                             # "standard" | "corner-cut" (route_and_build)
+    cut: tuple = ()                                   # convex-corner qubits removed (corner-cut only)
 
     @property
     def ok(self):
@@ -382,6 +385,112 @@ def route_subset(patches, target, pad=1, per_z=4, max_combo=64,
                                 f"oracle (tried {tried}); the physics layer cannot host this "
                                 f"geometry (physics_unsupported), e.g. a bent trunk"),
                        **base)
+
+
+def _corner_cut_region(placed, target, orient, tree, d, max_cut=2, seed=0, max_trials=5000):
+    """Try to host a corridor ``tree`` by **cutting** convex-corner bus qubits.
+
+    A convex 90° corner of the routed region hosts a weight-4 plaquette that isn't wrapped by two
+    weight-2 boundary stabilizers; the fix (per the user's construction) is to **remove** that corner
+    data qubit so the plaquette becomes a genuine weight-3 boundary check (a real surface-code corner
+    has its 4th site *outside* the code).  Only convex corners (``≤2`` orthogonal in-region neighbours)
+    that are not part of a target patch are candidates.  Searches ``0..max_cut`` simultaneous cuts
+    (``0`` == the plain standard construction) and returns the first ``(layout, cut_qubits)`` whose
+    :meth:`MultiPatchLayout.verify` fully passes, else ``(None, None)``.  Fully CSS — no twist.
+    """
+    data, _ = path_to_corridor(tree, placed, target, d)
+    data = sorted(data)
+    ds = set(data)
+    tc = {nm: placed[nm] for nm, _ in target}
+    patchq = set().union(*tc.values())
+    zc = set().union(*[tc[nm] for nm, P in target if P == "Z"]) \
+        if any(P == "Z" for _, P in target) else set()
+    orth = lambda q: sum(((q[0] + dx, q[1] + dy) in ds) for dx, dy in [(2, 0), (-2, 0), (0, 2), (0, -2)])
+    corners = [q for q in data if orth(q) <= 2 and q not in patchq]
+    for r in range(0, max_cut + 1):
+        for cutq in itertools.combinations(corners, r):
+            nd = sorted(ds - set(cutq))
+            if not all(tc[nm] <= set(nd) for nm, _ in target):
+                continue
+            retype = [q for q in nd if q not in zc]
+            lay = _assemble_region(placed, target, orient, nd, retype, d, seed, max_trials)
+            if lay is not None and all(lay.verify().values()):
+                return lay, cutq
+    return None, None
+
+
+def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, max_cut=2,
+                    keepout=1, seed=0, max_trials=5000):
+    """Fully-automatic route **and** build: no hand-written corridor needed.
+
+    Propose-and-verify with retry, extending :func:`route_subset` two ways so the caller never writes a
+    ``route`` by hand: (1) candidate arms leave the X-anchor from **any** face (not just its X-faces),
+    so clean below-/side-attach corridors are found; (2) each candidate is verified **standard first,
+    then with the convex-corner cut** (:func:`_corner_cut_region`) as a fallback.  Candidates are tried
+    shortest-first, so the simplest *valid* corridor wins — a straight/clean standard route is preferred
+    over a bent corner-cut one.  This is the routine the demo notebook calls instead of pasting cells.
+
+    Returns a :class:`SubsetRoute` with ``status == "ok"`` and ``.layout`` / ``.tree`` (route cells) /
+    ``.how`` (``"standard"`` | ``"corner-cut"``) / ``.cut`` set, or a failure ``SubsetRoute`` (same
+    statuses as :func:`route_subset`: ``target_obstacle_conflict`` / ``no_path`` / ``no_verified_route``).
+    """
+    patch_at, orient, d = _specs_to_cells(patches, target)
+    tnames = [nm for nm, _ in target]
+    onames = [nm for nm in patch_at if nm not in tnames]
+    placed_all = {nm: cell(*ab, d) for nm, ab in patch_at.items()}
+    obstacle_fp0 = set().union(*[placed_all[nm] for nm in onames]) if onames else set()
+    base0 = dict(placed=placed_all, target=list(target), obstacles=onames, obstacle_fp=obstacle_fp0,
+                 corridor=set())
+    for tn in tnames:
+        bad = [on for on in onames if _cheb(patch_at[tn], patch_at[on]) <= keepout]
+        if bad:
+            return SubsetRoute(status="target_obstacle_conflict", root=tnames[0],
+                               message=(f"target {tn} is within keepout={keepout} of obstacle(s) "
+                                        f"{bad}: their boundary ancillas would collide."), **base0)
+    G, corridor, placed, occupied, obstacle_fp, onames = _corridor_graph(patch_at, target, d, pad,
+                                                                         keepout=keepout)
+    base = dict(placed=placed, target=list(target), obstacles=onames, obstacle_fp=obstacle_fp,
+                corridor=corridor)
+    root = next((nm for nm, P in target if P == "X"), tnames[0])
+    zs = [nm for nm in tnames if nm != root]
+
+    cand = {}
+    for z in zs:
+        arms = _candidate_arms(G, patch_at, corridor, root, NEIGH, z, per_z)   # any face, not just X
+        if not arms:
+            return SubsetRoute(status="no_path", root=root,
+                               message=f"path search found no obstacle-free corridor {root} -> {z}",
+                               **base)
+        cand[z] = arms
+    combos = list(itertools.product(*[cand[z] for z in zs])) if zs else [()]
+    combos.sort(key=lambda c: sum(len(p) for p in c))
+    combos = combos[:max_std]
+    trees = [set().union(*[set(p) for p in c]) if c else set() for c in combos]
+    shortest = trees[0] if trees else set()
+
+    # pass 1 -- standard construction, shortest candidate first (prefer a clean straight/L route)
+    tried = 0
+    for tree in trees:
+        tried += 1
+        data, retype = path_to_corridor(tree, placed, target, d)
+        layout = _assemble_region(placed, target, orient, data, retype, d, seed, max_trials)
+        if layout is not None and all(layout.verify().values()):
+            return SubsetRoute(status="ok", message="verified subset joint (standard)", layout=layout,
+                               root=root, tree=tree, attempted=tree, data=sorted(data), tried=tried,
+                               how="standard", cut=(), **base)
+    # pass 2 -- convex-corner cut on the shortest few candidates (rescues genuine bent buses)
+    for tree in trees[:cut_budget]:
+        tried += 1
+        layout, cutq = _corner_cut_region(placed, target, orient, tree, d, max_cut, seed, max_trials)
+        if layout is not None:
+            data, _ = path_to_corridor(tree, placed, target, d)
+            return SubsetRoute(status="ok", message="verified subset joint (convex-corner cut)",
+                               layout=layout, root=root, tree=tree, attempted=tree,
+                               data=sorted(set(data) - set(cutq)), tried=tried,
+                               how="corner-cut", cut=tuple(cutq), **base)
+    return SubsetRoute(status="no_verified_route", root=root, tried=tried, attempted=shortest,
+                       message=("no candidate corridor verified, standard or convex-corner cut; the "
+                                "physics layer cannot host this geometry"), **base)
 
 
 # -----------------------------------------------------------------------------
