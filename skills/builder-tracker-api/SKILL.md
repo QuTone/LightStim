@@ -216,4 +216,4 @@ assert not obs.any(),   f"Noiseless circuit has observable flips — build bug!"
 
 - `lightstim/protocols/two_patch_ls.py` — two-patch ZZ/XX lattice surgery, full pipeline
 - `lightstim/protocols/cnot_ls.py` — three-patch CNOT via lattice surgery
-- `notebooks/LogicalOps/multi_patch_LS.ipynb` — N-patch Z-product measurement with `build_zz_circuit()` helper
+- `notebooks/LogicalOps/multi_patch_LS_straight_unrotated.ipynb` — N-patch Z-product measurement with `build_zz_circuit()` helper

@@ -45,7 +45,8 @@ notebooks/
 | `logical_H_S.ipynb` | `protocols/fold_transversal.py` | Fold-transversal H and S gates |
 | `state_injection.ipynb` | `protocols/state_injection.py` | Non-FT magic-state injection (rotated SC) |
 | `two_patch_LS.ipynb` | `protocols/two_patch_ls.py` | Two-patch ZZ lattice surgery coupler |
-| `multi_patch_LS.ipynb` | *(in-progress)* | Multi-patch lattice surgery; unrotated SC N-patch coupler |
+| `multi_patch_LS_straight_unrotated.ipynb` | *(in-progress)* | Multi-patch lattice surgery; unrotated SC N-patch coupler |
+| `multi_patch_LS_bent_rotated.ipynb` | `rotated/subset_report.py` | Subset joint measurement, obstacle-aware auto-routing (rotated SC) |
 
 ### Memory/
 

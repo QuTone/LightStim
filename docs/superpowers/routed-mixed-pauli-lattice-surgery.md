@@ -162,7 +162,7 @@ long ancilla 首选普通 CSS patch stabilizer。
   - `mode="opposite"` 用于初始化：`Z` route 区域准备在 `X`，`X` route
     区域准备在 `Z`。
   - `mode="same"` 用于读出：`Z` route 区域读 `Z`，`X` route 区域读 `X`。
-- `multi_patch_LS.ipynb` 的 `build_zz_circuit` 默认把非 coupler/data patch
+- `multi_patch_LS_straight_unrotated.ipynb`（原 `multi_patch_LS.ipynb`）的 `build_zz_circuit` 默认把非 coupler/data patch
   qubit 初始化在 `Z` basis；只有 coupler ancillary data 会为 ZZ surgery
   单独初始化在 `X` basis。`routed_ZZZX_LS.ipynb` 的 full ancillary patch
   可视化也应沿用这个约定，而不是把普通 data patch 默认初始化成 `X`。

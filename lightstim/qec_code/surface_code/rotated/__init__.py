@@ -4,9 +4,9 @@ from .operation import RotatedSurfaceCodeLogicalOpSet
 from .two_patch_coupler import RotatedTwoPatchCoupler
 from .bent_joint_se import RotatedBentJointMeasurement, build_bent_joint_circuit
 from .bent_layout import PatchSpec, BentLayout, BentLayoutError, build_rotated_bent_xz_layout
-from .multi_patch_joint import MultiPatchJointLayout, build_rotated_bent_xxz_layout, xxz_patches
 from .multi_patch import (MultiPatchLayout, build_rotated_multi_patch_joint_layout,
                           MultiPatchDiagnosis, diagnose_multi_patch_joint)
+from .subset_report import report_subset_joint
 
 __all__ = [
     "RotatedSurfaceCode",
@@ -19,11 +19,9 @@ __all__ = [
     "BentLayout",
     "BentLayoutError",
     "build_rotated_bent_xz_layout",
-    "MultiPatchJointLayout",
-    "build_rotated_bent_xxz_layout",
-    "xxz_patches",
     "MultiPatchLayout",
     "build_rotated_multi_patch_joint_layout",
     "MultiPatchDiagnosis",
     "diagnose_multi_patch_joint",
+    "report_subset_joint",
 ]
