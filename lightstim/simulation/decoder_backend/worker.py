@@ -42,7 +42,12 @@ def _decode_worker_cpu(
     from .registry import get_decoder
     from .post_select import apply_post_selection
 
-    if gpu_id is not None and "CUDA_VISIBLE_DEVICES" not in os.environ:
+    _gpu_list = os.environ.get("LIGHTSTIM_WORKER_GPUS", "").split(",")
+    _gpu_list = [g for g in _gpu_list if g.strip()]
+    if _gpu_list:
+        # Explicit device list: round-robin workers across the listed GPUs.
+        os.environ["CUDA_VISIBLE_DEVICES"] = _gpu_list[worker_id % len(_gpu_list)]
+    elif gpu_id is not None and "CUDA_VISIBLE_DEVICES" not in os.environ:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
     decoder = get_decoder(decoder_name, backend=decoder_backend, **decoder_params)
