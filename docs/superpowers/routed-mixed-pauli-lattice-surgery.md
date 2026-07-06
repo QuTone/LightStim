@@ -1,229 +1,258 @@
-# Routed Mixed-Pauli Lattice Surgery 设计记录
+# Routed Mixed-Pauli Lattice Surgery — Design Record
 
-这份文档记录这次讨论得到的正确思路，目标是支持 `ZZZX`、`X1Z2`
-这类 mixed X/Z logical product measurement。
+This document records the correct approach reached in this discussion. The goal is to
+support mixed X/Z logical product measurements such as `ZZZX` and `X1Z2`.
 
-## 核心规则
+## Core rule
 
-每个 data patch 上需要先回答两个问题：
+For every data patch, two questions must be answered first:
 
-1. 目标想测的是 `X` 还是 `Z`？
-2. 真正接入 ancillary path / bus 的那条边，本征 interface basis 是
-   `X` 还是 `Z`？
+1. Does the target want to measure `X` or `Z` on this patch?
+2. What is the native interface basis (`X` or `Z`) of the edge that actually
+   connects to the ancillary path / bus?
 
-是否需要 logical H 由这两个 basis 的比较决定：
+Whether a logical H is needed is decided by comparing these two bases:
 
-| 接入 ancilla 的 interface basis | 目标 Pauli | 是否需要 logical H |
+| Interface basis at the ancilla | Target Pauli | Logical H needed? |
 | --- | --- | --- |
-| X | X | 不需要 |
-| X | Z | 需要 |
-| Z | Z | 不需要 |
-| Z | X | 需要 |
+| X | X | No |
+| X | Z | Yes |
+| Z | Z | No |
+| Z | X | Yes |
 
-所以不能简单地认为“目标里出现 `X` 就先转成 `Z`”。如果某个 patch
-本来就是通过 `X` 边接入 ancilla，那么目标也要测 `X` 时就应该保持原
-frame，不应该额外做 H。
+So it is wrong to simply assume "if the target contains an `X`, convert it to `Z`
+first". If a patch already connects to the ancilla through an `X` edge and the
+target also measures `X`, the original frame should be kept — no extra H.
 
-实现上应当按这个顺序处理：
+The implementation should process in this order:
 
-1. 对每个参与 patch 的选中边，推断或显式传入 native interface Pauli。
-2. 将 native interface Pauli 与目标 Pauli product 逐项比较。
-3. 只在不匹配的 patch 上做 logical H。
-4. 如果测量后还希望回到原 logical frame，就在 readout 前再 H 回来。
+1. For each participating patch's selected edge, infer (or accept explicitly) the
+   native interface Pauli.
+2. Compare the native interface Pauli against the target Pauli product term by term.
+3. Apply a logical H only on the mismatched patches.
+4. If the original logical frame is wanted back after the measurement, apply H
+   again before readout.
 
-## 几何规则
+## Geometry rules
 
-ancilla 区域不是只能是单纯竖直或单纯水平 corridor。参考
-Litinski/von Oppen 的 long-range multi-target CNOT 图，更合适的解释是：
-这条会拐弯的 bus 本身是一个完整的 long ancillary surface-code patch。
+The ancilla region is not restricted to a purely vertical or purely horizontal
+corridor. Following the long-range multi-target CNOT figures of Litinski /
+von Oppen, the better interpretation is: the bending bus is itself one complete
+long ancillary surface-code patch.
 
-因此 full-width route 的首要几何规则不是“给每个坐标按最近 interface
-染成 X/Z 区域”，而是：
+Therefore the primary geometric rule for a full-width route is NOT "color every
+coordinate X/Z by its nearest interface", but:
 
-1. ancilla bus 具有 code-distance 级别的固定宽度。
-2. data / syndrome checkerboard 在整条 bent patch 上连续延伸。
-3. 90 度拐角按普通 surface-code patch corner 处理，自然允许 weight-2 /
-   weight-3 边界 stabilizer。
-4. 相邻 patch-sized route blocks 之间必须包含 seam 行/列，使整条 bus 等价
-   于一个标准 unrotated rectangular / bent patch，而不是一串互相重启相位
-   的小 patch。
+1. The ancilla bus has a fixed, code-distance-scale width.
+2. The data/syndrome checkerboard extends continuously across the whole bent patch.
+3. 90° corners are treated like ordinary surface-code patch corners, naturally
+   allowing weight-2 / weight-3 boundary stabilizers.
+4. Adjacent patch-sized route blocks must include seam rows/columns so that the
+   whole bus is equivalent to one standard unrotated rectangular / bent patch —
+   not a chain of small patches that each restart the checkerboard phase.
 
-data patch 的 selected interface window 与这个 long ancilla patch 做
-merge。merge-check product 可以留下一个 long ancilla 的 logical boundary
-factor；这个 factor 由 ancilla 的初始化/测量 frame 给出，而不是逐个读出
-ancilla data qubit。
+The data patch's selected interface window merges with this long ancilla patch.
+The merge-check product may leave one logical boundary factor of the long ancilla;
+that factor is fixed by the ancilla's initialization/measurement frame, not by
+reading out individual ancilla data qubits.
 
-## Stabilizer 模板规则
+## Stabilizer template rules
 
-paper-style long ancilla 的 stabilizer 设计按 unrotated surface-code patch
-生成，但 X/Z sheet 交界处必须使用 mixed/domain-wall stabilizer：
+The paper-style long ancilla's stabilizers are generated as an unrotated
+surface-code patch, but the X/Z sheet junction must use mixed / domain-wall
+stabilizers:
 
-- bulk plaquette 仍是标准 weight-4 X/Z checkerboard。
-- X/Z route label 改变的 seam/corner 附近使用 mixed stabilizer；不能把
-  这些位置强行保持成纯 CSS X/Z check。
-- 外边界、内边界、接口窗口边界和拐角处自然出现 weight-2 / weight-3
-  stabilizer。
-- 拐弯处不重新初始化 checkerboard phase；它只是同一个 patch 的 corner。
-- 参与 logical product 的是 data-ancilla 接触窗口上的 merge-check
-  syndrome product。ancilla 内部 stabilizer 负责保持 bus 是一个 code patch，
-  不应被解释成独立的 data readout。
+- Bulk plaquettes remain the standard weight-4 X/Z checkerboard.
+- Near the seam/corner where the X/Z route label changes, use mixed stabilizers;
+  do not force these positions to stay pure CSS X/Z checks.
+- Weight-2 / weight-3 stabilizers appear naturally on outer boundaries, inner
+  boundaries, interface windows, and corners.
+- A bend does not re-initialize the checkerboard phase; it is just a corner of the
+  same patch.
+- What enters the logical product is the merge-check syndrome product on the
+  data–ancilla contact window. The ancilla's internal stabilizers keep the bus a
+  code patch and must not be interpreted as independent data readouts.
 
-如果确实需要在同一个局部位置把 X 边界和 Z 边界通过 domain wall/twist
-相连，才需要 mixed X/Z stabilizer 模板。当前代码仍保留
-`mixed_stabilizers=True` 作为实验性 scaffold，但参考 Figure 10 的 bent
-long ancilla 首选普通 CSS patch stabilizer。
+A mixed X/Z stabilizer template is only required where an X boundary and a Z
+boundary genuinely meet through a domain wall / twist at the same local position.
+The code keeps `mixed_stabilizers=True` as an experimental scaffold, but the
+Figure-10-style bent long ancilla prefers ordinary CSS patch stabilizers.
 
-## 例子
+## Examples
 
-对于 `ZZZX`：
+For `ZZZX`:
 
-- 如果四个接入 interface 被解释为 `Z, Z, Z, Z`，那么只需要在最后一
-  个目标 `X` patch 上做 logical H，执行 routed `ZZZZ` 测量，之后根据
-  需要再 H 回原 frame。
-- 如果四个接入 interface 本来就是 `Z, Z, Z, X`，那么不需要任何 H。
-  此时真正需要的是 route 本身支持 mixed X/Z local stabilizer，在 `X`
-  区域和 `Z` 区域交界处生成对应的 mixed check。
+- If the four attached interfaces are interpreted as `Z, Z, Z, Z`, then only the
+  final `X`-target patch needs a logical H; perform a routed `ZZZZ` measurement,
+  and H back to the original frame afterwards if needed.
+- If the four attached interfaces are natively `Z, Z, Z, X`, then no H at all is
+  needed. What is genuinely required then is that the route itself supports mixed
+  X/Z local stabilizers, generating the corresponding mixed checks at the
+  `X`-region / `Z`-region junction.
 
-对于 `X1Z2`：
+For `X1Z2`:
 
-- 如果 patch 1 通过 `X` interface 接入，patch 2 通过 `Z` interface
-  接入，那么这就是 native mixed X/Z measurement。
-- 这时默认把 `X1` 转成 `Z1` 反而是不正确的。正确方向是 mixed-boundary
-  stabilizer generation，再配套实现对应 logical product 的 outcome /
-  tracker 支持。
+- If patch 1 attaches through an `X` interface and patch 2 through a `Z`
+  interface, this is a native mixed X/Z measurement.
+- Converting `X1` to `Z1` by default is then incorrect. The right direction is
+  mixed-boundary stabilizer generation, together with outcome / tracker support
+  for the corresponding logical product.
 
-## 当前实现状态
+## Current implementation status
 
-已经实现：
+Implemented:
 
-- `UnrotatedRoutedMultiPatchCoupler` 支持显式选择每个 patch 的接入边，
-  并用 Manhattan routing 连接任意布局下的这些边。
-- direct routed coupler 默认使用
-  `route_width = 2 * code_distance - 1` 的 full ancillary-patch route。
-  对 d=3 的 unrotated patch，这个跨度是 5 个整数 lattice 坐标，而不是
-  逻辑距离本身的 3。
-- full ancillary-patch route 不再允许 data patch 放在任意物理坐标上。
-  所有参与 routing 的 data/obstacle patch 必须落在同一个 coarse grid 上：
-  每个 patch 本身必须刚好占据一个 `route_width × route_width` 坐标块，
-  但相邻 coarse cell 的 origin pitch 是 `route_pitch = route_width + 1 = 2d`，
-  不是 `route_width`。多出来的 1 个整数坐标就是两个标准 patch block
-  拼接时共享的 seam 行/列；没有这条 seam，边界 weight-3/weight-4
-  stabilizer 就会错位。对 d=3 来说，`route_width=5`、`route_pitch=6`，
-  所以同方向 patch 的常用安全间距是 12、24、36、... 个整数坐标。
-- routed coupler 会先在这个 coarse grid 上做 Manhattan BFS，避开被 data
-  patch 占据的 coarse cells；然后把每个 route cell 展开成完整
-  `route_width × route_width` ancillary block，并在相邻 route cells
-  之间显式加入 seam 行/列。因此 selected interface 的 terminal region
-  和中间拐弯/走廊都是由标准 patch blocks 拼成的，不再是 thin skeleton
-  膨胀出来的非规整形状。两个水平相邻的 d=3 blocks 在偶数 data 行上会连成
-  6 个 data qubit，对应一个标准 `distance_z=6` 的 unrotated rectangular patch。
-- route cell 是几何 coarse block，不是独立重新初始化 checkerboard phase
-  的小 patch。full ancillary region 的 data/X-syndrome/Z-syndrome parity
-  必须在整个 merged lattice 上连续；如果每个 5×5 cell 内重新起相位，
-  图形上仍是方块，但边界 merge 的 Pauli product algebra 会断掉。
-- interface basis 可以由选中边自动推断，也可以显式传入。
-- routed Pauli-product helper 会比较 target Pauli 和 native interface
-  Pauli，只在不匹配的位置插入 logical H。
-- `mixed_stabilizers=True` 的 full-width routed coupler 是 notebook 当前的
-  paper-style long ancillary patch 路径：它在 bulk 中生成 X/Z checks，
-  在 X/Z sheet seam 上生成 mixed checks，拐角自然出现 low-weight boundary
-  stabilizer。
-- `solve_routed_pauli_product_long_ancilla` 会把 syndrome product 里剩下的
-  ancillary boundary support 压缩成一个 `AncillaLogicalTerm`。这表示
-  long ancilla patch 的已知 logical boundary factor，而不是独立的
-  ancillary data readout terms。
-- long-ancilla helper 现在使用 paper-style 几何 product：它选中整条
-  connected ancillary bus 上属于目标 product sheet 的 stabilizer，而不是
-  用最小权重线性代数解只在 data-patch 接口附近挑少数 stabilizer。notebook
-  里高亮的 X/Z plaquette 就是实际进入 syndrome product 的 stabilizer。
-- `mixed_stabilizers=False` 只适合纯 CSS / 同 basis 的 routed check；对
-  `ZZZX` 这种 mixed-interface bus 会在 seam/corner 处产生错误的纯 X/Z
-  stabilizer。
-- mixed-template 路径会用代数方式暂停与 routed check 反对易的原 patch
-  stabilizer，使测试过的 active stabilizer set 保持对易。
-- mixed-template 路径还会在 coupler 内部做本地 pruning：X/Z seam 上与 mixed
-  check 反对易的纯 coupler check 会被 mixed/twist template 替换；拐弯处若
-  naive CSS checkerboard 生成一对反对易的 pure X/Z corner checks，也会按
-  固定局部规则删去其中一个。这个 pruning 不引入高权重 closure。
-- `solve_routed_pauli_product_syndromes` 可以自动求解并验证目标 logical
-  product 的 outcome 分解。正常的 routed/mixed lattice surgery 应该在
-  `include_ancilla_readout_terms=False` 时成功；如果失败，则说明当前局部
-  stabilizer template 没有让 ancillary Pauli 在 product 中全部抵消。
-- 之前尝试过的 high-weight closure syndrome 已经移除。它只能把 residual
-  代数上补掉，不是合理的局部 lattice-surgery stabilizer 设计。
-- mixed-interface boundary 现在不会再把 data patch 自己的 boundary syndrome
-  任意重新涂色。只有当原生 boundary syndrome 类型是该 logical interface
-  的互补 stabilizer 类型时，才允许复用这个边界 syndrome；例如 Z interface
-  上复用 X boundary checks，X interface 上复用 Z boundary checks。对 d=3
-  的一条 selected edge，这样的 boundary checks 数量是 `d-1=2`，不是把整条
-  几何边界上所有 syndrome 都拿进来。
-- `routed_coupler_data_basis` 会根据 routed ancillary region 的局部
-  `route_coord_basis` 生成物理 basis map：
-  - `mode="opposite"` 用于初始化：`Z` route 区域准备在 `X`，`X` route
-    区域准备在 `Z`。
-  - `mode="same"` 用于读出：`Z` route 区域读 `Z`，`X` route 区域读 `X`。
-- `multi_patch_LS_straight_unrotated.ipynb`（原 `multi_patch_LS.ipynb`）的 `build_zz_circuit` 默认把非 coupler/data patch
-  qubit 初始化在 `Z` basis；只有 coupler ancillary data 会为 ZZ surgery
-  单独初始化在 `X` basis。full ancillary patch 可视化（原 `routed_ZZZX_LS.ipynb`
-  的角色，该 notebook 已随分支清理移除）也应沿用这个约定，而不是把普通 data patch
-  默认初始化成 `X`。
-- `solve_routed_pauli_product_syndromes` 仍把两类 ancillary diagnostic 项分开：
-  - `selected_ancilla_known_terms` 是由 chosen ancillary initialization
-    basis 提供的确定性 +1 本征值，不是 readout。
-  - `selected_ancilla_terms` 才是 residual ancillary data readout terms；
-    对目标 native full-width mixed measurement，应当为 0。
-- 真正对应“绿色点 stabilizer 乘积”的接口是
-  `solve_routed_pauli_product_merge_checks`。它现在使用 basis-aware no-trim
-  diagnostic：按几何选择完整 coupler stabilizer，但还要按 local route label
-  选择 product sheet。在 `Z`-labeled 区域只乘 `Z` checks，在 `X`-labeled
-  区域只乘 `X` checks，`MIXED` seam checks 保留；反过来的 interleaved
-  checks 不属于该 logical-product sheet，不能乘进去。只允许原始 data patch
-  stabilizer 作为 code-space equivalence 项。若 product 仍留下 ancillary/data
-  residual Pauli，就返回 `verified=False` 并列出 `residual_terms`。这避免把
-  本来没有自然抵消的 boundary Pauli 人为截断后误报成功，也避免把不属于当前
-  sheet 的 X/Z checks 误乘进去。
-- product 分解器仍可以传入 `ancilla_readout_bases` 做 residual diagnostic：
-  如果 syndrome-only 失败，它能告诉我们还剩哪些 ancillary Pauli 没有被
-  局部 checks 抵消。但这只是诊断，不是最终实现路径。
+- `UnrotatedRoutedMultiPatchCoupler` supports explicitly selecting each patch's
+  attachment edge and connects those edges under arbitrary layouts via Manhattan
+  routing.
+- The direct routed coupler defaults to a full ancillary-patch route with
+  `route_width = 2 * code_distance - 1`. For a d=3 unrotated patch this span is 5
+  integer lattice coordinates, not the logical distance 3 itself.
+- The full ancillary-patch route no longer allows data patches at arbitrary
+  physical coordinates. Every data/obstacle patch participating in routing must
+  sit on one coarse grid: each patch occupies exactly one
+  `route_width × route_width` coordinate block, but the origin pitch of adjacent
+  coarse cells is `route_pitch = route_width + 1 = 2d`, not `route_width`. The
+  extra integer coordinate is the seam row/column shared when two standard patch
+  blocks are stitched; without that seam the boundary weight-3/weight-4
+  stabilizers misalign. For d=3, `route_width=5`, `route_pitch=6`, so common safe
+  same-direction patch spacings are 12, 24, 36, ... integer coordinates.
+- The routed coupler first runs Manhattan BFS on this coarse grid, avoiding
+  coarse cells occupied by data patches; each route cell is then expanded into a
+  full `route_width × route_width` ancillary block, with seam rows/columns
+  explicitly inserted between adjacent route cells. The terminal regions of
+  selected interfaces and the intermediate bends/corridors are therefore
+  assembled from standard patch blocks — no longer irregular shapes inflated
+  from a thin skeleton. Two horizontally adjacent d=3 blocks connect into 6 data
+  qubits on even data rows, i.e. a standard `distance_z=6` unrotated rectangular
+  patch.
+- A route cell is a geometric coarse block, not a small patch that independently
+  re-initializes the checkerboard phase. The data/X-syndrome/Z-syndrome parity of
+  the full ancillary region must be continuous over the whole merged lattice; if
+  each 5×5 cell restarted its own phase, the picture would still look like
+  blocks, but the Pauli-product algebra of the boundary merge would break.
+- The interface basis can be inferred automatically from the selected edge or
+  passed explicitly.
+- The routed Pauli-product helper compares the target Pauli against the native
+  interface Pauli and inserts logical H only at mismatched positions.
+- The `mixed_stabilizers=True` full-width routed coupler is the notebook's
+  current paper-style long-ancillary-patch path: it generates X/Z checks in the
+  bulk, mixed checks on the X/Z sheet seam, and low-weight boundary stabilizers
+  appear naturally at corners.
+- `solve_routed_pauli_product_long_ancilla` compresses the leftover ancillary
+  boundary support of the syndrome product into a single `AncillaLogicalTerm`.
+  This represents the long ancilla patch's known logical boundary factor, not
+  independent ancillary data readout terms.
+- The long-ancilla helper now uses the paper-style geometric product: it selects
+  the stabilizers belonging to the target product sheet along the whole connected
+  ancillary bus, instead of using a minimum-weight linear-algebra solution that
+  picks a few stabilizers only near the data-patch interfaces. The X/Z
+  plaquettes highlighted in the notebook are exactly the stabilizers entering
+  the syndrome product.
+- `mixed_stabilizers=False` only suits pure-CSS / same-basis routed checks; for a
+  mixed-interface bus like `ZZZX` it produces incorrect pure X/Z stabilizers at
+  seams/corners.
+- The mixed-template path algebraically suspends original patch stabilizers that
+  anticommute with the routed checks, keeping the tested active stabilizer set
+  commuting.
+- The mixed-template path also prunes locally inside the coupler: pure coupler
+  checks on the X/Z seam that anticommute with a mixed check are replaced by the
+  mixed/twist template; where a naive CSS checkerboard generates a pair of
+  anticommuting pure X/Z corner checks at a bend, one of the pair is removed by a
+  fixed local rule. This pruning introduces no high-weight closure.
+- `solve_routed_pauli_product_syndromes` can automatically solve and verify the
+  outcome decomposition of the target logical product. Proper routed/mixed
+  lattice surgery should succeed with `include_ancilla_readout_terms=False`; a
+  failure means the current local stabilizer template does not cancel all
+  ancillary Paulis in the product.
+- The previously attempted high-weight closure syndrome has been removed. It can
+  only patch the residual algebraically and is not a sound local
+  lattice-surgery stabilizer design.
+- The mixed-interface boundary no longer arbitrarily recolors the data patch's
+  own boundary syndromes. A boundary syndrome may be reused only when its native
+  type is the complementary stabilizer type of that logical interface — e.g.
+  reuse X boundary checks on a Z interface and Z boundary checks on an X
+  interface. For one selected edge at d=3 that is `d-1 = 2` boundary checks, not
+  every syndrome along the whole geometric boundary.
+- `routed_coupler_data_basis` generates the physical basis map from the routed
+  ancillary region's local `route_coord_basis`:
+  - `mode="opposite"` for initialization: `Z` route regions prepare in `X`, `X`
+    route regions prepare in `Z`.
+  - `mode="same"` for readout: `Z` route regions read `Z`, `X` route regions
+    read `X`.
+- `build_zz_circuit` in `multi_patch_LS_straight_unrotated.ipynb` (formerly
+  `multi_patch_LS.ipynb`) initializes non-coupler/data-patch qubits in the `Z`
+  basis by default; only coupler ancillary data is separately initialized in `X`
+  for ZZ surgery. Any full-ancillary-patch visualization (the role formerly
+  played by `routed_ZZZX_LS.ipynb`, removed in the branch cleanup) should follow
+  the same convention rather than defaulting ordinary data patches to `X`.
+- `solve_routed_pauli_product_syndromes` still separates the two kinds of
+  ancillary diagnostic terms:
+  - `selected_ancilla_known_terms` are deterministic +1 eigenvalues supplied by
+    the chosen ancillary initialization basis — not readouts.
+  - `selected_ancilla_terms` are the residual ancillary data readout terms; for
+    the target native full-width mixed measurement they should be 0.
+- The interface that truly corresponds to the "green-dot stabilizer product" is
+  `solve_routed_pauli_product_merge_checks`. It now uses a basis-aware no-trim
+  diagnostic: it selects complete coupler stabilizers geometrically, but also
+  filters to the product sheet by the local route label. In `Z`-labeled regions
+  only `Z` checks are multiplied, in `X`-labeled regions only `X` checks, and
+  `MIXED` seam checks are kept; the opposite interleaved checks do not belong to
+  that logical-product sheet and must not be multiplied in. Only original
+  data-patch stabilizers are allowed as code-space equivalence terms. If the
+  product still leaves an ancillary/data residual Pauli, it returns
+  `verified=False` and lists the `residual_terms`. This avoids reporting success
+  after artificially truncating boundary Paulis that never canceled naturally,
+  and avoids multiplying in X/Z checks from the wrong sheet.
+- The product decomposer still accepts `ancilla_readout_bases` for residual
+  diagnostics: when syndrome-only fails, it reports which ancillary Paulis were
+  not canceled by local checks. This is diagnostic only, not the final
+  implementation path.
 
-已经验证：
+Verified:
 
-- paper-style long ancillary patch 的 `ZZZX` product algebra 已经通过：
-  d=3 示例中，mixed-domain-wall bent ancilla 的 syndrome product 加 1 个
-  `AncillaLogicalTerm` 后验证为目标 `ZZZX`。这个 logical factor 是 long
-  ancilla 的已知边界逻辑量，不是一组独立 ancillary data readout。
-- Z-normalized 的 `ZZZX` final-readout 路径已经通过 detector error model
-  验证。在这个模式下，helper 等价于测 routed `ZZZZ`，并且只在目标为
-  `X` 的 patch 上做 H。这个 legacy validated helper 当前显式使用
-  `route_width=1`，以保持 tracker/DEM 验证闭合。
-- mixed-template scaffold 已经测试了 mixed check 的生成、非 weight-4
-  check 的存在，以及 active stabilizer set 的两两对易。
-- mixed-check extraction 现在按 compatible stabilizer batch 执行；每个
-  mixed syndrome 使用 X-basis ancilla，`Z` 项用 `CZ(data, syndrome)`，
-  `X` 项用 `CNOT(syndrome, data)`，并对 batch 内 entangling edges 做
-  layer coloring，避免 `detslice-with-ops-svg` 退化成一长串单 check 的细线图。
-- native `X1Z2` 的 product algebra 已经测试通过：coupler checks 加 active
-  patch stabilizer correction 后，求解器可以 syndrome-only 验证最终乘积等于
-  `X1Z2`。
-- 四 patch native-interface `ZZZX` mixed full ancillary patch 之前的
-  “20 个 measured local merge checks 验证通过”结论是错误的：那条路径把
-  一些 ancillary boundary Pauli 从 local check 中 trim 掉了。后来“全选所有
-  coupler checks”的 strict diagnostic 也不正确，因为它会把 Z-side 上的
-  interleaved X checks、X-side 上的 interleaved Z checks 一起乘进去。当前
-  paper-style long-ancilla path 会先过滤到正确 product sheet，并用原始
-  patch stabilizer 扣除 code-space equivalence；在 d=3 示例中剩下的是
-  long ancillary patch 的一个已知 logical boundary factor，而不是额外 data
-  readout。
+- The `ZZZX` product algebra of the paper-style long ancillary patch passes: in
+  the d=3 example, the mixed-domain-wall bent ancilla's syndrome product plus one
+  `AncillaLogicalTerm` verifies as the target `ZZZX`. The logical factor is the
+  long ancilla's known boundary logical, not a set of independent ancillary data
+  readouts.
+- The Z-normalized `ZZZX` final-readout path passes detector-error-model
+  verification. In that mode the helper is equivalent to measuring routed
+  `ZZZZ`, with H applied only on the `X`-target patch. This legacy validated
+  helper currently uses `route_width=1` explicitly, to keep the tracker/DEM
+  verification closed.
+- The mixed-template scaffold has tests for mixed-check generation, the presence
+  of non-weight-4 checks, and pairwise commutation of the active stabilizer set.
+- Mixed-check extraction now runs in compatible stabilizer batches; each mixed
+  syndrome uses an X-basis ancilla, `Z` terms via `CZ(data, syndrome)`, `X`
+  terms via `CNOT(syndrome, data)`, with layer coloring of entangling edges
+  inside a batch so `detslice-with-ops-svg` does not degenerate into a long
+  string of single-check thin-line diagrams.
+- The native `X1Z2` product algebra passes: with coupler checks plus active
+  patch-stabilizer corrections, the solver verifies syndrome-only that the final
+  product equals `X1Z2`.
+- The earlier conclusion that the four-patch native-interface `ZZZX` mixed full
+  ancillary patch "verified with 20 measured local merge checks" was wrong: that
+  path trimmed some ancillary boundary Paulis out of the local checks. The later
+  "select all coupler checks" strict diagnostic was also incorrect, because it
+  multiplied in interleaved X checks on the Z side and interleaved Z checks on
+  the X side. The current paper-style long-ancilla path first filters to the
+  correct product sheet and subtracts code-space equivalences with original
+  patch stabilizers; in the d=3 example what remains is one known logical
+  boundary factor of the long ancillary patch, not extra data readouts.
 
-尚未宣称完全完成：
+Not yet claimed complete:
 
-- patch-span 的 routed ancillary region 已经用于 direct mixed coupler
-  geometry；但 patch-span native mixed tracker/observable 与 detector error
-  model schedule 还没有完成闭合验证，所以 notebook 里不再宣称 full mixed
-  `detslice-with-ops-svg` 是最终 DEM 图。
-- 当前 unrotated SE block 中的 mixed-check extraction 已经不是单 check
-  串行；它会 batch compatible mixed checks 并 layer CNOT edges。不过这仍
-  不是最终宣称 fault-tolerant 的 mixed-boundary lattice-surgery schedule。
-- 当前已经验证的是这些具体 routed mixed 几何和 unrotated d=3 示例；更复杂
-  的多分支、不同距离、不同 route order 仍应逐个用 product decomposition、
-  tracker observable 和 detector error model 验证。
+- The patch-span routed ancillary region is used for direct mixed coupler
+  geometry, but patch-span native mixed tracker/observable and the
+  detector-error-model schedule have not been verified end to end, so the
+  notebook no longer claims the full mixed `detslice-with-ops-svg` as a final
+  DEM diagram.
+- Mixed-check extraction in the current unrotated SE block is no longer
+  single-check serial; it batches compatible mixed checks and layers CNOT edges.
+  It is still not a schedule claimed fault-tolerant for mixed-boundary lattice
+  surgery.
+- What has been verified are these specific routed mixed geometries and the
+  unrotated d=3 examples; more complex multi-branch layouts, other distances,
+  and other route orders should each be verified with the product decomposition,
+  tracker observable, and detector error model.
