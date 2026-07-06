@@ -35,16 +35,21 @@ notebooks/
 | `ghz_state_prep.ipynb` | `protocols/ghz.py` | Multi-patch GHZ state preparation |
 | `ls_distillation.ipynb` | `protocols/ls_distillation.py` | Steane 7-to-1 \|Y⟩ distillation (LS variant) |
 | `tg_distillation.ipynb` | `protocols/tg_distillation.py` | 7-to-1 \|Y⟩ distillation (TG/PQRM hypercube variant) |
+| `s_gate_teleport.ipynb` | `protocols/gate_teleport.py` | S-gate teleportation via \|Y⟩ ancilla |
 
 ### LogicalOps/
 
 | Notebook | Protocol | Description |
 |---|---|---|
-| `logical_CNOT_LS.ipynb` | `protocols/cnot_ls.py` | Logical CNOT via lattice surgery (ZZ + XX) |
-| `logical_CNOT_trans.ipynb` | `protocols/cnot_trans.py` | Transversal CNOT between two surface-code patches |
-| `logical_H_S.ipynb` | `protocols/fold_transversal.py` | Fold-transversal H and S gates |
+| `logical_CNOT_LS_unrotated.ipynb` | `protocols/cnot_ls.py` | Logical CNOT via lattice surgery (ZZ + XX), unrotated SC |
+| `logical_CNOT_LS_rotated.ipynb` | `protocols/cnot_ls.py` | Logical CNOT via lattice surgery (ZZ + XX), rotated SC |
+| `logical_CNOT_trans_unrotated.ipynb` | `protocols/cnot_trans.py` | Transversal CNOT between two patches, unrotated SC |
+| `logical_CNOT_trans_rotated.ipynb` | `protocols/cnot_trans.py` | Transversal CNOT between two patches, rotated SC |
+| `logical_H_S_unrotated.ipynb` | `protocols/fold_transversal.py` | Fold-transversal H and S gates, unrotated SC |
+| `logical_H_rotated.ipynb` | `protocols/fold_transversal.py` | Fold-transversal H gate, rotated SC |
 | `state_injection.ipynb` | `protocols/state_injection.py` | Non-FT magic-state injection (rotated SC) |
-| `two_patch_LS.ipynb` | `protocols/two_patch_ls.py` | Two-patch ZZ lattice surgery coupler |
+| `two_patch_LS_unrotated.ipynb` | `protocols/two_patch_ls.py` | Two-patch ZZ lattice surgery coupler, unrotated SC |
+| `two_patch_LS_rotated.ipynb` | `protocols/two_patch_ls.py` | Two-patch ZZ lattice surgery coupler, rotated SC |
 | `multi_patch_LS_straight_unrotated.ipynb` | *(in-progress)* | Multi-patch lattice surgery; unrotated SC N-patch coupler |
 | `multi_patch_LS_bent_rotated.ipynb` | `rotated/subset_report.py` | Subset joint measurement, obstacle-aware auto-routing (rotated SC) |
 
@@ -62,6 +67,8 @@ They compare LER vs PER and show distance scaling for each code family.
 | `memory_PQRM.ipynb` | PQRM codes (1,2,4), (1,3,5), (1,4,6) |
 | `memory_repetition.ipynb` | Repetition code (sanity check) |
 | `memory_4D_hadamard.ipynb` | 4D geometric code (Hadamard-encoded) |
+| `unrotated_effective_distance_convergence_X_basis.ipynb` | Unrotated SC — effective-distance convergence, X basis (1e8-shot results) |
+| `unrotated_effective_distance_convergence_Z_basis.ipynb` | Unrotated SC — effective-distance convergence, Z basis (1e8-shot results) |
 
 ### System/
 

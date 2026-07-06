@@ -164,8 +164,9 @@ long ancilla 首选普通 CSS patch stabilizer。
   - `mode="same"` 用于读出：`Z` route 区域读 `Z`，`X` route 区域读 `X`。
 - `multi_patch_LS_straight_unrotated.ipynb`（原 `multi_patch_LS.ipynb`）的 `build_zz_circuit` 默认把非 coupler/data patch
   qubit 初始化在 `Z` basis；只有 coupler ancillary data 会为 ZZ surgery
-  单独初始化在 `X` basis。`routed_ZZZX_LS.ipynb` 的 full ancillary patch
-  可视化也应沿用这个约定，而不是把普通 data patch 默认初始化成 `X`。
+  单独初始化在 `X` basis。full ancillary patch 可视化（原 `routed_ZZZX_LS.ipynb`
+  的角色，该 notebook 已随分支清理移除）也应沿用这个约定，而不是把普通 data patch
+  默认初始化成 `X`。
 - `solve_routed_pauli_product_syndromes` 仍把两类 ancillary diagnostic 项分开：
   - `selected_ancilla_known_terms` 是由 chosen ancillary initialization
     basis 提供的确定性 +1 本征值，不是 readout。
