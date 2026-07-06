@@ -124,7 +124,7 @@ class QECSimulator:
                     target=_gpu_decode_worker_process,
                     args=(
                         dem_str,
-                        decoder.params, # decoder parameter dict
+                        decoder.params, # 传入参数字典
                         max_shots,
                         max_errors,
                         gpu_id,
