@@ -358,8 +358,15 @@ class SubsetRoute:
 
 
 def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, max_cut=4,
-                    keepout=1, seed=0, max_trials=5000):
+                    keepout=1, seed=0, max_trials=5000, route=None):
     """Fully-automatic route **and** build: no hand-written corridor needed.
+
+    ``route`` (optional): an **explicit corridor** — a list of coarse cells ``[(a, b), …]``.
+    When given, NO automatic routing happens: the joint code is built on exactly these
+    cells by the deterministic rule constructor and gated by the full oracle.  The cells
+    must not overlap any patch; the obstacle **keep-out margin is NOT enforced** for an
+    explicit route (you are overriding the router), so check ``collision_report`` if
+    obstacles sit next to your corridor.  Omit ``route`` (default) for auto-routing.
 
     Propose-and-verify with retry: (1) candidate arms leave the X-anchor from **any** face (not just
     its X-faces), so clean below-/side-attach corridors are found; (2) arm-product unions are
@@ -392,11 +399,37 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
             return SubsetRoute(status="target_obstacle_conflict", root=tnames[0],
                                message=(f"target {tn} is within keepout={keepout} of obstacle(s) "
                                         f"{bad}: their boundary ancillas would collide."), **base0)
+    root0 = next((nm for nm, P in target if P == "X"), tnames[0])
+
+    if route is not None:                  # explicit corridor: build on EXACTLY these cells
+        tree = {tuple(c) for c in route}
+        occupied_cells = set(patch_at.values())
+        bad = sorted(tree & occupied_cells)
+        if bad:
+            raise ValueError(f"explicit route cells {bad} overlap patch cells; the corridor "
+                             f"may only use empty coarse cells")
+        data, retype = path_to_corridor(tree, placed_all, target, d)
+        layout = _assemble_region(placed_all, target, orient, data, retype, d, seed,
+                                  max_trials, max_cut=max_cut)
+        if layout is not None and all(layout.verify().values()):
+            cutq = tuple(sorted(set(data) - set(layout.data)))
+            how = "corner-cut" if cutq else "standard"
+            return SubsetRoute(status="ok",
+                               message=f"verified subset joint ({how}, rule-based, "
+                                       f"EXPLICIT route)",
+                               layout=layout, root=root0, tree=tree, attempted=tree,
+                               data=sorted(layout.data), tried=1, how=how, cut=cutq,
+                               **base0)
+        return SubsetRoute(status="no_verified_route", root=root0, tried=1, attempted=tree,
+                           message=("the EXPLICIT route does not pass the rule-based "
+                                    "construction; the physics layer cannot host this "
+                                    "corridor"), **base0)
+
     G, corridor, placed, occupied, obstacle_fp, onames = _corridor_graph(patch_at, target, d, pad,
                                                                          keepout=keepout)
     base = dict(placed=placed, target=list(target), obstacles=onames, obstacle_fp=obstacle_fp,
                 corridor=corridor)
-    root = next((nm for nm, P in target if P == "X"), tnames[0])
+    root = root0
     zs = [nm for nm in tnames if nm != root]
 
     cand = {}

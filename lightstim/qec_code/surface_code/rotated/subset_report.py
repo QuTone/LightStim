@@ -122,7 +122,7 @@ def _default_title(target):
     return "Subset joint  M(" + " ".join(term(nm, P) for nm, P in target) + ")"
 
 
-def report_subset_joint(patches, target, title=None, *,
+def report_subset_joint(patches, target, title=None, *, route=None,
                         show_path=True, show_acceptance=True,
                         show_layout=True, show_detslice=True, rounds=2):
     """Route, build and verify a subset joint ``M(∏ᵢ P̄ᵢ)``, showing up to FOUR report artefacts.
@@ -146,7 +146,7 @@ def report_subset_joint(patches, target, title=None, *,
     if title is None:
         title = _default_title(target)
     tnames = {nm for nm, _ in target}
-    r = route_and_build(patches, target)                            # AUTO route + build + verify
+    r = route_and_build(patches, target, route=route)   # auto route, or EXPLICIT when route given
     if not r.ok:
         raise RuntimeError(f"route_and_build failed: {r.status} — {r.message}")
     route, lay = sorted(r.tree), r.layout
