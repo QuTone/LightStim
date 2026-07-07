@@ -31,7 +31,7 @@ import networkx as nx
 
 from .bent_layout import _bent_plaquettes, _symplectic, PatchSpec
 from .multi_patch import (
-    _patch_rep, _logical_direction, _select_joint_checks, _readout_chain,
+    _patch_rep, _logical_direction, _readout_chain,
     MultiPatchLayout, _connected, _collapse_check, _int_symplectic, _IntBasis, _icommute,
 )
 
@@ -296,7 +296,7 @@ def path_to_corridor(tree_cells, placed, target, d):
 # physics-layer reuse: a routed (data, retype) region -> a verified MultiPatchLayout
 # -----------------------------------------------------------------------------
 
-def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials=5000):
+def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials=5000, max_cut=4):
     """Hand a routed region to the **deterministic rule-based** physics layer.
 
     The stabilizers are constructed by :func:`.deterministic_checks.rule_based_joint_checks`
@@ -311,7 +311,7 @@ def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials
     data = sorted(data)
     if not _connected(set(data)):
         return None
-    rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d)
+    rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d, max_cut=max_cut)
     if rb["checks"] is None:
         return None
     log_pairs = [(P, sup) for _, P, sup in rb["logicals"]]
@@ -357,39 +357,7 @@ class SubsetRoute:
         return self.status == "ok"
 
 
-def _corner_cut_region(placed, target, orient, tree, d, max_cut=2, seed=0, max_trials=5000):
-    """Try to host a corridor ``tree`` by **cutting** convex-corner bus qubits.
-
-    A convex 90° corner of the routed region hosts a weight-4 plaquette that isn't wrapped by two
-    weight-2 boundary stabilizers; the fix (per the user's construction) is to **remove** that corner
-    data qubit so the plaquette becomes a genuine weight-3 boundary check (a real surface-code corner
-    has its 4th site *outside* the code).  Only convex corners (``≤2`` orthogonal in-region neighbours)
-    that are not part of a target patch are candidates.  Searches ``0..max_cut`` simultaneous cuts
-    (``0`` == the plain standard construction) and returns the first ``(layout, cut_qubits)`` whose
-    :meth:`MultiPatchLayout.verify` fully passes, else ``(None, None)``.  Fully CSS — no twist.
-    """
-    data, _ = path_to_corridor(tree, placed, target, d)
-    data = sorted(data)
-    ds = set(data)
-    tc = {nm: placed[nm] for nm, _ in target}
-    patchq = set().union(*tc.values())
-    zc = set().union(*[tc[nm] for nm, P in target if P == "Z"]) \
-        if any(P == "Z" for _, P in target) else set()
-    orth = lambda q: sum(((q[0] + dx, q[1] + dy) in ds) for dx, dy in [(2, 0), (-2, 0), (0, 2), (0, -2)])
-    corners = [q for q in data if orth(q) <= 2 and q not in patchq]
-    for r in range(0, max_cut + 1):
-        for cutq in itertools.combinations(corners, r):
-            nd = sorted(ds - set(cutq))
-            if not all(tc[nm] <= set(nd) for nm, _ in target):
-                continue
-            retype = [q for q in nd if q not in zc]
-            lay = _assemble_region(placed, target, orient, nd, retype, d, seed, max_trials)
-            if lay is not None and all(lay.verify().values()):
-                return lay, cutq
-    return None, None
-
-
-def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, max_cut=2,
+def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, max_cut=4,
                     keepout=1, seed=0, max_trials=5000):
     """Fully-automatic route **and** build: no hand-written corridor needed.
 
@@ -398,11 +366,14 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
     augmented with greedy **Steiner** candidates (:func:`_steiner_trees`) whose arms share a common
     trunk; (3) a candidate whose corridor is **disconnected** (its arms meet only through a target
     patch — two separate buses) is illegal and never tried; if *every* candidate is disconnected the
-    result is an honest ``no_path``; (4) each surviving candidate is verified **standard first, then
-    with the convex-corner cut** (:func:`_corner_cut_region`) as a fallback.  Candidates are tried
+    result is an honest ``no_path``; (4) each surviving candidate is built by the **deterministic
+    rule constructor** (:mod:`.deterministic_checks` — cut-free first, then rule-driven convex-corner
+    cuts up to ``max_cut``) and gated by the full oracle.  Candidates are tried
     **fewest-corridor-cells first**, so the smallest *valid* bus wins — a shared straight trunk is
-    preferred over fat multi-arm unions.  This is the routine the demo notebook calls instead of
-    pasting cells.
+    preferred over fat multi-arm unions.  ``per_z`` / ``max_std`` / ``keepout`` shape the candidate
+    pool; ``cut_budget`` / ``seed`` / ``max_trials`` are accepted for backward compatibility and
+    ignored (there is no randomized search any more).  This is the routine the demo notebook calls
+    instead of pasting cells.
 
     Returns a :class:`SubsetRoute` with ``status == "ok"`` and ``.layout`` / ``.tree`` (route cells) /
     ``.how`` (``"standard"`` | ``"corner-cut"``) / ``.cut`` set, or a failure ``SubsetRoute`` with
@@ -464,7 +435,8 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
     for tree in trees:
         tried += 1
         data, retype = path_to_corridor(tree, placed, target, d)
-        layout = _assemble_region(placed, target, orient, data, retype, d, seed, max_trials)
+        layout = _assemble_region(placed, target, orient, data, retype, d, seed, max_trials,
+                                  max_cut=max_cut)
         if layout is not None and all(layout.verify().values()):
             cutq = tuple(sorted(set(data) - set(layout.data)))
             how = "corner-cut" if cutq else "standard"
@@ -544,14 +516,15 @@ def complete_code(patches, target, tree_cells, phase=None):
 
     # the code to PRESENT: the joint-MEASURING code (with a readout chain) when measurable, else a
     # maximal complete commuting memory code (so a failing region still shows a full, valid patch).
+    # The measuring code comes from the deterministic rule constructor (cut-free, on the region
+    # exactly as given) — no randomized search anywhere.
     present, chain = None, set()
     if joint_in_span:
-        jchecks = _select_joint_checks(data, plaqs, [reps[nm] for nm, _ in target])
-        if jchecks:
-            for c in jchecks:
-                c["corners"] = sorted(c["pauli"])
-            present = jchecks
-            chain = _readout_chain(data, jchecks, [reps[nm] for nm, _ in target])
+        from .deterministic_checks import rule_based_joint_checks
+        rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d, max_cut=0)
+        if rb["checks"] is not None:
+            present = rb["checks"]
+            chain = _readout_chain(data, present, [reps[nm] for nm, _ in target])
     if present is None:                                    # greedy maximal commuting complete code
         # CRUCIAL: only keep stabilizers that COMMUTE with the target logicals X̄ᵢ, so the reps stay
         # *valid* logicals of the drawn code (a stabilizer that anti-commutes with X̄₁ would make X̄₁
