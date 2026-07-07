@@ -859,26 +859,27 @@ def build_rotated_multi_patch_joint_layout(patches, target=None, routing="auto",
         except BentLayoutError as e:
             last = e
             continue
+        from .deterministic_checks import rule_based_joint_checks
         sv, n = _symplectic(data)
         orient_fail = None
         any_reps = False
-        for phase in (0, 1):                            # pick the parity that admits valid logical reps
-            plaqs = _bent_plaquettes(data, retype, phase)
-            F = [sv(p["pauli"]) for p in plaqs if len(p["pauli"]) >= 4]
-            reps = {}
-            for nm, P in target:
-                direction = _logical_direction(P, orient[nm])   # honour the declared orientation
-                sup = _patch_rep(placed[nm], P, direction, F, sv, n)
-                if sup is None:
-                    orient_fail = (nm, P, direction, orient[nm])
-                    break
-                reps[nm] = (P, sup)
-            if len(reps) != len(target):
-                continue
-            any_reps = True
-            log_pairs = [reps[nm] for nm, _ in target]
-            checks = _select_joint_checks(data, plaqs, log_pairs, seed=seed, max_trials=max_trials)
-            if checks is None:                          # diagnose WHY (selection is the gate)
+        rb = rule_based_joint_checks(placed, target, orient, sorted(data), set(retype), d)
+        if rb["checks"] is None:                        # diagnose WHY (the rules are the gate)
+            for phase in (0, 1):
+                plaqs = _bent_plaquettes(data, retype, phase)
+                F = [sv(p["pauli"]) for p in plaqs if len(p["pauli"]) >= 4]
+                reps = {}
+                for nm, P in target:
+                    direction = _logical_direction(P, orient[nm])
+                    sup = _patch_rep(placed[nm], P, direction, F, sv, n)
+                    if sup is None:
+                        orient_fail = (nm, P, direction, orient[nm])
+                        break
+                    reps[nm] = (P, sup)
+                if len(reps) != len(target):
+                    continue
+                any_reps = True
+                log_pairs = [reps[nm] for nm, _ in target]
                 collapsed, joint_ok = _collapse_check(data, plaqs, log_pairs, target)
                 if collapsed:
                     last = BentLayoutError(
@@ -894,13 +895,15 @@ def build_rotated_multi_patch_joint_layout(patches, target=None, routing="auto",
                         "patches are not all tied into one routed region).")
                 else:
                     last = BentLayoutError(
-                        "no boundary selection measured the full joint with every proper sub-product "
-                        "excluded (a commutation / independence obstruction at the boundary).")
-                continue
-            for c in checks:
-                c["corners"] = sorted(c["pauli"])
-            logicals = [(nm, reps[nm][0], reps[nm][1]) for nm, _ in target]
-            x_obs = next((sup for nm, P, sup in logicals if P == "X"), logicals[0][2])  # pure-Z: track a Z̄
+                        f"the deterministic construction rules cannot host this placement: "
+                        f"{rb['reason']}")
+                break
+        if rb["checks"] is not None:
+            checks = rb["checks"]
+            data = rb["data"]
+            logicals = rb["logicals"]
+            x_obs = rb["x_observable"]
+            log_pairs = [(P, sup) for _, P, sup in logicals]
             readout = _readout_chain(data, checks, log_pairs)
             return MultiPatchLayout(distance=d, data=data, checks=checks, logicals=logicals,
                                     x_observable=x_obs, readout_chain=readout,

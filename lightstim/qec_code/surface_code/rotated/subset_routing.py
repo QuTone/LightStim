@@ -207,6 +207,72 @@ def _candidate_arms(G, patch_at, corridor, root, root_faces, z, per_z):
     return keep
 
 
+def _cells_connected(cells):
+    """True iff the coarse cells form ONE 4-neighbour connected component (empty = connected).
+
+    A union of arms that meets only *through* a target patch is **not** connected: the ancilla
+    bus must be a single contiguous region on its own, so such a corridor is an illegal route
+    (it would be two separate buses), not a candidate for the physics layer.
+    """
+    cells = set(map(tuple, cells))
+    if not cells:
+        return True
+    start = next(iter(cells))
+    seen, stack = {start}, [start]
+    while stack:
+        a, b = stack.pop()
+        for n in ((a + 1, b), (a - 1, b), (a, b + 1), (a, b - 1)):
+            if n in cells and n not in seen:
+                seen.add(n)
+                stack.append(n)
+    return len(seen) == len(cells)
+
+
+def _steiner_trees(G, patch_at, corridor, root, zs):
+    """Approximately-minimal **connected** corridors touching a face of the root and of every
+    ``z`` — the "fewest corridor cells" candidates the per-arm product enumeration misses.
+
+    Greedy Steiner approximation: seed with the shortest root-face → first-target path, then
+    attach each next target via its shortest path from the *current tree* (multi-source
+    Dijkstra), so arms share cells instead of duplicating them.  Several target orders are
+    tried (near-first, far-first, given); connected-by-construction, smallest first.
+    """
+    if not zs:
+        return []
+    root_faces = [c for c in _faces_in(patch_at, corridor, root, NEIGH) if c in G]
+    zfaces = {z: [c for c in _faces_in(patch_at, corridor, z, NEIGH) if c in G] for z in zs}
+    if not root_faces or any(not v for v in zfaces.values()):
+        return []
+    rc = patch_at[root]
+    orders = [sorted(zs, key=lambda z: _cheb(patch_at[z], rc)),
+              sorted(zs, key=lambda z: -_cheb(patch_at[z], rc)),
+              list(zs)]
+    trees, seen = [], set()
+    for order in orders:
+        tree = set()
+        ok = True
+        for z in order:
+            sources = tree if tree else set(root_faces)
+            try:
+                lengths, paths = nx.multi_source_dijkstra(G, sources)
+            except ValueError:
+                ok = False
+                break
+            ends = [f for f in zfaces[z] if f in lengths]
+            if not ends:
+                ok = False
+                break
+            end = min(ends, key=lambda f: lengths[f])
+            tree |= set(paths[end])
+        if ok and tree:
+            key = frozenset(tree)
+            if key not in seen:
+                seen.add(key)
+                trees.append(tree)
+    trees.sort(key=len)
+    return trees
+
+
 def path_to_corridor(tree_cells, placed, target, d):
     """Convert a set of corridor **cells** into the joint code's ``(data, retype)``.
 
@@ -231,42 +297,28 @@ def path_to_corridor(tree_cells, placed, target, d):
 # -----------------------------------------------------------------------------
 
 def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials=5000):
-    """Hand a routed region to the existing physics layer.
+    """Hand a routed region to the **deterministic rule-based** physics layer.
 
-    Mirrors :func:`.build_rotated_multi_patch_joint_layout`'s parity-phase loop exactly — only the
-    geometry that feeds it (``data``/``retype``) comes from the subset router.  Returns a
-    :class:`.MultiPatchLayout` (checks selected + logical reps found), or ``None`` if the physics
-    layer cannot host this geometry (no valid logical rep, or no boundary selection measures the
-    joint).  The oracle decision itself is ``MultiPatchLayout.verify()``.
+    The stabilizers are constructed by :func:`.deterministic_checks.rule_based_joint_checks`
+    (the documented Handbook §10.4 / Fig 33-34 rules: forced bulk, alternating-spacing
+    boundary, concave/convex corner rules with rule-driven corner cuts) — no randomized
+    search.  ``seed`` / ``max_trials`` are accepted for backward compatibility and ignored.
+    Returns a :class:`.MultiPatchLayout` (whose ``data`` may be smaller than the input when
+    the convex-corner rule cut bus-corner qubits), or ``None`` if the rules cannot host this
+    geometry.  The oracle decision itself is ``MultiPatchLayout.verify()``.
     """
+    from .deterministic_checks import rule_based_joint_checks
     data = sorted(data)
     if not _connected(set(data)):
         return None
-    sv, n = _symplectic(data)
-    for phase in (0, 1):
-        plaqs = _bent_plaquettes(data, retype, phase)
-        F = [sv(p["pauli"]) for p in plaqs if len(p["pauli"]) >= 4]
-        reps, ok = {}, True
-        for nm, P in target:
-            sup = _patch_rep(placed[nm], P, _logical_direction(P, orient[nm]), F, sv, n)
-            if sup is None:
-                ok = False
-                break
-            reps[nm] = (P, sup)
-        if not ok:
-            continue
-        log_pairs = [reps[nm] for nm, _ in target]
-        checks = _select_joint_checks(data, plaqs, log_pairs, seed=seed, max_trials=max_trials)
-        if checks is None:
-            continue
-        for c in checks:
-            c["corners"] = sorted(c["pauli"])
-        logicals = [(nm, reps[nm][0], reps[nm][1]) for nm, _ in target]
-        x_obs = next((s for nm, P, s in logicals if P == "X"), logicals[0][2])
-        return MultiPatchLayout(distance=d, data=data, checks=checks, logicals=logicals,
-                                x_observable=x_obs, readout_chain=_readout_chain(data, checks, log_pairs),
-                                target=list(target))
-    return None
+    rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d)
+    if rb["checks"] is None:
+        return None
+    log_pairs = [(P, sup) for _, P, sup in rb["logicals"]]
+    return MultiPatchLayout(distance=d, data=rb["data"], checks=rb["checks"],
+                            logicals=rb["logicals"], x_observable=rb["x_observable"],
+                            readout_chain=_readout_chain(rb["data"], rb["checks"], log_pairs),
+                            target=list(target))
 
 
 # -----------------------------------------------------------------------------
@@ -282,7 +334,7 @@ class SubsetRoute:
     ``status == "no_path"``) so a caller can *draw the route that was found* and label it correctly
     (a rejected corridor is **not** "no route").
     """
-    status: str                                       # "ok" | "no_path" | "no_verified_route"
+    status: str    # "ok" | "no_path" (unreachable OR only disconnected corridors) | "no_verified_route"
     message: str = ""
     layout: object = None                             # MultiPatchLayout when status == "ok"
     root: str = None
@@ -342,11 +394,15 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
     """Fully-automatic route **and** build: no hand-written corridor needed.
 
     Propose-and-verify with retry: (1) candidate arms leave the X-anchor from **any** face (not just
-    its X-faces), so clean below-/side-attach corridors are found; (2) each candidate is verified
-    **standard first, then with the convex-corner cut** (:func:`_corner_cut_region`) as a fallback.
-    Candidates are tried shortest-first, so the simplest *valid* corridor wins — a straight/clean
-    standard route is preferred over a bent corner-cut one.  This is the routine the demo notebook
-    calls instead of pasting cells.
+    its X-faces), so clean below-/side-attach corridors are found; (2) arm-product unions are
+    augmented with greedy **Steiner** candidates (:func:`_steiner_trees`) whose arms share a common
+    trunk; (3) a candidate whose corridor is **disconnected** (its arms meet only through a target
+    patch — two separate buses) is illegal and never tried; if *every* candidate is disconnected the
+    result is an honest ``no_path``; (4) each surviving candidate is verified **standard first, then
+    with the convex-corner cut** (:func:`_corner_cut_region`) as a fallback.  Candidates are tried
+    **fewest-corridor-cells first**, so the smallest *valid* bus wins — a shared straight trunk is
+    preferred over fat multi-arm unions.  This is the routine the demo notebook calls instead of
+    pasting cells.
 
     Returns a :class:`SubsetRoute` with ``status == "ok"`` and ``.layout`` / ``.tree`` (route cells) /
     ``.how`` (``"standard"`` | ``"corner-cut"``) / ``.cut`` set, or a failure ``SubsetRoute`` with
@@ -381,34 +437,45 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                                **base)
         cand[z] = arms
     combos = list(itertools.product(*[cand[z] for z in zs])) if zs else [()]
-    combos.sort(key=lambda c: sum(len(p) for p in c))
-    combos = combos[:max_std]
-    trees = [set().union(*[set(p) for p in c]) if c else set() for c in combos]
+    raw = [set().union(*[set(p) for p in c]) if c else set() for c in combos]
+    raw += _steiner_trees(G, patch_at, corridor, root, zs)   # shared-trunk / fewest-cell candidates
+    uniq, trees, dropped = set(), [], 0
+    for t in raw:
+        key = frozenset(t)
+        if key in uniq:
+            continue
+        uniq.add(key)
+        if zs and not _cells_connected(t):     # a corridor split by a target patch is illegal
+            dropped += 1
+            continue
+        trees.append(t)
+    if zs and not trees:
+        return SubsetRoute(status="no_path", root=root,
+                           message=(f"every candidate corridor is disconnected (the {dropped} "
+                                    f"arm-unions meet only through a target patch); no single "
+                                    f"connected ancilla bus exists for this placement"), **base)
+    trees.sort(key=len)                        # fewest corridor cells first, not sum of arm lengths
+    trees = trees[:max_std]
     shortest = trees[0] if trees else set()
 
-    # pass 1 -- standard construction, shortest candidate first (prefer a clean straight/L route)
+    # single pass -- deterministic rule-based construction per candidate, fewest cells
+    # first; the convex-corner rule cuts bus-corner qubits by itself (no search pass).
     tried = 0
     for tree in trees:
         tried += 1
         data, retype = path_to_corridor(tree, placed, target, d)
         layout = _assemble_region(placed, target, orient, data, retype, d, seed, max_trials)
         if layout is not None and all(layout.verify().values()):
-            return SubsetRoute(status="ok", message="verified subset joint (standard)", layout=layout,
-                               root=root, tree=tree, attempted=tree, data=sorted(data), tried=tried,
-                               how="standard", cut=(), **base)
-    # pass 2 -- convex-corner cut on the shortest few candidates (rescues genuine bent buses)
-    for tree in trees[:cut_budget]:
-        tried += 1
-        layout, cutq = _corner_cut_region(placed, target, orient, tree, d, max_cut, seed, max_trials)
-        if layout is not None:
-            data, _ = path_to_corridor(tree, placed, target, d)
-            return SubsetRoute(status="ok", message="verified subset joint (convex-corner cut)",
+            cutq = tuple(sorted(set(data) - set(layout.data)))
+            how = "corner-cut" if cutq else "standard"
+            return SubsetRoute(status="ok",
+                               message=f"verified subset joint ({how}, rule-based)",
                                layout=layout, root=root, tree=tree, attempted=tree,
-                               data=sorted(set(data) - set(cutq)), tried=tried,
-                               how="corner-cut", cut=tuple(cutq), **base)
+                               data=sorted(layout.data), tried=tried, how=how, cut=cutq,
+                               **base)
     return SubsetRoute(status="no_verified_route", root=root, tried=tried, attempted=shortest,
-                       message=("no candidate corridor verified, standard or convex-corner cut; the "
-                                "physics layer cannot host this geometry"), **base)
+                       message=("no candidate corridor passes the rule-based construction; "
+                                "the physics layer cannot host this geometry"), **base)
 
 
 # -----------------------------------------------------------------------------
