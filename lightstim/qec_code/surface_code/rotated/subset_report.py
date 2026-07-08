@@ -157,7 +157,7 @@ def report_subset_joint(patches, target, title=None, *, route=None,
         _print_acceptance(acceptance_of_layout(lay), f"{title}   [{how}]")  # (2) acceptance
         if any(p.name not in tnames for p in patches):
             print("    collision-clean (routed code vs obstacles):",
-                  collision_report(patches, target, route)['clean'])
+                  collision_report(patches, target, route, layout=lay)['clean'])
     if show_layout:
         _show_layout(lay, title)                                    # (3) layout
     if show_detslice:                                               # (4) detslice

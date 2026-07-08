@@ -59,10 +59,17 @@ def _corner_qubits(dset):
 
 
 class _Builder:
-    """One deterministic greedy construction on a fixed region and phase."""
+    """One deterministic greedy construction on a fixed region and phase.
 
-    def __init__(self, placed, target, orient, data, retype, phase):
+    ``forbidden`` is a set of syndrome sites the boundary may NOT use — the ancilla
+    qubits already owned by neighbouring idle patches; vetoing them makes the
+    alternating pattern interleave with the neighbour on a shared ancilla line, so
+    edge-adjacent placement is physically collision-free whenever the parity allows.
+    """
+
+    def __init__(self, placed, target, orient, data, retype, phase, forbidden=frozenset()):
         self.data = sorted(data)
+        self.forbidden = frozenset(forbidden)
         self.target = target
         self.patchq = set().union(*[placed[nm] for nm, _ in target])
         self.plaqs = _bent_plaquettes(self.data, retype, phase)
@@ -112,7 +119,7 @@ class _Builder:
                        for q in p["pauli"] for s in sel_qubits.get(q, ()))
 
         def try_add(p, relax=False):
-            if p["syn"] in banned:
+            if p["syn"] in banned or p["syn"] in self.forbidden:
                 return False
             if not relax and one_spacing(p):
                 return False
@@ -174,10 +181,10 @@ class _Builder:
         return selected, corner_picks, metric, w1
 
 
-def _construct_phase(placed, target, orient, dset, retype, phase):
+def _construct_phase(placed, target, orient, dset, retype, phase, forbidden=frozenset()):
     """One deterministic construction attempt.  Returns ``("ok", checks, logicals,
     x_obs)``, ``("cut", {qubits})`` per the convex-corner rule, or ``("fail", reason)``."""
-    bl = _Builder(placed, target, orient, dset, retype, phase)
+    bl = _Builder(placed, target, orient, dset, retype, phase, forbidden)
     if bl.fail is not None:
         return ("fail", bl.fail)
 
@@ -234,7 +241,8 @@ def _construct_phase(placed, target, orient, dset, retype, phase):
     return ("ok", checks, logicals, x_obs)
 
 
-def rule_based_joint_checks(placed, target, orient, data, retype, d, max_cut=4):
+def rule_based_joint_checks(placed, target, orient, data, retype, d, max_cut=4,
+                            forbidden=frozenset()):
     """Deterministic construction on the routed region (both phases, rule-driven cuts).
 
     Cut-free solutions are preferred: phases 0/1 are tried without cuts first, then with
@@ -254,7 +262,7 @@ def rule_based_joint_checks(placed, target, orient, data, retype, d, max_cut=4):
             cut.append(q)
         while True:
             rt = {q for q in retype if q in dset}
-            res = _construct_phase(placed, target, orient, dset, rt, phase)
+            res = _construct_phase(placed, target, orient, dset, rt, phase, forbidden)
             if res[0] == "ok":
                 return dict(checks=res[1], data=sorted(dset), cut=tuple(sorted(cut)),
                             phase=phase, logicals=res[2], x_observable=res[3], reason="")

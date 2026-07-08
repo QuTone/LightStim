@@ -296,7 +296,8 @@ def path_to_corridor(tree_cells, placed, target, d):
 # physics-layer reuse: a routed (data, retype) region -> a verified MultiPatchLayout
 # -----------------------------------------------------------------------------
 
-def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials=5000, max_cut=4):
+def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials=5000, max_cut=4,
+                     forbidden=frozenset()):
     """Hand a routed region to the **deterministic rule-based** physics layer.
 
     The stabilizers are constructed by :func:`.deterministic_checks.rule_based_joint_checks`
@@ -311,7 +312,8 @@ def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials
     data = sorted(data)
     if not _connected(set(data)):
         return None
-    rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d, max_cut=max_cut)
+    rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d, max_cut=max_cut,
+                                 forbidden=forbidden)
     if rb["checks"] is None:
         return None
     log_pairs = [(P, sup) for _, P, sup in rb["logicals"]]
@@ -357,8 +359,27 @@ class SubsetRoute:
         return self.status == "ok"
 
 
+def _obstacle_ancillas(patches, tnames):
+    """The ancilla sites actually USED by the non-target (idle obstacle) patches.
+
+    Each idle patch keeps its standalone construction; its selected syndrome sites are
+    physical qubits the routed joint code may not re-use.  These are handed to the rule
+    constructor as ``forbidden`` boundary positions, so a corridor sharing an ancilla
+    line with an idle neighbour interleaves with it instead of colliding — edge-adjacent
+    placement (keepout=0) is then physically sound whenever the parity allows.
+    """
+    from .bent_layout import place_patch
+    out = set()
+    for s in patches:
+        if s.name in tnames:
+            continue
+        for c in place_patch(s)["checks"]:
+            out.add(tuple(int(v) for v in c["syn"]))
+    return frozenset(out)
+
+
 def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, max_cut=4,
-                    keepout=1, seed=0, max_trials=5000, route=None):
+                    keepout=0, seed=0, max_trials=5000, route=None):
     """Fully-automatic route **and** build: no hand-written corridor needed.
 
     ``route`` (optional): an **explicit corridor** — a list of coarse cells ``[(a, b), …]``.
@@ -400,6 +421,7 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                                message=(f"target {tn} is within keepout={keepout} of obstacle(s) "
                                         f"{bad}: their boundary ancillas would collide."), **base0)
     root0 = next((nm for nm, P in target if P == "X"), tnames[0])
+    forbidden = _obstacle_ancillas(patches, tnames)   # idle neighbours' USED ancilla sites
 
     if route is not None:                  # explicit corridor: build on EXACTLY these cells
         tree = {tuple(c) for c in route}
@@ -410,7 +432,7 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                              f"may only use empty coarse cells")
         data, retype = path_to_corridor(tree, placed_all, target, d)
         layout = _assemble_region(placed_all, target, orient, data, retype, d, seed,
-                                  max_trials, max_cut=max_cut)
+                                  max_trials, max_cut=max_cut, forbidden=forbidden)
         if layout is not None and all(layout.verify().values()):
             cutq = tuple(sorted(set(data) - set(layout.data)))
             how = "corner-cut" if cutq else "standard"
@@ -469,7 +491,7 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
         tried += 1
         data, retype = path_to_corridor(tree, placed, target, d)
         layout = _assemble_region(placed, target, orient, data, retype, d, seed, max_trials,
-                                  max_cut=max_cut)
+                                  max_cut=max_cut, forbidden=forbidden)
         if layout is not None and all(layout.verify().values()):
             cutq = tuple(sorted(set(data) - set(layout.data)))
             how = "corner-cut" if cutq else "standard"
@@ -554,7 +576,9 @@ def complete_code(patches, target, tree_cells, phase=None):
     present, chain = None, set()
     if joint_in_span:
         from .deterministic_checks import rule_based_joint_checks
-        rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d, max_cut=0)
+        forbidden = _obstacle_ancillas(patches, {nm for nm, _ in target})
+        rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d, max_cut=0,
+                                     forbidden=forbidden)
         if rb["checks"] is not None:
             present = rb["checks"]
             chain = _readout_chain(data, present, [reps[nm] for nm, _ in target])
@@ -687,7 +711,7 @@ def acceptance_of_layout(lay):
                 readout_chain_len=len(chain))
 
 
-def collision_report(patches, target, tree_cells):
+def collision_report(patches, target, tree_cells, layout=None):
     """**Physical placement check**: does the routed code collide with any idle obstacle patch?
 
     ``patches`` is a list of :class:`PatchSpec` (see :func:`route_and_build`); ``tree_cells`` is the
@@ -705,17 +729,22 @@ def collision_report(patches, target, tree_cells):
     layout is physically placeable.
     """
     patch_at, _orient, d = _specs_to_cells(patches, target)
-    cc = complete_code(patches, target, tree_cells)
+    if layout is not None:                 # judge the ACTUAL built code, not a re-derivation
+        stabs, rdata = layout.checks, set(layout.data)
+    else:
+        cc = complete_code(patches, target, tree_cells)
+        stabs, rdata = cc["stabilizers"], set(cc["data"])
     tnames = {nm for nm, _ in target}
     onames = [nm for nm in patch_at if nm not in tnames]
-    routed_syn = {p["syn"] for p in cc["stabilizers"]}
-    routed_data = set(cc["data"])
-    routed_corners = (set().union(*[set(p["pauli"]) for p in cc["stabilizers"]])
-                      if cc["stabilizers"] else set())
+    routed_syn = {tuple(int(v) for v in p["syn"]) for p in stabs}
+    routed_data = rdata
+    routed_corners = (set().union(*[set(p["pauli"]) for p in stabs]) if stabs else set())
     nd, nc, na, details = 0, 0, 0, {}
+    spec_of = {p.name: p for p in patches}
     for on in onames:
         Odata = cell(*patch_at[on], d)
-        Osyn = {p["syn"] for p in _bent_plaquettes(sorted(Odata), set(), 0)}
+        from .bent_layout import place_patch
+        Osyn = {tuple(int(v) for v in c["syn"]) for c in place_patch(spec_of[on])["checks"]}
         a, b, c = routed_data & Odata, routed_corners & Odata, routed_syn & Osyn
         nd += len(a); nc += len(b); na += len(c)
         if a or b or c:

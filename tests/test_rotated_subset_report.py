@@ -34,10 +34,16 @@ def test_report_returns_verified_route_headless():
 
 
 def test_report_raises_when_unroutable():
-    # obstacle B1 directly adjacent to target X1 -> inside keepout=1 -> no verified route
+    # Z2 walled in on all four edge-adjacent cells -> no corridor can reach any of its
+    # faces -> no_path.  (An obstacle merely adjacent to a target is legal now: the
+    # collision criterion is actual ancilla-site sharing, and the rule constructor
+    # interleaves with the idle neighbour's used sites.)
     patches = [PatchSpec("X1", origin_of(0, 0, D), D, "X", "X_horizontal"),
-               PatchSpec("Z2", origin_of(3, 0, D), D, "Z", "X_horizontal"),
-               PatchSpec("B1", origin_of(1, 0, D), D, "X", "X_horizontal")]
+               PatchSpec("Z2", origin_of(4, 0, D), D, "Z", "X_horizontal"),
+               PatchSpec("B1", origin_of(3, 0, D), D, "X", "X_horizontal"),
+               PatchSpec("B2", origin_of(5, 0, D), D, "X", "X_horizontal"),
+               PatchSpec("B3", origin_of(4, 1, D), D, "X", "X_horizontal"),
+               PatchSpec("B4", origin_of(4, -1, D), D, "X", "X_horizontal")]
     target = [("X1", "X"), ("Z2", "Z")]
     with pytest.raises(RuntimeError, match="route_and_build failed"):
         report_subset_joint(patches, target, **NO_SHOW)
