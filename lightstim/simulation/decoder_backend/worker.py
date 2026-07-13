@@ -31,12 +31,17 @@ def _decode_worker_cpu(
     worker_id: int = 0,
     gpu_id: Optional[int] = None,
     on_decode_failure: str = "error",
+    completed_counter=None,
 ) -> None:
     """
     Single worker process: reserve shots -> sample -> post-select -> decode.
     Updates shared counters (shots_counter, post_counter, errors_counter) under lock.
-    shots_counter tracks reserved/completed work units, preventing large overshoot
-    when many workers race near max_shots.
+
+    ``shots_counter`` reserves work units up front (before decoding) to cap total
+    shots and prevent large overshoot when many workers race near max_shots.
+    ``completed_counter`` (optional) counts shots only *after* they have been
+    sampled and decoded, so progress reporting reflects finished — not merely
+    reserved — work. At termination the two are equal.
     """
     from ._accounting import count_batch
     from .registry import get_decoder
@@ -71,6 +76,11 @@ def _decode_worker_cpu(
         )
         kept = det_filtered.shape[0]
         if kept == 0:
+            # These shots were still sampled/processed — count them as completed
+            # (they just contribute nothing after post-selection).
+            if completed_counter is not None:
+                with lock:
+                    completed_counter.value += shots_to_take
             continue
 
         # sinter.Decoder expects little-endian bit packing.
@@ -90,3 +100,5 @@ def _decode_worker_cpu(
         with lock:
             post_counter.value += batch_kept
             errors_counter.value += batch_errors
+            if completed_counter is not None:
+                completed_counter.value += shots_to_take

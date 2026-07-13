@@ -160,7 +160,8 @@ class SimulationPipeline:
         # Multi-process
         # Use shared-memory synchronized primitives directly.
         # This avoids Manager proxy IPC overhead under high worker counts.
-        shots_counter = mp.Value("q", 0)
+        shots_counter = mp.Value("q", 0)      # reserved work (caps overshoot)
+        completed_counter = mp.Value("q", 0)  # decoded work (drives progress/stats)
         post_counter = mp.Value("q", 0)
         errors_counter = mp.Value("q", 0)
         lock = mp.Lock()
@@ -188,6 +189,7 @@ class SimulationPipeline:
                     wid,
                     wid if self.config.decoder.backend != "cpu" else None,
                     self.config.decoder.on_decode_failure,
+                    completed_counter,
                 ),
             )
             p.start()
@@ -195,7 +197,7 @@ class SimulationPipeline:
 
         while any(p.is_alive() for p in procs):
             snapshot = self._build_snapshot(
-                shots=shots_counter.value,
+                shots=completed_counter.value,
                 kept=post_counter.value,
                 errors=errors_counter.value,
                 start=start,
@@ -209,7 +211,7 @@ class SimulationPipeline:
 
         elapsed = time.perf_counter() - start
         final_snapshot = self._build_snapshot(
-            shots=shots_counter.value,
+            shots=completed_counter.value,
             kept=post_counter.value,
             errors=errors_counter.value,
             start=start,
@@ -217,7 +219,7 @@ class SimulationPipeline:
         )
         reporter.emit(final_snapshot, final=True)
         return SimulationStats(
-            shots=shots_counter.value,
+            shots=completed_counter.value,
             post_selected_shots=post_counter.value,
             errors=errors_counter.value,
             seconds=elapsed,
