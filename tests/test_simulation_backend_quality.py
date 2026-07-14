@@ -382,6 +382,35 @@ def test_dem_to_matrices_circuit_dem_is_binary():
     assert set(np.unique(obs).tolist()) <= {0, 1}
 
 
+def test_dem_to_matrices_merges_duplicate_columns():
+    """Mechanisms with identical (detector, observable) footprints fuse into
+    one column with XOR-combined priors — stim leaves such duplicates in
+    z_only-style circuits and the degenerate twin columns degrade BP."""
+    dem = stim.DetectorErrorModel(
+        """
+        error(0.1) D0 D1 L0
+        error(0.2) D0 D1 L0
+        error(0.3) D1
+        """
+    )
+    p_xor = 0.1 * (1 - 0.2) + 0.2 * (1 - 0.1)  # odd-firing combination
+
+    Hd, od, pd = dem_to_matrices(dem)                        # dense, default on
+    assert Hd.shape == (2, 2) and od.shape == (1, 2)
+    # first-seen column order is preserved
+    assert Hd[:, 0].tolist() == [1, 1] and Hd[:, 1].tolist() == [0, 1]
+    assert od[:, 0].tolist() == [1] and od[:, 1].tolist() == [0]
+    assert np.allclose(pd, [p_xor, 0.3])
+
+    Hs, os_, ps = dem_to_matrices(dem, sparse=True)          # sparse agrees
+    assert (Hs.toarray() == Hd).all() and (os_.toarray() == od).all()
+    assert np.allclose(ps, pd)
+
+    H3, _, p3 = dem_to_matrices(dem, merge_duplicates=False)  # opt-out keeps all
+    assert H3.shape == (2, 3)
+    assert np.allclose(p3, [0.1, 0.2, 0.3])
+
+
 def test_count_batch_failed_shot_survives_post_decode_ps_under_error_policy():
     """A decode-failed shot that post-decode PS would reject must still count as a
     logical error (and stay in the denominator) under on_decode_failure='error' —

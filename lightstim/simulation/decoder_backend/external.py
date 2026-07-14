@@ -146,8 +146,12 @@ class ExternalDecoder(sinter.Decoder):
         # Sparse matrices: external decoders (BP, neural, …) run on large LDPC
         # circuits where a dense H can be many GB and OOM the worker. The ldpc
         # decoders accept CSR directly, and the observable multiply below is
-        # sparse-safe.
-        H, obs_matrix, priors = dem_to_matrices(dem, sparse=True)
+        # sparse-safe. merge_duplicates fuses mechanisms with identical
+        # (detector, observable) footprints — stim leaves such duplicates in
+        # z_only-style circuits, and the degenerate twin columns measurably
+        # break BP convergence; merging is a no-op on fully-merged DEMs.
+        H, obs_matrix, priors = dem_to_matrices(
+            dem, sparse=True, merge_duplicates=True)
         self.setup(
             dem=dem,
             H=H,
