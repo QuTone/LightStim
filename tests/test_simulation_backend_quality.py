@@ -91,6 +91,23 @@ def test_relay_bp_registered_and_runs():
     assert stats.shots > 0
 
 
+def test_ldpc_bp_registered_and_runs():
+    """Plain BP (ldpc.BpDecoder, Pattern D) registers and decodes when installed."""
+    importorskip_safe("ldpc")
+
+    assert "ldpc-bp" in list_decoders()
+    pipeline = SimulationPipeline(
+        decoder_config=DecoderConfig("ldpc-bp", params={"max_iter": 30}),
+        max_shots=200,
+        max_errors=10_000,
+        batch_size=100,
+        num_workers=1,
+        print_progress=False,
+    )
+    stats = pipeline.run(_simple_observable_circuit(error_probability=0.1))
+    assert stats.shots > 0
+
+
 def test_tesseract_registered_and_runs():
     """Tesseract (sinter-native, Pattern A, lazy import) registers and decodes.
 
