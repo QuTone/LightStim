@@ -40,6 +40,7 @@ import math
 from typing import Any, Optional
 
 import numpy as np
+import scipy.sparse as sparse
 import sinter
 import stim
 
@@ -142,7 +143,11 @@ class ExternalDecoder(sinter.Decoder):
                 f"{type(self).__name__} must override decode_batch or decode_single."
             )
 
-        H, obs_matrix, priors = dem_to_matrices(dem)
+        # Sparse matrices: external decoders (BP, neural, …) run on large LDPC
+        # circuits where a dense H can be many GB and OOM the worker. The ldpc
+        # decoders accept CSR directly, and the observable multiply below is
+        # sparse-safe.
+        H, obs_matrix, priors = dem_to_matrices(dem, sparse=True)
         self.setup(
             dem=dem,
             H=H,
@@ -231,10 +236,18 @@ class _ExternalCompiledDecoder(sinter.CompiledDecoder):
         self.last_flags = flags
 
         if self._output_type == _OUTPUT_CORRECTION:
-            # corrections (n_shots, n_err) @ (n_err, n_obs) -> (n_shots, n_obs) mod 2
-            obs_preds = (
-                predictions.astype(np.int64) @ self._obs_matrix.T.astype(np.int64)
-            ) % 2
+            # corrections (n_shots, n_err) -> observable flips (n_shots, n_obs) mod 2.
+            # obs_matrix is CSR from dem_to_matrices(sparse=True); compute as
+            # (n_obs, n_err) @ (n_err, n_shots) so scipy handles the sparse side,
+            # then transpose back. int64 avoids uint8 overflow before the mod 2.
+            if sparse.issparse(self._obs_matrix):
+                obs_preds = np.asarray(
+                    self._obs_matrix @ predictions.T.astype(np.int64)
+                ).T & 1
+            else:  # dense fallback (kept for direct/legacy construction)
+                obs_preds = (
+                    predictions.astype(np.int64) @ self._obs_matrix.T.astype(np.int64)
+                ) % 2
             obs_preds = obs_preds.astype(np.uint8)
         else:
             obs_preds = (predictions % 2).astype(np.uint8)
