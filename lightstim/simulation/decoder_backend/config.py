@@ -1,7 +1,7 @@
 """Configuration dataclasses for the decoder backend pipeline."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
 
 @dataclass
@@ -27,6 +27,30 @@ class DecoderConfig:
                 "on_decode_failure must be 'error', 'discard', or 'ignore', "
                 f"got {self.on_decode_failure!r}"
             )
+
+    @classmethod
+    def chain(cls, configs: Sequence[Any]) -> "DecoderConfig":
+        """Fold several decoder configs into one multi-level "chain" config.
+
+        Stage k+1 re-decodes only the shots stage k flagged as failed (see
+        ``decoders/chain.py``); a stage's own ``on_decode_failure`` is
+        superseded by that escalation, and the *last* config's policy becomes
+        the chain's policy for shots no stage can resolve. Entries may be
+        DecoderConfigs, ``{"name", "backend", "params"}`` dicts, or names.
+        """
+        configs = list(configs)
+        if not configs:
+            raise ValueError("DecoderConfig.chain needs at least one decoder config")
+        if len(configs) == 1 and isinstance(configs[0], DecoderConfig):
+            return configs[0]
+        last = configs[-1]
+        if isinstance(last, DecoderConfig):
+            policy = last.on_decode_failure
+        elif isinstance(last, dict):
+            policy = last.get("on_decode_failure", "error")
+        else:
+            policy = "error"
+        return cls("chain", params={"stages": configs}, on_decode_failure=policy)
 
 
 @dataclass

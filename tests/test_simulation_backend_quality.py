@@ -312,6 +312,180 @@ def test_failure_flag_policy_error_multiprocess():
 
 
 # --------------------------------------------------------------------------- #
+# Multi-level decoder chain
+# --------------------------------------------------------------------------- #
+#
+# _EvenOnlyExternal stands in for a fast first-level decoder (Chen's T1 BP):
+# it "converges" — correctly predicting no flip — on trivial syndromes, and
+# flags every fired-syndrome shot for escalation. Chained with the perfect
+# echo decoder, all escalated shots get resolved; chained with itself, the
+# fired-syndrome shots fail every level and must surface as chain failures.
+
+
+class _EvenOnlyExternal(ExternalDecoder):
+    output_type = "observables"
+
+    def decode_batch(self, syndromes):
+        n = syndromes.shape[0]
+        return np.zeros((n, 1), dtype=np.uint8), syndromes[:, 0] == 0
+
+
+class _DecomposeNeedingExternal(_ObservablesExternal):
+    decompose_errors = True
+
+
+register_decoder("test-ext-evenonly", _EvenOnlyExternal)
+register_decoder("test-ext-decomp", _DecomposeNeedingExternal)
+
+
+def test_chain_escalates_failed_shots():
+    """Shots stage 1 fails on are re-decoded by stage 2; a perfect stage 2
+    leaves zero errors and no residual failure flags."""
+    pipeline = SimulationPipeline(
+        decoder_config=DecoderConfig(
+            "chain", params={"stages": ["test-ext-evenonly", "test-ext-obs"]}
+        ),
+        max_shots=400,
+        max_errors=10_000,
+        batch_size=200,
+        num_workers=1,
+        print_progress=False,
+    )
+    stats = pipeline.run(_simple_observable_circuit(error_probability=0.3))
+    # Stage 1 alone would miscall every fired-syndrome shot (~30%).
+    assert stats.shots >= 400
+    assert stats.post_selected_shots == stats.shots
+    assert stats.errors == 0
+
+
+def test_chain_unresolved_shots_respect_failure_policy():
+    """Shots every stage fails on flow through the chain's last_flags into
+    the standard on_decode_failure policy."""
+    stages = {"stages": ["test-ext-evenonly", "test-ext-evenonly"]}
+    discard = SimulationPipeline(
+        decoder_config=DecoderConfig(
+            "chain", params=stages, on_decode_failure="discard"
+        ),
+        max_shots=400,
+        max_errors=10_000,
+        batch_size=200,
+        num_workers=1,
+        print_progress=False,
+    ).run(_simple_observable_circuit(error_probability=0.3))
+    # Fired-syndrome shots fail both levels and are heralded away; the
+    # surviving trivial-syndrome shots are all predicted correctly.
+    assert 0 < discard.post_selected_shots < discard.shots
+    assert discard.errors == 0
+
+    error = SimulationPipeline(
+        decoder_config=DecoderConfig(
+            "chain", params=stages, on_decode_failure="error"
+        ),
+        max_shots=400,
+        max_errors=10_000,
+        batch_size=200,
+        num_workers=1,
+        print_progress=False,
+    ).run(_simple_observable_circuit(error_probability=0.3))
+    assert error.post_selected_shots == error.shots
+    assert error.errors > 0
+
+
+def test_chain_prediction_routing_and_stage_attempts():
+    """Resolved shots keep stage 1's prediction; only failed shots reach
+    stage 2; per-stage attempt counts are exposed for conv statistics."""
+    from lightstim.simulation.decoder_backend.decoders.chain import ChainDecoder
+
+    dem = _simple_observable_circuit(error_probability=0.1).detector_error_model()
+    compiled = ChainDecoder(
+        stages=["test-ext-evenonly", "test-ext-obs"]
+    ).compile_decoder_for_dem(dem=dem)
+
+    dets = _pack(np.array([[0], [1], [0], [1]], dtype=np.uint8))
+    preds = compiled.decode_shots_bit_packed(bit_packed_detection_event_data=dets)
+
+    unpacked = np.unpackbits(preds, axis=1, bitorder="little")[:, 0]
+    assert unpacked.tolist() == [0, 1, 0, 1]
+    assert compiled.last_stage_attempts == [4, 2]
+    assert compiled.last_flags is None
+
+
+def test_pipeline_accepts_decoder_config_list():
+    """A list of DecoderConfigs becomes a chain; the last stage's
+    on_decode_failure becomes the chain-level policy."""
+    pipeline = SimulationPipeline(
+        decoder_config=[
+            DecoderConfig("test-ext-evenonly"),
+            DecoderConfig("test-ext-obs", on_decode_failure="discard"),
+        ],
+        max_shots=400,
+        max_errors=10_000,
+        batch_size=200,
+        num_workers=1,
+        print_progress=False,
+    )
+    assert pipeline.config.decoder.name == "chain"
+    assert pipeline.config.decoder.on_decode_failure == "discard"
+
+    stats = pipeline.run(_simple_observable_circuit(error_probability=0.3))
+    assert stats.errors == 0
+
+
+def test_chain_multiprocess():
+    """Chain params (stage list) survive the multiprocessing worker path."""
+    pipeline = SimulationPipeline(
+        decoder_config=DecoderConfig(
+            "chain", params={"stages": ["test-ext-evenonly", "test-ext-obs"]}
+        ),
+        max_shots=400,
+        max_errors=10_000,
+        batch_size=100,
+        num_workers=2,
+        print_progress=False,
+    )
+    stats = pipeline.run(_simple_observable_circuit(error_probability=0.3))
+    assert stats.post_selected_shots == stats.shots
+    assert stats.errors == 0
+
+
+def test_chain_without_stages_raises_in_parent():
+    pipeline = SimulationPipeline(
+        decoder_config=DecoderConfig("chain"),
+        max_shots=10,
+        max_errors=1,
+        batch_size=5,
+        num_workers=2,
+        print_progress=False,
+    )
+    with pytest.raises(ValueError, match="at least one stage"):
+        pipeline.run(_simple_observable_circuit())
+
+
+def test_chain_unknown_stage_raises_in_parent():
+    pipeline = SimulationPipeline(
+        decoder_config=DecoderConfig(
+            "chain", params={"stages": ["definitely_missing"]}
+        ),
+        max_shots=10,
+        max_errors=1,
+        batch_size=5,
+        num_workers=2,
+        print_progress=False,
+    )
+    with pytest.raises(ValueError, match="Unknown decoder 'definitely_missing'"):
+        pipeline.run(_simple_observable_circuit())
+
+
+def test_chain_propagates_decompose_errors():
+    from lightstim.simulation.decoder_backend.decoders.chain import ChainDecoder
+
+    assert ChainDecoder(stages=["test-ext-obs"]).decompose_errors is False
+    assert ChainDecoder(
+        stages=["test-ext-obs", "test-ext-decomp"]
+    ).decompose_errors is True
+
+
+# --------------------------------------------------------------------------- #
 # count_batch flag accounting (unit-level)
 # --------------------------------------------------------------------------- #
 

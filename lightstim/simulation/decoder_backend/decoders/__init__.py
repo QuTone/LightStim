@@ -60,6 +60,11 @@ try:
 except ImportError as exc:
     _log.debug("tesseract registration skipped: %s", exc)
 
+# chain — multi-level escalation over other registered decoders. No external
+# deps of its own; stage decoders are resolved lazily at construction, so a
+# chain only needs its *own* stages' backends installed.
+from . import chain  # noqa: F401 — registers chain/cpu
+
 # cudaq_qec — optional NVIDIA GPU backend.
 # Import cudaqx unconditionally: it no longer eager-imports cudaq_qec at module
 # scope. The actual `import cudaq_qec` is deferred to first use of the GPU
