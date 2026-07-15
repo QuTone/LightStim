@@ -8,6 +8,7 @@ from .code_patch import (
 )
 from lightstim.qec_code.generic_css import GenericCSSColorationExtractionBlock
 from .presets import KASAI_CODE_PRESETS
+from .SE_block import KasaiChenExtractionBlock, find_commuting_layout_reference
 
 KasaiCodeExtractionBlock = GenericCSSColorationExtractionBlock
 KasaiCode.default_extraction_block_class = KasaiCodeExtractionBlock
@@ -15,6 +16,8 @@ KasaiCode.default_extraction_block_class = KasaiCodeExtractionBlock
 __all__ = [
     "KasaiCode",
     "KasaiCodeExtractionBlock",
+    "KasaiChenExtractionBlock",
+    "find_commuting_layout_reference",
     "KASAI_CODE_PRESETS",
     "affine_commutes",
     "apply_affine",
