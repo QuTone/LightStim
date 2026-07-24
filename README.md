@@ -220,7 +220,9 @@ issue, email Xiang Fang at <x8fang@ucsd.edu>. For bugs and feature requests,
 open a [GitHub issue](https://github.com/QuTone/LightStim/issues).
 
 ### Citation
-If this library helped your work. Please cite us:
+
+If this library helped your work, please cite us:
+
 ```bibtex
 @article{fang2026lightstim,
   author       = {Fang, Xiang and Wang, Ming and Wu, Yue and Prabhu, Sharanya and Tullsen, Dean and Miniskar, Narasinga Rao and Mueller, Frank and Humble, Travis and Ding, Yufei},

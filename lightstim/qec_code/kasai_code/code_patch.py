@@ -80,6 +80,22 @@ class KasaiCode(QECPatch):
     ``H_Z[s, j] = G_{s-j}^T``, ``H_Z[s, L/2+j] = F_{s-j}^T``
 
     all block indices modulo ``L/2``.
+
+    Scope: this class provides the code construction (stabilizers, CSS
+    matrices, GF(2) ranks) and ``num_logicals``, but **no explicit logical
+    operator representatives** — ``get_info()`` reports
+    ``logical_ops_available = False``. Logical observables are handled at the
+    experiment level (e.g. ``MemoryExperiment``), which is sufficient for
+    memory experiments and syndrome-extraction studies. Protocols that need
+    named logical operators (transversal gates, lattice surgery) are not
+    supported for Kasai codes yet.
+
+    Small instances: the published presets are large (n >= 1152) and their
+    circuit builds take minutes. Affine maps with multiplier ``a=1`` are
+    translations, which commute unconditionally, so e.g.
+    ``KasaiCode(P=6, L=4, J=2, f=[(1, 0), (1, 1)], g=[(1, 0), (1, 2)])``
+    yields a valid [[24, 2]] instance that builds instantly — useful for
+    smoke-testing the pipeline (see ``tests/test_kasai_code.py``).
     """
 
     def _process_params(self):
