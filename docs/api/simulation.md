@@ -80,6 +80,34 @@ config = DecoderConfig(
 | `"bposd"` | cpu | BP+OSD via `stimbposd`. Good for LDPC. |
 | `"mwpf"` | cpu | Minimum-Weight Parity Factor. Handles hyperedges natively. Required for PQRM/CrossLS. |
 | `"nv-qldpc-decoder"` | gpu | GPU BP+OSD via `cudaq_qec`. Use large `batch_size` (≥50 000). |
+| `"ldpc-bp"` | cpu | Plain BP (no OSD) via `ldpc.BpDecoder`. High LER floor alone; pair with `"bposd"` or chain into `"relay-bp"` for competitive accuracy on QLDPC codes. |
+| `"relay-bp"` | cpu | Relay-BP via `relay_bp`. Handles DEM hyperedges natively (no `decompose_errors`). |
+| `"tesseract"` | cpu | Beam-search MLE via `tesseract_decoder`. Lazy import — a mismatched prebuilt wheel only affects this decoder. |
+| `"chain"` | cpu | Multi-level escalation over other registered decoders (see below). |
+
+### Multi-level decoder chain (hierarchical decoding)
+
+Escalate non-converged shots from a fast decoder to a slower/more accurate
+one — e.g. plain BP → relay-BP → MLE — via the `"chain"` decoder. Stage
+*k+1* only re-decodes the shots stage *k* flagged as failed.
+
+```python
+# Shorthand: a plain list of DecoderConfigs becomes a chain.
+# The *last* config's on_decode_failure is the chain-level policy.
+pipeline = SimulationPipeline(decoder_config=[
+    DecoderConfig("ldpc-bp", params={"max_iter": 200}),
+    DecoderConfig("relay-bp", params={"num_sets": 300}, on_decode_failure="error"),
+])
+
+# Equivalent explicit form.
+pipeline = SimulationPipeline(decoder_config=DecoderConfig(
+    "chain", params={"stages": ["ldpc-bp", "relay-bp"]}, on_decode_failure="error",
+))
+```
+
+A stage's own `on_decode_failure` has no effect — inside the chain,
+"failure" means "escalate," and only the final policy applies to shots
+every stage fails on.
 
 ---
 

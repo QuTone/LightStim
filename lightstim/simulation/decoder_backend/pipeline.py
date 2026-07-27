@@ -5,7 +5,7 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -37,7 +37,7 @@ class SimulationPipeline:
 
     def __init__(
         self,
-        decoder_config: Optional[DecoderConfig] = None,
+        decoder_config: Optional[Union[DecoderConfig, Sequence[DecoderConfig]]] = None,
         max_shots: int = 1_000_000,
         max_errors: int = 100,
         batch_size: int = 10_000,
@@ -62,6 +62,11 @@ class SimulationPipeline:
         progress_file_max_bytes: int = 10_000_000,
         progress_file_backup_count: int = 5,
     ):
+        # A list/tuple of configs means multi-level decoding: each stage
+        # re-decodes the shots the previous stage failed on (Chen-style
+        # hierarchical decoding). See decoders/chain.py.
+        if isinstance(decoder_config, (list, tuple)):
+            decoder_config = DecoderConfig.chain(decoder_config)
         self.config = PipelineConfig(
             max_shots=max_shots,
             max_errors=max_errors,
@@ -111,8 +116,14 @@ class SimulationPipeline:
         """
         Run simulation on a single circuit via the unified custom pipeline.
         """
-        # Validate decoder name in the parent process before spawning workers.
-        get_decoder(self.config.decoder.name, backend=self.config.decoder.backend)
+        # Validate the decoder config in the parent process before spawning
+        # workers. Params are included so a chain resolves (and validates) its
+        # stage names here rather than dying silently inside a worker.
+        get_decoder(
+            self.config.decoder.name,
+            backend=self.config.decoder.backend,
+            **self.config.decoder.params,
+        )
         meta = json_metadata or {}
         post_indices = self._resolve_post_select_indices(circuit)
         return self._run_custom(circuit, meta, post_indices)

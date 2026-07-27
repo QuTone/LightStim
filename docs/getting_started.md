@@ -29,10 +29,10 @@ outcomes at millions of shots per second and produce detector error models for d
 
 - **Automated detector generation** via Pauli tableau tracking — no manual detector annotation required
 - **Multi-patch system management** with automatic local-to-global index mapping and coordinate transforms
-- **Pluggable QEC codes**: Rotated Surface Code, Unrotated Surface Code, Toric Code, Repetition Code, BB codes, PQRM code
+- **Pluggable QEC codes**: Rotated Surface Code, Unrotated Surface Code, Toric Code, Repetition Code, BB codes, PQRM code, Kasai codes
 - **Protocol library**: Memory, Transversal CNOT, Lattice Surgery, GHZ, State Injection, Distillation, CrossLS
 - **Standardized noise injection**: Code-capacity, phenomenological, circuit-level, biased noise models, and configurable noise models
-- **Unified decoder backend**: PyMatching, BP+OSD (CPU/GPU), and MWPF decoders
+- **Unified decoder backend**: PyMatching, BP+OSD (CPU/GPU), MWPF, Relay-BP, Tesseract, and plain BP decoders, plus multi-level decoder chains
 
 ### Architecture
 
@@ -48,7 +48,7 @@ for geometry; grid maps are derived from it at runtime.
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.10+
 - pip
 
 ### Installation

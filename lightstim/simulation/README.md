@@ -40,6 +40,8 @@
 | `"mwpf"` | `"cpu"` | `mwpf` | — |
 | `"relay-bp"` | `"cpu"` | `relay_bp` | Relay-BP; aliases `"relay_bp"`, `"relaybp"` |
 | `"tesseract"` | `"cpu"` | `tesseract_decoder` | Beam-search MLE; lazy import |
+| `"ldpc-bp"` | `"cpu"` | `ldpc` | Plain BP (no OSD), via `ldpc.BpDecoder`; aliases `"ldpc_bp"`, `"bp"` |
+| `"chain"` | `"cpu"` | *(none — composes other registered decoders)* | Multi-level escalation, e.g. BP → relay-BP → MLE; aliases `"decoder-chain"`, `"multi-level"` — see §11 |
 
 Requesting a backend with no registration raises `ImportError` immediately (e.g. `backend="gpu"` without `cudaq_qec`).
 
@@ -114,7 +116,9 @@ simulation/
 │   │   ├── cudaqx.py      # CudaQxDecoder + CudaQxCompiledDecoder (GPU)
 │   │   ├── mwpf.py        # MWPF decoder (CPU)
 │   │   ├── relay_bp.py    # Relay-BP decoder (CPU, sinter-native)
-│   │   └── tesseract.py   # Tesseract beam-search MLE (CPU, lazy import)
+│   │   ├── tesseract.py   # Tesseract beam-search MLE (CPU, lazy import)
+│   │   ├── ldpc_bp.py     # Plain BP decoder (CPU, ExternalDecoder facade)
+│   │   └── chain.py       # Multi-level decoder chain (CPU, composes other decoders)
 │   ├── pipeline.py        # SimulationPipeline, ExperimentTask
 │   ├── post_select.py     # apply_post_selection, get_post_select_detector_indices
 │   ├── progress.py        # ProgressReporter, ProgressSnapshot
@@ -133,6 +137,7 @@ simulation/
 - `mwpf` — MWPF decoder: `pip install mwpf frozendict frozenlist`
 - `relay_bp` — Relay-BP decoder: `pip install "relay-bp[stim]"`
 - `tesseract_decoder` — Tesseract beam-search MLE: `pip install tesseract-decoder` (a prebuilt wheel may not match every CPU; build from source if it fails to import)
+- `ldpc` — Plain BP decoder: `pip install ldpc`
 - `cudaq_qec` — GPU BP+OSD: `pip install cudaq_qec` (NVIDIA GPU required)
 
 ---
@@ -170,3 +175,42 @@ pipeline = SimulationPipeline(
 tasks = [ExperimentTask(circuit, json_metadata={"p": p}) for p in p_list]
 df = pipeline.run_batch(tasks)
 ```
+
+---
+
+## 11. Multi-Level Decoder Chain
+
+Hierarchical decoding — a fast decoder handles most shots, and only the ones
+it fails on escalate to a slower/more powerful decoder — is exposed as the
+`"chain"` decoder (`lightstim/simulation/decoder_backend/decoders/chain.py`).
+Stage *k+1* re-decodes only the shots stage *k* flagged as failed (via the
+same `last_flags` side channel `ExternalDecoder` subclasses already use);
+shots no stage resolves surface through the chain's own `last_flags`, so
+`DecoderConfig(on_decode_failure=...)` still governs the outcome for the
+pipeline as a whole. Decoders that never emit failure flags (`pymatching`,
+`relay-bp`, ...) resolve every shot handed to them, so they only make sense
+as the last stage.
+
+Two equivalent ways to configure it:
+
+```python
+# Explicit chain config — stages as names, dicts, or DecoderConfigs.
+pipeline = SimulationPipeline(
+    decoder_config=DecoderConfig("chain", params={"stages": [
+        {"name": "ldpc-bp", "params": {"max_iter": 200}},
+        {"name": "relay-bp", "params": {"num_sets": 300, "stop_nconv": 1}},
+    ]}, on_decode_failure="discard"),
+    ...
+)
+
+# Shorthand: hand SimulationPipeline a plain list of DecoderConfigs.
+# The last config's on_decode_failure becomes the chain-level policy.
+pipeline = SimulationPipeline(decoder_config=[
+    DecoderConfig("ldpc-bp", params={"max_iter": 200}),
+    DecoderConfig("relay-bp", params={"num_sets": 300}, on_decode_failure="discard"),
+])
+```
+
+A stage's own `on_decode_failure` is ignored — inside the chain, "failure"
+means "escalate to the next stage." Unknown stage names are validated eagerly
+(in the parent process, before workers spawn), same as a plain `DecoderConfig`.

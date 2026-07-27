@@ -40,6 +40,15 @@ if importlib.util.find_spec("relay_bp") is not None:
 else:
     _log.debug("relay_bp not installed; skipping Relay-BP decoder")
 
+# ldpc — optional plain BP decoder (ldpc.BpDecoder, via ExternalDecoder facade).
+if importlib.util.find_spec("ldpc") is not None:
+    try:
+        from . import ldpc_bp  # noqa: F401 — registers ldpc-bp/cpu
+    except ImportError as exc:
+        _log.debug("ldpc_bp import failed: %s", exc)
+else:
+    _log.debug("ldpc not installed; skipping plain BP decoder")
+
 # tesseract_decoder — optional beam-search MLE decoder (sinter-native).
 # Imported unconditionally on purpose: decoders/tesseract.py is import-safe —
 # it does NOT import tesseract_decoder at module load. It self-guards with
@@ -50,6 +59,11 @@ try:
     from . import tesseract  # noqa: F401 — registers tesseract/cpu if installed
 except ImportError as exc:
     _log.debug("tesseract registration skipped: %s", exc)
+
+# chain — multi-level escalation over other registered decoders. No external
+# deps of its own; stage decoders are resolved lazily at construction, so a
+# chain only needs its *own* stages' backends installed.
+from . import chain  # noqa: F401 — registers chain/cpu
 
 # cudaq_qec — optional NVIDIA GPU backend.
 # Import cudaqx unconditionally: it no longer eager-imports cudaq_qec at module

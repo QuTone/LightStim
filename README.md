@@ -221,6 +221,8 @@ open a [GitHub issue](https://github.com/QuTone/LightStim/issues).
 
 ### Citation
 
+If this library helped your work, please cite us:
+
 ```bibtex
 @article{fang2026lightstim,
   author       = {Fang, Xiang and Wang, Ming and Wu, Yue and Prabhu, Sharanya and Tullsen, Dean and Miniskar, Narasinga Rao and Mueller, Frank and Humble, Travis and Ding, Yufei},
