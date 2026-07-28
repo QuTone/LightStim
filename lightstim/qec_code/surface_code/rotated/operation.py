@@ -3,11 +3,12 @@
 """
 Logical operation set for Rotated Surface Code.
 
-Provides state_injection and logical_unencode as LogicalOpSet methods,
-callable via LogicalExecutor.apply_logical_operation().
+Provides state injection, logical unencoding, and logical Clifford gates as
+LogicalOpSet methods, callable via
+LogicalExecutor.apply_logical_operation().
 """
 
-from typing import Literal, Tuple, Dict, Any, Type
+from typing import Literal, Tuple, Dict, Any, Type, List
 
 from lightstim.ir.operation import CSSLogicalOpSet
 from lightstim.ir.builder import CircuitBuilder
@@ -17,7 +18,178 @@ import stim
 
 
 # ------------------------------------------------------------------------------
-# Module-level helpers
+# Module-level helpers — dynamical fold-transversal S
+# ------------------------------------------------------------------------------
+
+def _get_half_cycle_fold_yx_parts(
+    system: Any,
+    patch: QECPatch,
+) -> Tuple[List[int], List[int], List[Tuple[int, int]]]:
+    """Return the fold-transversal layer for the rotated-code half-cycle.
+
+    Two CNOT layers into the standard four-layer rotated surface-code syndrome
+    extraction circuit, the data and interior syndrome qubits form an
+    unrotated surface code.  In LightStim's coordinate frame, the fold axis of
+    arXiv:2412.01391 is the local ``y=x`` diagonal.
+
+    Boundary syndrome qubits are excluded: they are the unentangled boundary
+    qubits outside the half-cycle unrotated-code bulk.  On the fold diagonal,
+    data qubits receive S and syndrome qubits receive S†.  Off the diagonal,
+    mirrored bulk qubits are paired by CZ.
+    """
+    if not isinstance(patch, RotatedSurfaceCode):
+        raise TypeError(
+            f"Expected RotatedSurfaceCode patch, got {type(patch).__name__}"
+        )
+    if patch.distance_z != patch.distance_x:
+        raise ValueError(
+            "Dynamical fold-transversal S requires a square patch "
+            f"(distance_z == distance_x). Got "
+            f"{patch.distance_z} != {patch.distance_x}."
+        )
+
+    distance = patch.distance_z
+    sx, sy = patch.shift
+    target_syndromes = {
+        stabilizer["syn_idx"]
+        for stabilizer in patch.stabilizers
+        if stabilizer.get("syn_idx") is not None
+    }
+    active_syndromes = set(system.active_syndrome_indices)
+    missing_syndromes = sorted(target_syndromes - active_syndromes)
+    if missing_syndromes:
+        raise ValueError(
+            "Dynamical fold-transversal S requires the patch's ordinary "
+            "syndrome ancillas to be active. Missing global qubit indices "
+            f"{missing_syndromes}."
+        )
+
+    fold_qubits = set(patch.data_indices) | target_syndromes
+    diagonal_data: List[int] = []
+    diagonal_syndromes: List[int] = []
+    mirror_pairs: List[Tuple[int, int]] = []
+
+    # The bulk occupies local coordinates 1..2d-1 on both axes. Syndrome
+    # ancillas with a local coordinate 0 or 2d are the unentangled boundary
+    # qubits excluded by the paper's protocol.
+    bulk_min = 1
+    bulk_max = 2 * distance - 1
+
+    for qubit in sorted(fold_qubits):
+        gx, gy = system.qubit_coords[qubit]
+        lx = gx - sx
+        ly = gy - sy
+        if not (
+            bulk_min <= lx <= bulk_max
+            and bulk_min <= ly <= bulk_max
+        ):
+            continue
+
+        if lx == ly:
+            if qubit in patch.data_indices:
+                diagonal_data.append(qubit)
+            else:
+                diagonal_syndromes.append(qubit)
+            continue
+
+        if lx > ly:
+            continue
+
+        reflected_coord = QECPatch.snap_coord((ly + sx, lx + sy))
+        reflected_qubit = system.index_map.get(reflected_coord)
+        if reflected_qubit is None or reflected_qubit not in fold_qubits:
+            raise ValueError(
+                f"Half-cycle mirror qubit at {reflected_coord} not found "
+                f"for qubit {qubit} at {(gx, gy)}."
+            )
+        mirror_pairs.append((qubit, reflected_qubit))
+
+    return diagonal_data, diagonal_syndromes, mirror_pairs
+
+
+def _build_half_cycle_fold_s(
+    system: Any,
+    patch: QECPatch,
+    *,
+    inverse: bool,
+) -> stim.Circuit:
+    """Build the physical fold-transversal S or S† layer."""
+    diagonal_data, diagonal_syndromes, mirror_pairs = (
+        _get_half_cycle_fold_yx_parts(system, patch)
+    )
+
+    circuit = stim.Circuit()
+    if mirror_pairs:
+        circuit.append(
+            "CZ",
+            [qubit for pair in mirror_pairs for qubit in pair],
+        )
+    if diagonal_data:
+        circuit.append(
+            "S_DAG" if inverse else "S",
+            sorted(diagonal_data),
+        )
+    if diagonal_syndromes:
+        circuit.append(
+            "S" if inverse else "S_DAG",
+            sorted(diagonal_syndromes),
+        )
+    return circuit
+
+
+def _insert_fold_after_second_cnot_layer(
+    syndrome_extraction: stim.Circuit,
+    fold_layer: stim.Circuit,
+) -> stim.Circuit:
+    """Insert ``fold_layer`` at the four-CNOT schedule's half-cycle."""
+    result = stim.Circuit()
+    cnot_layers = 0
+    moment_has_cnot = False
+    inserted = False
+
+    for instruction in syndrome_extraction:
+        if not isinstance(instruction, stim.CircuitInstruction):
+            raise ValueError(
+                "Dynamical fold-transversal S requires an explicit, "
+                "non-REPEAT syndrome-extraction round."
+            )
+
+        result.append(
+            instruction.name,
+            instruction.targets_copy(),
+            instruction.gate_args_copy(),
+            tag=instruction.tag,
+        )
+
+        if instruction.name in ("CX", "CNOT"):
+            moment_has_cnot = True
+        if instruction.name != "TICK":
+            continue
+
+        if moment_has_cnot:
+            cnot_layers += 1
+            moment_has_cnot = False
+        if cnot_layers == 2 and not inserted:
+            result += fold_layer
+            result.append("TICK")
+            inserted = True
+
+    if moment_has_cnot:
+        cnot_layers += 1
+    if cnot_layers != 4:
+        raise ValueError(
+            "Dynamical fold-transversal S requires exactly four CNOT "
+            f"layers in one syndrome-extraction round; found {cnot_layers}."
+        )
+    if not inserted:
+        raise ValueError(
+            "Could not find the half-cycle boundary after the second CNOT layer."
+        )
+    return result
+
+
+# ------------------------------------------------------------------------------
+# Module-level helpers — state injection
 # ------------------------------------------------------------------------------
 
 def _get_injection_site(
@@ -135,7 +307,7 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
     Logical operation set for Rotated Surface Code.
 
     Implements state injection, logical unencode, and surface-code-specific
-    gates as composable operations for use with LogicalExecutor.
+    Clifford gates as composable operations for use with LogicalExecutor.
     """
 
     def __init__(self, extraction_block_class: Type):
@@ -147,6 +319,86 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         super().__init__()
         self.name = "RotatedSurfaceCode"
         self.extraction_block_class = extraction_block_class
+
+    # ------------------------------------------------------------------
+    # Dynamical fold-transversal phase gates
+    # ------------------------------------------------------------------
+
+    def _apply_dynamical_fold_s(
+        self,
+        builder: CircuitBuilder,
+        patch: QECPatch,
+        *,
+        inverse: bool,
+        noiseless: bool,
+    ) -> None:
+        """Apply one complete S-SE or S†-SE round.
+
+        The full round is deliberately passed through
+        ``apply_syndrome_extraction`` as one measurement block.  This lets the
+        tracker propagate the terminal syndrome measurements through the
+        mid-cycle CZ/S/S† layer, apply the ancilla resets, and construct the
+        mixed X/Z detectors automatically.
+        """
+        if self.extraction_block_class is None:
+            raise ValueError(
+                "extraction_block_class is required for the dynamical "
+                "fold-transversal S protocol."
+            )
+
+        ordinary_round = self.extraction_block_class(builder.system).circuit
+        fold_layer = _build_half_cycle_fold_s(
+            builder.system,
+            patch,
+            inverse=inverse,
+        )
+        dynamical_round = _insert_fold_after_second_cnot_layer(
+            ordinary_round,
+            fold_layer,
+        )
+        builder.apply_syndrome_extraction(
+            circuit_chunk=dynamical_round,
+            rounds=1,
+            noiseless=noiseless,
+        )
+
+    def fold_transversal_s(
+        self,
+        builder: CircuitBuilder,
+        patch: QECPatch,
+        noiseless: bool = False,
+    ) -> None:
+        """Implement logical S as one dynamical S-SE round.
+
+        Protocol (arXiv:2412.01391):
+
+        1. Reset the syndrome ancillas and run CNOT layers 1–2.
+        2. On the half-cycle unrotated-code state, apply mirrored CZ pairs,
+           S on diagonal data qubits, and S† on diagonal syndrome qubits.
+        3. Run CNOT layers 3–4 and measure the syndrome ancillas.
+
+        Logical action: Z_L -> Z_L and X_L -> Y_L.
+        """
+        self._apply_dynamical_fold_s(
+            builder,
+            patch,
+            inverse=False,
+            noiseless=noiseless,
+        )
+
+    def fold_transversal_s_dag(
+        self,
+        builder: CircuitBuilder,
+        patch: QECPatch,
+        noiseless: bool = False,
+    ) -> None:
+        """Implement logical S† as the inverse dynamical S-SE round."""
+        self._apply_dynamical_fold_s(
+            builder,
+            patch,
+            inverse=True,
+            noiseless=noiseless,
+        )
 
     # ------------------------------------------------------------------
     # State preparation / teardown

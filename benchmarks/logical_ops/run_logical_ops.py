@@ -1,7 +1,7 @@
 """
 General logical operations benchmark runner for LightStim.
 
-Sweeps gate types × distances × physical error rates for the unrotated surface code.
+Sweeps gate types × distances × physical error rates for surface codes.
 Results are saved to a combined CSV with per-task checkpointing (append-on-complete).
 
 Supported gates
@@ -9,6 +9,7 @@ Supported gates
     H             Fold-transversal Hadamard (2 sub-experiments: Z→X and X→Z)
     S_oneway      1-way S: noisy S, noiseless S†+MX. LER ≈ LER_per_S.
     S_roundtrip   2-way S: noisy S and S†. LER_per_gate ≈ total_LER / 2.
+    S_rotated     Rotated-code mid-cycle S/S† (roundtrip and +Y checks)
     CNOT_trans    Transversal CNOT (5 sub-experiments)
     CNOT_LS_ZZ_XX Lattice Surgery CNOT, ZZ-XX protocol (5 sub-experiments)
     CNOT_LS_XX_ZZ Lattice Surgery CNOT, XX-ZZ protocol (5 sub-experiments)
@@ -67,6 +68,10 @@ from lightstim.protocols.fold_transversal import (
     build_s_oneway_circuit,
     build_s_roundtrip_circuit,
 )
+from lightstim.protocols.rotated_logical_s import (
+    build_rotated_s_two_way_circuit,
+    build_rotated_s_y_injection_circuit,
+)
 from lightstim.protocols.cnot_trans import CNOTTransExperiment
 from lightstim.protocols.cnot_ls import CNOTLSExperiment
 from lightstim.protocols.memory import MemoryExperiment
@@ -82,7 +87,19 @@ from lightstim.qec_code.surface_code.unrotated import (
 
 # ── Available gates ───────────────────────────────────────────────────────────
 
-ALL_GATES = ["H", "S_oneway", "S_roundtrip", "CNOT_trans", "CNOT_LS_ZZ_XX", "CNOT_LS_XX_ZZ", "GHZ", "TwoPatchLS_XX", "TwoPatchLS_ZZ", "memory"]
+ALL_GATES = [
+    "H",
+    "S_oneway",
+    "S_roundtrip",
+    "S_rotated",
+    "CNOT_trans",
+    "CNOT_LS_ZZ_XX",
+    "CNOT_LS_XX_ZZ",
+    "GHZ",
+    "TwoPatchLS_XX",
+    "TwoPatchLS_ZZ",
+    "memory",
+]
 
 # CNOT sub-experiments (shared between transversal and LS variants)
 # (label, init_control, init_target, meas_control, meas_target)
@@ -158,6 +175,54 @@ def _build_s_roundtrip_tasks(distances, p_values, rounds):
             "d": d,
             "rounds": rounds,
             "p": p,
+        }
+        tasks.append((circuit, meta))
+    return tasks
+
+
+def _build_rotated_s_tasks(distances, p_values, rounds):
+    """Rotated-code dynamical S: roundtrip plus two gate-only checks.
+
+    The two-way circuit follows the historical S benchmark and makes
+    preparation, padding, both gates, and readout noisy. The one-way circuits
+    inject +Y, pad, and read out noiselessly so that only the selected
+    mid-cycle S-SE round is noisy.
+    """
+    tasks = []
+    sub_experiments = [
+        ("S_then_S_DAG", "X", 2),
+        ("S_DAG_plusY_to_X", "+Y", 1),
+        ("S_plusY_to_minusX", "+Y", 1),
+    ]
+    for (sub, init_b, noisy_gate_count), d, p in product(
+        sub_experiments,
+        distances,
+        p_values,
+    ):
+        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        with contextlib.redirect_stdout(io.StringIO()):
+            if sub == "S_then_S_DAG":
+                circuit = build_rotated_s_two_way_circuit(
+                    distance=d,
+                    rounds=rounds,
+                    noise_params=noise,
+                )
+            else:
+                circuit = build_rotated_s_y_injection_circuit(
+                    distance=d,
+                    gate="S_DAG" if sub == "S_DAG_plusY_to_X" else "S",
+                    padding_rounds=rounds,
+                    noise_params=noise,
+                )
+        meta = {
+            "gate": "S_rotated",
+            "sub_experiment": sub,
+            "init_basis": init_b,
+            "measure_basis": "X",
+            "d": d,
+            "rounds": rounds,
+            "p": p,
+            "noisy_gate_count": noisy_gate_count,
         }
         tasks.append((circuit, meta))
     return tasks
@@ -363,6 +428,8 @@ def build_tasks(gate: str, distances, p_values, rounds: int):
         return _build_s_oneway_tasks(distances, p_values, rounds)
     if gate == "S_roundtrip":
         return _build_s_roundtrip_tasks(distances, p_values, rounds)
+    if gate == "S_rotated":
+        return _build_rotated_s_tasks(distances, p_values, rounds)
     if gate == "CNOT_trans":
         return _build_cnot_trans_tasks(distances, p_values, rounds)
     if gate == "CNOT_LS_ZZ_XX":
@@ -430,7 +497,8 @@ def _load_done_keys(path: Path) -> set:
 
 def _run_tasks(task_list, decoder_cfg: DecoderConfig,
                max_shots: int, max_errors: int,
-               num_workers: int, output_path: Path) -> None:
+               num_workers: int, output_path: Path,
+               *, batch_size: int = 1_000) -> None:
     """
     Run a list of (circuit, metadata) tuples with per-task checkpointing.
     Already-completed tasks (by checkpoint key) are skipped on resume.
@@ -453,7 +521,7 @@ def _run_tasks(task_list, decoder_cfg: DecoderConfig,
         decoder_config=decoder_cfg,
         max_shots=max_shots,
         max_errors=max_errors,
-        batch_size=1_000,
+        batch_size=batch_size,
         num_workers=num_workers,
         print_progress=True,
     )
@@ -516,13 +584,17 @@ def main():
     ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
     ap.add_argument("--max-errors",  type=int, default=100)
     ap.add_argument("--num-workers", type=int, default=8)
+    ap.add_argument("--batch-size", type=int, default=1_000)
     ap.add_argument(
         "--quick", action="store_true",
         help="Quick mode: distances=[3,5], 2 p-values, max_shots=100k, max_errors=20",
     )
     ap.add_argument(
         "--output", default=None,
-        help="Output CSV path (default: results/logical_ops_results.csv)",
+        help=(
+            "Output CSV path. Defaults to results/rotated_s_results.csv for "
+            "an S_rotated-only run and results/logical_ops_results.csv otherwise."
+        ),
     )
     args = ap.parse_args()
 
@@ -539,11 +611,15 @@ def main():
         max_errors = args.max_errors
 
     gates_to_run = args.gate if args.gate else ALL_GATES
-    output_path  = Path(args.output) if args.output else \
-        SCRIPT_DIR / "results" / "logical_ops_results.csv"
+    if args.output:
+        output_path = Path(args.output)
+    elif gates_to_run == ["S_rotated"]:
+        output_path = SCRIPT_DIR / "results" / "rotated_s_results.csv"
+    else:
+        output_path = SCRIPT_DIR / "results" / "logical_ops_results.csv"
 
     print("=" * 60)
-    print("Logical Operations Benchmark — Unrotated Surface Code")
+    print("Logical Operations Benchmark — Surface Codes")
     print(f"Mode       : {'quick' if args.quick else 'full'}")
     print(f"Gates      : {gates_to_run}")
     print(f"Distances  : {distances}")
@@ -578,6 +654,7 @@ def main():
             max_shots, max_errors,
             args.num_workers,
             output_path,
+            batch_size=args.batch_size,
         )
 
     print("\n" + "=" * 60)

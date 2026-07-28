@@ -42,8 +42,14 @@ _MARKERS = ["o", "s", "^", "D", "v", "P", "*", "X"]
 _DEFAULT_INPUT  = SCRIPT_DIR / "results" / "logical_ops_results.csv"
 _DEFAULT_OUTPUT = SCRIPT_DIR / "results" / "logical_ops_plot.png"
 
+_ROTATED_S_TITLES = {
+    "S_then_S_DAG": r"Rotated S$\rightarrow$S$^\dagger$ roundtrip",
+    "S_DAG_plusY_to_X": r"Rotated S$^\dagger$: $+Y\rightarrow +X$",
+    "S_plusY_to_minusX": r"Rotated S: $+Y\rightarrow -X$",
+}
 
-def _plot_gate_panel(ax: plt.Axes, df_gate: pd.DataFrame, gate: str) -> None:
+
+def _plot_gate_panel(ax: plt.Axes, df_gate: pd.DataFrame, title: str) -> None:
     """
     Plot one panel (one gate): one curve per distance.
 
@@ -74,10 +80,56 @@ def _plot_gate_panel(ax: plt.Axes, df_gate: pd.DataFrame, gate: str) -> None:
     ax.set_yscale("log")
     ax.set_xlabel("Physical error rate $p$", fontsize=11)
     ax.set_ylabel("Logical error rate", fontsize=11)
-    ax.set_title(gate, fontsize=12, fontweight="bold")
+    ax.set_title(title, fontsize=12, fontweight="bold")
     ax.legend(fontsize=9, framealpha=0.85, loc="upper left")
     ax.grid(True, which="both", ls="--", alpha=0.4)
     bold_ticks(ax)
+
+
+def _panel_specs(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """Return plot panels without averaging unlike rotated-S experiments."""
+    panels = []
+    for gate in sorted(df["gate"].unique()):
+        df_gate = df[df["gate"] == gate]
+        if gate != "S_rotated":
+            panels.append((gate, df_gate))
+            continue
+        for sub_experiment in _ROTATED_S_TITLES:
+            df_sub = df_gate[
+                df_gate["sub_experiment"] == sub_experiment
+            ]
+            if not df_sub.empty:
+                panels.append(
+                    (_ROTATED_S_TITLES[sub_experiment], df_sub)
+                )
+    return panels
+
+
+def plot_results(df: pd.DataFrame) -> plt.Figure:
+    """Build the logical-operations figure for an already-filtered table."""
+    if df.empty:
+        raise ValueError("No data to plot.")
+
+    panels = _panel_specs(df)
+    n = len(panels)
+    ncols = min(n, 3)
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(5.5 * ncols, 4.5 * nrows),
+        constrained_layout=True,
+        squeeze=False,
+    )
+
+    for idx, (title, df_panel) in enumerate(panels):
+        row, col = divmod(idx, ncols)
+        _plot_gate_panel(axes[row][col], df_panel, title)
+
+    for idx in range(n, nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axes[row][col].set_visible(False)
+
+    return fig
 
 
 def main():
@@ -120,29 +172,7 @@ def main():
         print("No data after filtering — nothing to plot.")
         return
 
-    gates = sorted(df["gate"].unique())
-    n = len(gates)
-
-    # Layout: up to 3 columns
-    ncols = min(n, 3)
-    nrows = (n + ncols - 1) // ncols
-    fig, axes = plt.subplots(
-        nrows, ncols,
-        figsize=(5.5 * ncols, 4.5 * nrows),
-        constrained_layout=True,
-        squeeze=False,
-    )
-
-    for idx, gate in enumerate(gates):
-        row, col = divmod(idx, ncols)
-        ax = axes[row][col]
-        df_gate = df[df["gate"] == gate]
-        _plot_gate_panel(ax, df_gate, gate)
-
-    # Hide unused axes
-    for idx in range(n, nrows * ncols):
-        row, col = divmod(idx, ncols)
-        axes[row][col].set_visible(False)
+    fig = plot_results(df)
 
     if args.output:
         out = Path(args.output)

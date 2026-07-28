@@ -3,8 +3,8 @@
 Demonstration notebooks for LightStim protocols. Each notebook corresponds to a
 protocol in `lightstim/protocols/` and shows:
 
-1. A **circuit visualization** (small scale: d=3, 1-2 SE rounds)
-2. A **small numerical result** (hardcoded d=3/5, not a full sweep)
+1. A **protocol diagram** (small scale: d=3, 1-2 SE rounds)
+2. Optionally, a **small numerical result** (hardcoded d=3/5, not a full sweep)
 
 Sweep experiments belong in `benchmarks/`, not here.
 
@@ -43,6 +43,7 @@ notebooks/
 | `logical_CNOT_LS.ipynb` | `protocols/cnot_ls.py` | Logical CNOT via lattice surgery (ZZ + XX) |
 | `logical_CNOT_trans.ipynb` | `protocols/cnot_trans.py` | Transversal CNOT between two surface-code patches |
 | `logical_H_S.ipynb` | `protocols/fold_transversal.py` | Fold-transversal H and S gates |
+| `logical_S_rotated.ipynb` | `protocols/rotated_logical_s.py` | Mid-cycle dynamical S; two-way and noiseless-Y one-way diagrams |
 | `state_injection.ipynb` | `protocols/state_injection.py` | Non-FT magic-state injection (rotated SC) |
 | `two_patch_LS.ipynb` | `protocols/two_patch_ls.py` | Two-patch ZZ lattice surgery coupler |
 | `multi_patch_LS.ipynb` | *(in-progress)* | Multi-patch lattice surgery; unrotated SC N-patch coupler |
