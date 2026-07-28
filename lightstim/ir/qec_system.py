@@ -114,10 +114,11 @@ class QECSystem:
         that belong to CURRENTLY ACTIVE stabilizers.
         Used to generate 'R' and 'M' instructions only for relevant qubits.
         """
-        return [
-            self.stabilizers[uid]['syn_idx'] 
+        return sorted({
+            self.stabilizers[uid]['syn_idx']
             for uid in self.active_stabilizer_indices
-        ]
+            if self.stabilizers[uid].get('syn_idx') is not None
+        })
 
     @property
     def active_syndrome_indices_x(self) -> List[int]:
@@ -125,22 +126,28 @@ class QECSystem:
         Returns indices of syndrome qubits measuring active X-stabilizers.
         Used to determine where to apply Hadamard gates (or basis change).
         """
-        return [
-            self.stabilizers[uid]['syn_idx'] 
-            for uid in self.active_stabilizer_indices 
-            if self.stabilizers[uid].get('type') == 'X'
-        ]
+        return sorted({
+            self.stabilizers[uid]['syn_idx']
+            for uid in self.active_stabilizer_indices
+            if (
+                self.stabilizers[uid].get('type') == 'X'
+                and self.stabilizers[uid].get('syn_idx') is not None
+            )
+        })
 
     @property
     def active_syndrome_indices_z(self) -> List[int]:
         """
         Returns indices of syndrome qubits measuring active Z-stabilizers.
         """
-        return [
-            self.stabilizers[uid]['syn_idx'] 
-            for uid in self.active_stabilizer_indices 
-            if self.stabilizers[uid].get('type') == 'Z'
-        ]
+        return sorted({
+            self.stabilizers[uid]['syn_idx']
+            for uid in self.active_stabilizer_indices
+            if (
+                self.stabilizers[uid].get('type') == 'Z'
+                and self.stabilizers[uid].get('syn_idx') is not None
+            )
+        })
 
     @property
     def active_syndrome_coords(self) -> List[Tuple[float, float]]:

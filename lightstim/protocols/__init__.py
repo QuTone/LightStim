@@ -1,3 +1,4 @@
+from .memory import MemoryExperiment
 from .bell_teleportation import BellTeleportTG, BellTeleportZZLS, BellTeleportXXLS
 from .gate_teleport import SGateTeleportExperiment
 from .ls_distillation import (

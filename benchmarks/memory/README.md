@@ -46,6 +46,38 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | `cpu_bposd` | CPU | QLDPC codes, no GPU |
 | `gpu_bposd` | GPU (CUDA) | BB codes at scale |
 
+## Color Code SE Circuits
+
+`--codes color` defaults to `space_multiplexing`. Select one or more circuits
+with `--color-se-circuits`:
+
+| CLI name | Layout | Extraction block | Bases |
+|----------|--------|------------------|-------|
+| `space_multiplexing` | `superdense` | `ColorCodeSpaceMultiplexingBlock` | X/Y/Z |
+| `bell_multiplexing` | `superdense` | `ColorCodeBellMultiplexingBlock` | X/Y/Z |
+| `bell_flagging` | `superdense` | `ColorCodeBellFlaggingBlock` | X/Y/Z |
+| `time_multiplexing` | `triangular` | `ColorCodeTimeMultiplexingBlock` | X/Y/Z |
+| `middle_out` | `rectangle` | `ColorCodeMiddleOutBlock` | X/Z |
+
+For example, this runs all five circuits without exceeding the repository's
+48-CPU benchmark limit:
+
+```bash
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes color --distances 3 5 7 \
+    --color-se-circuits \
+        space_multiplexing bell_multiplexing bell_flagging \
+        time_multiplexing middle_out \
+    --basis Z \
+    --p-values 1e-4 2e-4 4e-4 7e-4 1e-3 2e-3 4e-3 \
+    --decoder mwpf --num-workers 48 \
+    --max-shots 10000000 --max-errors 500 \
+    --output benchmarks/memory/results/color_all_mwpf.csv
+```
+
+Use `--decoder gpu_bposd --num-workers 1` for the GPU backend. The runner
+always uses exactly one worker for GPU decoding.
+
 ## Common Use Cases
 
 ### Surface code family comparison
@@ -81,6 +113,20 @@ venv/bin/python benchmarks/memory/run_memory.py \
     --basis Z X --decoder pymatching
 ```
 
+### Color Code X/Y/Z memory experiments
+
+```bash
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes color --distances 3 5 \
+    --color-se-circuits space_multiplexing bell_multiplexing \
+        bell_flagging time_multiplexing \
+    --p-values 1e-3 2e-3 4e-3 \
+    --basis X Y Z --decoder mwpf --num-workers 16
+```
+
+`middle_out` is intentionally omitted because its memory interface currently
+supports X/Z, not Y.
+
 ### Phenomenological noise model
 ```bash
 venv/bin/python benchmarks/memory/run_memory.py \
@@ -114,23 +160,29 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 
 # Filter and title
 venv/bin/python benchmarks/memory/plot_memory.py results/*.csv \
-    --codes rotated_sc --distances 3 5 7 \
-    --title "Rotated Surface Code"
+    --codes color --se-circuits bell_flagging time_multiplexing \
+    --basis Z --distances 3 5 7 \
+    --title "Color Code"
 ```
 
 ## Output Format
 
-Results are saved as CSV with one row per (code, distance, p, basis, noise_model, decoder) combination:
+Results are saved as CSV with one row per complete benchmark configuration:
 
 ```
-code, distance, p, basis, rounds, noise_model, decoder_name,
-shots, errors, logical_error_rate, seconds, n_data, n_total, k
+code, distance, p, basis, rounds, se_circuit, noise_model, decoder_name,
+layout, block_class, shots, errors, logical_error_rate, seconds,
+n_data, n_total, k
 ```
 
 Default output path: `benchmarks/memory/results/<codes>_<decoder>.csv`
+
+The `results/` directory is git-ignored. Benchmark data stays local unless it
+is deliberately published elsewhere.
 
 ## Checkpointing
 
 The runner automatically skips tasks already present in the output CSV.
 Safe to interrupt with Ctrl+C and resume — just re-run the same command.
-
+The SE circuit is part of the checkpoint key, so different Color Code circuits
+can safely share one CSV.

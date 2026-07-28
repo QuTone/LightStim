@@ -25,7 +25,12 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "benchmarks" / "memory"))
 
 from run_memory import (
-    _BB_CONFIGS, _TOPO_CODES, _decoder_config, _task_key, build_circuit,
+    COLOR_SE_CIRCUITS,
+    _BB_CONFIGS,
+    _TOPO_CODES,
+    _decoder_config,
+    _task_key,
+    build_circuit,
 )
 
 
@@ -50,6 +55,14 @@ def _has_bposd() -> bool:
     try:
         from lightstim.simulation.decoder_backend.registry import list_decoders
         return "bposd" in list_decoders()
+    except Exception:
+        return False
+
+
+def _has_mwpf() -> bool:
+    try:
+        from lightstim.simulation.decoder_backend.registry import list_decoders
+        return "mwpf" in list_decoders()
     except Exception:
         return False
 
@@ -106,6 +119,54 @@ def test_build_circuit_custom_rounds():
     assert circuit.num_qubits > 0
 
 
+@pytest.mark.parametrize("se_circuit", list(COLOR_SE_CIRCUITS))
+def test_build_circuit_color_se_circuits(se_circuit):
+    circuit, n_data, n_total, k = build_circuit(
+        "color",
+        3,
+        p=1e-2,
+        basis="X",
+        se_circuit=se_circuit,
+    )
+    assert circuit.num_qubits > 0
+    assert circuit.num_detectors > 0
+    assert circuit.num_observables == 1
+    assert n_total >= n_data > 0
+    assert k == 1
+
+
+@pytest.mark.parametrize(
+    "se_circuit",
+    [
+        "space_multiplexing",
+        "bell_multiplexing",
+        "bell_flagging",
+        "time_multiplexing",
+    ],
+)
+def test_build_circuit_color_y_basis(se_circuit):
+    circuit, *_ = build_circuit(
+        "color",
+        3,
+        p=1e-2,
+        basis="Y",
+        se_circuit=se_circuit,
+    )
+    assert circuit.num_detectors > 0
+    assert circuit.num_observables == 1
+
+
+def test_build_circuit_middle_out_rejects_y_basis():
+    with pytest.raises(ValueError, match="supports basis X, Z"):
+        build_circuit(
+            "color",
+            3,
+            p=1e-2,
+            basis="Y",
+            se_circuit="middle_out",
+        )
+
+
 # ── Layer 2: decoder config + checkpointing ───────────────────────────────────
 
 @pytest.mark.parametrize("name", ["pymatching", "mwpf", "cpu_bposd"])
@@ -125,20 +186,70 @@ def test_task_key_excludes_result_columns():
     base = {
         "code": "rotated_sc", "distance": 3, "p": 1e-3,
         "basis": "Z", "rounds": 3, "noise_model": "circuit_level",
-        "decoder_name": "pymatching",
+        "se_circuit": "default", "decoder_name": "pymatching",
     }
     with_results = {**base,
                     "shots": 1000, "errors": 10, "logical_error_rate": 0.01,
-                    "seconds": 5.0, "n_data": 9, "n_total": 17, "k": 1}
+                    "seconds": 5.0, "n_data": 9, "n_total": 17, "k": 1,
+                    "layout": "code_default", "block_class": "code_default"}
     assert _task_key(base) == _task_key(with_results)
 
 
 def test_task_key_distinguishes_inputs():
     """Different inputs must produce different keys."""
     a = {"code": "rotated_sc", "distance": 3, "p": 1e-3,
-         "basis": "Z", "rounds": 3, "noise_model": "circuit_level", "decoder_name": "pymatching"}
+         "basis": "Z", "rounds": 3, "se_circuit": "default",
+         "noise_model": "circuit_level", "decoder_name": "pymatching"}
     b = {**a, "distance": 5}
     assert _task_key(a) != _task_key(b)
+
+
+def test_task_key_distinguishes_color_se_circuits():
+    a = {
+        "code": "color",
+        "distance": 3,
+        "p": 1e-3,
+        "basis": "Z",
+        "rounds": 3,
+        "se_circuit": "space_multiplexing",
+        "noise_model": "circuit_level",
+        "decoder_name": "mwpf",
+    }
+    b = {**a, "se_circuit": "bell_multiplexing"}
+    assert _task_key(a) != _task_key(b)
+
+
+def test_plot_keeps_color_se_circuits_separate():
+    plt = pytest.importorskip("matplotlib.pyplot")
+    pytest.importorskip("seaborn")
+    from plot_memory import plot_ler_vs_p
+
+    rows = []
+    for se_circuit, scale in [
+        ("space_multiplexing", 1.0),
+        ("bell_flagging", 2.0),
+    ]:
+        for p in [1e-3, 2e-3]:
+            rows.append({
+                "code": "color",
+                "distance": 3,
+                "p": p,
+                "basis": "Z",
+                "rounds": 3,
+                "se_circuit": se_circuit,
+                "noise_model": "circuit_level",
+                "decoder_name": "mwpf",
+                "logical_error_rate": p * scale,
+            })
+
+    fig, ax = plt.subplots()
+    plot_ler_vs_p(pd.DataFrame(rows), ax)
+    assert len(ax.lines) == 2
+    assert {line.get_label() for line in ax.lines} == {
+        "color space_multiplexing d=3 Z mwpf",
+        "color bell_flagging d=3 Z mwpf",
+    }
+    plt.close(fig)
 
 
 # ── Layer 3: CLI integration ───────────────────────────────────────────────────
@@ -194,6 +305,67 @@ def test_cli_checkpoint_resume(tmp_path):
 
     df = pd.read_csv(out)
     assert len(df) == 1  # no duplicates appended
+
+
+@pytest.mark.skipif(not _has_mwpf(), reason="mwpf decoder unavailable")
+def test_cli_color_se_circuits(tmp_path):
+    out = tmp_path / "color.csv"
+    r = _run_cli(
+        [
+            "--codes", "color",
+            "--distances", "3",
+            "--p-values", "5e-3",
+            "--basis", "X",
+            "--color-se-circuits",
+            "space_multiplexing",
+            "bell_multiplexing",
+            "--decoder", "mwpf",
+            "--max-shots", "30",
+            "--max-errors", "1",
+            "--batch-size", "10",
+            "--num-workers", "1",
+        ],
+        out,
+    )
+    assert r.returncode == 0, r.stderr
+    df = pd.read_csv(out)
+    assert len(df) == 2
+    assert set(df["se_circuit"]) == {
+        "space_multiplexing",
+        "bell_multiplexing",
+    }
+    assert set(df["layout"]) == {"superdense"}
+    assert set(df["block_class"]) == {
+        "ColorCodeSpaceMultiplexingBlock",
+        "ColorCodeBellMultiplexingBlock",
+    }
+
+
+def test_cli_rejects_middle_out_y(tmp_path):
+    out = tmp_path / "invalid.csv"
+    r = _run_cli(
+        [
+            "--codes", "color",
+            "--distances", "3",
+            "--basis", "Y",
+            "--color-se-circuits", "middle_out",
+        ],
+        out,
+    )
+    assert r.returncode != 0
+    assert "middle_out supports only X/Z" in r.stderr
+    assert not out.exists()
+
+
+def test_cli_rejects_more_than_48_workers(tmp_path):
+    out = tmp_path / "invalid_workers.csv"
+    r = _run_cli(
+        ["--codes", "rotated_sc", "--distances", "3", "--num-workers", "49"],
+        out,
+    )
+    assert r.returncode != 0
+    assert "--num-workers must be between 1 and 48" in r.stderr
+    assert not out.exists()
 
 
 @pytest.mark.skipif(not _has_bposd(), reason="bposd decoder unavailable; pip install -e '.[decoders]'")

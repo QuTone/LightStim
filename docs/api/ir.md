@@ -20,8 +20,8 @@ Abstract base class for all QEC codes. Subclass it to define a new code family.
 | `index_map` | `Dict[(float,float), int]` | `(x, y) → uid` reverse lookup |
 | `data_indices` | `Set[int]` | UIDs of data qubits |
 | `syndrome_indices` | `Set[int]` | UIDs of all syndrome (ancilla) qubits |
-| `syndrome_indices_x` | `Set[int]` | UIDs of X-syndrome qubits |
-| `syndrome_indices_z` | `Set[int]` | UIDs of Z-syndrome qubits |
+| `syndrome_indices_x` | `Set[int]` | UIDs used for X-syndrome readout |
+| `syndrome_indices_z` | `Set[int]` | UIDs used for Z-syndrome readout |
 | `stabilizers` | `List[Dict]` | See stabilizer record format below |
 | `logical_ops` | `List[Dict]` | See logical op record format below |
 | `num_logicals` | `int` | Number of logical qubits (must set in `build()`) |
@@ -33,8 +33,8 @@ Abstract base class for all QEC codes. Subclass it to define a new code family.
     "pauli":       {uid: "X"/"Z"/"Y", ...},  # data qubit support
     "type":        "X" | "Z" | "Mixed",
     "data_indices": [uid, ...],              # same as pauli keys, sorted
-    "syn_coord":   (float, float),           # coordinate of ancilla
-    "syn_idx":     int,                      # uid of ancilla
+    "syn_coord":   (float, float) | None,    # coordinate of ancilla, if any
+    "syn_idx":     int | None,               # uid of ancilla, if any
 }
 ```
 
@@ -42,7 +42,9 @@ Abstract base class for all QEC codes. Subclass it to define a new code family.
 
 ```python
 uid = self.add_qubit(x, y, role)
-# role: 'data' | 'syndrome_x' | 'syndrome_z'
+# role: 'data' | 'syndrome' | 'syndrome_x' | 'syndrome_z'
+# 'syndrome' is a shared/role-neutral ancilla. Add it to the relevant
+# syndrome_indices_x/z sets when the schedule uses it in those roles.
 # Returns the assigned integer uid.
 
 self.create_stim_stabilizer(
@@ -210,15 +212,26 @@ builder.initialize(
 ```python
 builder.apply_syndrome_extraction(
     circuit_chunk,  # stim.Circuit — exactly ONE round of stabilizer measurement
-                    # (last instruction MUST be M or MX on syndrome qubits)
-    rounds=1,       # Number of rounds. Round 1: full tracker analysis. Rounds 2+: REPEAT block.
+                    # ending in a contiguous M/MX syndrome readout layer
+    rounds=1,       # Round 1: initialization boundary; round 2: steady transition;
+                    # rounds 3+: reuse the round-2 body
     noiseless=False,# Tag all instructions as 'noiseless'
     z_only=False,   # Suppress X-ancilla DETECTOR instructions (for Z-basis memory)
+    measurement_blocks=None,
+                    # Optional physical reset+Clifford+measurement blocks whose
+                    # concatenation is one Builder-level SE round
 )
-# Emits: SHIFT_COORDS + circuit_chunk + (REPEAT block if rounds > 1)
+# Emits: an explicit first round, an explicit second round when requested,
+#        then a REPEAT block for rounds 3+
 # Tracker:
-#   Round 1 — tableau inversion to find back-propagated Paulis; calls process_mid_measurement()
-#   Rounds 2+ — repeats detectors as rec[-k] ^ rec[-k-n_syn]; updates record offsets
+#   Back-propagates terminal measurements to construct detectors at the input boundary.
+#   Forward-propagates reset stabilizers to write the output tableau and record parities.
+#   Each physical block performs the same tracker update. After the complete
+#   Builder-level round, Builder explicitly classifies/rebases the state basis.
+#   Analyzes round 2 explicitly; later rounds reuse its relative detector records.
+#   For a single-logical steady state, probes two virtual rounds, canonicalizes the
+#   logical Pauli, and stores its repeated record delta inside the REPEAT body.
+#   Unstable or more complex transitions fall back to explicit tracker evolution.
 ```
 
 **Critical constraint:** The `circuit_chunk` must use global qubit indices.
@@ -332,8 +345,24 @@ tracker = SyndromeTracker(
 tracker.process_initialization(init_tableau)
 # Adds rows from |0⟩/|+⟩/|Y⟩ initialization to stabilizer tableau.
 
-tracker.process_mid_measurement(circuit, back_propagated_paulis, syn_coords, no_detector_mask)
-# Handles one SE round: updates tableau + emits DETECTOR instructions to circuit.
+tracker.process_mid_measurement(
+    circuit,
+    forward_symplectic_matrix,
+    back_propagated_paulis,
+    reset_paulis,
+    syn_qubit_indices,
+    syn_measurement_bases,
+    syn_coords,
+    no_detector_mask,
+)
+# Handles one physical measurement block: emits input-boundary detectors,
+# forward-propagates the post-measurement state, and writes the output tableau
+# with record parities. It does not know whether an SE round has ended.
+
+tracker.promote_stabilizer_rows_to_logicals(row_indices)
+tracker.rebase_stabilizers_onto_code_basis(system)
+# Pure tableau-basis operations requested by CircuitBuilder at its chosen
+# protocol boundary. They are not part of the physical measurement update.
 
 tracker.process_data_measurement(circuit, final_paulis, idx_to_coord_map, syndrome_qubit_indices)
 # Final readout: resolves remaining rows into DETECTOR + OBSERVABLE_INCLUDE.
