@@ -3,6 +3,7 @@ import stim
 from typing import Type, Literal, Optional, Any, Dict
 
 from lightstim.ir.builder import CircuitBuilder
+from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.noise.config import NoiseConfig
 
@@ -17,26 +18,32 @@ class MemoryExperiment:
     """
 
     def __init__(self,
-                 qec_system: Any,  # The System/Geometry object
-                 extraction_block_class: Optional[Type] = None, # Class ref, e.g. RotatedSurfaceCodeExtractionBlock
+                 qec_system: Optional[Any] = None,
+                 extraction_block_class: Optional[Type] = None,
                  rounds: int = 2,
                  noise_params: Optional[NoiseConfig] = None,
                  noise_model: Optional[str] = 'circuit_level',
-                 basis: Literal['X', 'Z'] = 'Z',
+                 basis: Literal['X', 'Y', 'Z'] = 'Z',
                  if_detector: bool = True,
                  se_block_kwargs: Optional[dict] = None,
                  z_only: bool = False,
-                 data_basis_map: Optional[Dict[int, str]] = None):
+                 data_basis_map: Optional[Dict[int, str]] = None,
+                 qec_patch: Optional[Any] = None,
+                 patch_name: str = 'memory'):
         """
         Args:
-            qec_patch: The system configuration object (contains coords, indices, map).
+            qec_system: An existing system configuration. Mutually exclusive with
+                `qec_patch`.
+            qec_patch: A single patch to place into a new QECSystem. This is the
+                concise interface for one-patch memory experiments.
+            patch_name: Name used when placing `qec_patch` into the new system.
             extraction_block_class: The class used to generate the SE circuit chunk.
                 If omitted, a patch-provided default is used when present,
                 otherwise GenericCSSColorationExtractionBlock is used.
             rounds: Number of QEC rounds (d).
             noise_params: Parameters for noise injection.
             noise_model: Strategy string ('code_capacity', 'phenomenological', etc.)
-            basis: Memory basis to preserve ('X' or 'Z'). Ignored when data_basis_map
+            basis: Memory basis to preserve ('X', 'Y', or 'Z'). Ignored when data_basis_map
                 is provided — the per-qubit map then fully determines both the
                 initialization and readout bases.
             if_detector: If True, emit DETECTOR and OBSERVABLE_INCLUDE instructions.
@@ -54,6 +61,41 @@ class MemoryExperiment:
                 Incompatible with z_only=True.
         """
         self._log = logging.getLogger(__name__)
+        if (qec_system is None) == (qec_patch is None):
+            raise ValueError("Provide exactly one of 'qec_system' or 'qec_patch'.")
+
+        self.basis = str(basis).upper()
+        if self.basis not in ('X', 'Y', 'Z'):
+            raise ValueError(f"basis must be 'X', 'Y', or 'Z'; got {basis!r}")
+
+        self.patch = None
+        self.patch_name = None
+        if qec_patch is not None:
+            qec_system = QECSystem()
+            qec_system.add_patch(qec_patch, name=patch_name)
+            self.patch = qec_system.patches[patch_name][0]
+            self.patch_name = patch_name
+
+        self.system = qec_system
+        self.block_class = (
+            extraction_block_class or self._infer_extraction_block_class()
+        )
+
+        if qec_patch is not None:
+            if data_basis_map is None:
+                basis_map_factory = getattr(
+                    self.block_class,
+                    'memory_data_basis_map',
+                    None,
+                )
+                if basis_map_factory is not None:
+                    local_basis_map = basis_map_factory(self.patch, self.basis)
+                    local_to_global = qec_system.local_to_global_map[patch_name]
+                    data_basis_map = {
+                        local_to_global[local_idx]: qubit_basis
+                        for local_idx, qubit_basis in local_basis_map.items()
+                    }
+
         if data_basis_map is not None:
             if z_only:
                 raise ValueError(
@@ -66,12 +108,9 @@ class MemoryExperiment:
             if bad:
                 raise ValueError(f"data_basis_map values must be 'X', 'Y' or 'Z'; got {bad}")
         self.data_basis_map = data_basis_map
-        self.system = qec_system
-        self.block_class = extraction_block_class
         self.rounds = rounds
         self.noise_params = noise_params
         self.noise_model = noise_model
-        self.basis = basis.upper()
         self.se_block_kwargs = se_block_kwargs or {}
         self.z_only = z_only
 
@@ -96,7 +135,15 @@ class MemoryExperiment:
         self._log.debug("Writing coordinates...")
         self.builder.write_coordinates()
 
-        # 3. Initialization
+        # 3. Syndrome-Extraction Unit Cell
+        # ----------------------------------------------------------------------
+        # Build the physical unit cell before initialization because some
+        # spacetime protocols prepare a subset of data qubits in the first
+        # reset layer of the extraction block itself.
+        self._log.debug("Building syndrome extraction unit cell...")
+        se_block = self.block_class(self.system, **self.se_block_kwargs)
+
+        # 4. Initialization
         # ----------------------------------------------------------------------
         # Initialize Data Qubits in the target memory basis.
         # The Tracker will automatically register the initial stabilizers.
@@ -112,28 +159,40 @@ class MemoryExperiment:
                     "Generate the map AFTER system.add_patch(), e.g. "
                     "xzzx_memory_basis(system, basis)."
                 )
-            data_basis = {q: self.data_basis_map[q] for q in data_indices}
+            data_basis = dict(self.data_basis_map)
         else:
             data_basis = {q: self.basis for q in data_indices}
-        init_dict = dict(data_basis)
+        block_initialized_data = set(
+            getattr(se_block, "data_qubits_initialized_by_block", ())
+        )
+        unexpected_block_initialized_data = (
+            block_initialized_data - set(data_indices)
+        )
+        if unexpected_block_initialized_data:
+            raise ValueError(
+                "An extraction block may initialize only data qubits in this "
+                "memory experiment; got unexpected indices "
+                f"{sorted(unexpected_block_initialized_data)}."
+            )
+        init_dict = {
+            qubit: qubit_basis
+            for qubit, qubit_basis in data_basis.items()
+            if qubit not in block_initialized_data
+        }
         self.builder.initialize(init_dict=init_dict, n=num_qubits)
+        self.system.active_qubit_indices.update(data_indices)
 
-        # 4. Syndrome Extraction Loop
+        # 5. Syndrome Extraction Loop
         # ----------------------------------------------------------------------
-        # Instantiate the block to get the unit-cell circuit (One Round)
-        # We pass self.patch because the Block needs coordinate info
         self._log.debug("Building syndrome extraction rounds...")
-        block_class = self.block_class or self._infer_extraction_block_class()
-        se_block = block_class(self.system, **self.se_block_kwargs)
-
-        # Apply the loop using Builder, construct detectors
         self.builder.apply_syndrome_extraction(
             circuit_chunk=se_block.circuit,
             rounds=self.rounds,
             z_only=self.z_only,
+            measurement_blocks=getattr(se_block, "measurement_blocks", None),
         )
 
-        # 5. Final Readout
+        # 6. Final Readout
         # ----------------------------------------------------------------------
         # Measure data qubits in the memory basis. Construct detectors and logical observables.
         # Same per-qubit map as initialization: both time boundaries must agree for the
@@ -142,7 +201,7 @@ class MemoryExperiment:
         measurements = dict(data_basis)
         self.builder.apply_data_readout(final_measurements=measurements, z_only=self.z_only)
 
-        # 6. Noise Injection
+        # 7. Noise Injection
         # ----------------------------------------------------------------------
         # Finally, wrap the clean topological circuit with the requested noise model.
         if self.noise_params is not None:

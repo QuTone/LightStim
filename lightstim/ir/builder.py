@@ -1,7 +1,8 @@
+import copy
 import logging
 import stim
 import numpy as np
-from typing import List, Dict, Any, Optional, Union, Literal, Set
+from typing import List, Dict, Any, Optional, Union, Literal, Set, Tuple
 from dataclasses import dataclass
 
 _log = logging.getLogger(__name__)
@@ -28,6 +29,19 @@ def _make_noiseless(circuit: stim.Circuit) -> stim.Circuit:
             args = inst.gate_args_copy() or None
             result.append(inst.name, inst.targets_copy(), args, tag="noiseless")
     return result
+
+
+@dataclass(frozen=True)
+class _MeasurementBlockAnalysis:
+    circuit: stim.Circuit
+    forward_symplectic_matrix: np.ndarray
+    back_propagated_paulis: np.ndarray
+    reset_paulis: Optional[np.ndarray]
+    measurement_qubit_indices: List[int]
+    measurement_bases: List[str]
+    measurement_coords: list
+    discarded_measurement_qubit_indices: Set[int]
+    no_detector_mask: Optional[np.ndarray]
 
 
 class CircuitBuilder:
@@ -137,7 +151,10 @@ class CircuitBuilder:
     def stabilizer_canonicalization(self, stabilizer_uids: Optional[Set[int]] = None) -> None:
         """
         Re-organize stabilizer tableau into stabilizers vs logicals using
-        code-defined canonical basis. Call after encoding, before SE.
+        the code-defined canonical basis.
+
+        This can be used after encoding or to finalize a composite SE round
+        whose explicit measurement blocks were processed separately.
         """
         self.tracker.stabilizer_canonicalization(self.system, stabilizer_uids)
 
@@ -154,17 +171,247 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # B. Syndrome Extraction
     # --------------------------------------------------------------------------
+    @staticmethod
+    def _join_measurement_blocks(
+        measurement_blocks: Tuple[stim.Circuit, ...],
+    ) -> stim.Circuit:
+        circuit = stim.Circuit()
+        for block in measurement_blocks:
+            circuit += block
+        return circuit
+
+    @staticmethod
+    def _uses_disposable_syndrome_readout(
+        analyses: Tuple[_MeasurementBlockAnalysis, ...],
+    ) -> bool:
+        return all(
+            analysis.discarded_measurement_qubit_indices
+            == set(analysis.measurement_qubit_indices)
+            for analysis in analyses
+        )
+
+    def _finish_measurement_block_group(
+        self,
+        analyses: Tuple[_MeasurementBlockAnalysis, ...],
+        *,
+        promotable_stabilizer_rows: Tuple[Set[int], ...],
+        tracker: Optional[SyndromeTracker] = None,
+    ) -> None:
+        """Apply Builder-owned state classification at an SE-round boundary."""
+        tracker = self.tracker if tracker is None else tracker
+        if self._uses_disposable_syndrome_readout(analyses):
+            if len(analyses) == 1:
+                tracker.promote_stabilizer_rows_to_logicals(
+                    promotable_stabilizer_rows[0]
+                )
+            else:
+                tracker.rebase_stabilizers_onto_code_basis(self.system)
+        else:
+            tracker.validate_logical_count(
+                context="syndrome-extraction round"
+            )
+
+    def _analyze_measurement_block(
+        self,
+        circuit: stim.Circuit,
+        *,
+        z_only: bool,
+    ) -> _MeasurementBlockAnalysis:
+        (
+            back_propagated_paulis,
+            measurement_qubit_indices,
+            measurement_bases,
+        ) = self._get_back_propagated_pauli(
+            circuit,
+            self.tracker.num_qubits,
+            include_measurement_bases=True,
+        )
+        if circuit.num_measurements != len(measurement_qubit_indices):
+            raise ValueError(
+                "Each syndrome measurement block must contain exactly one "
+                "terminal readout layer. Declare multiple measurement_blocks "
+                "instead of placing an earlier measurement inside one block."
+            )
+
+        reset_paulis = self._get_terminal_reset_paulis(
+            circuit,
+            self.tracker.num_qubits,
+            measurement_qubit_indices,
+        )
+        forward_symplectic_matrix = self.tracker.get_forward_symplectic_matrix(
+            circuit,
+            self.tracker.num_qubits,
+        )
+        measurement_coords = [
+            self.system.qubit_coords[i]
+            for i in measurement_qubit_indices
+        ]
+        patch_syndrome_qubits = set(self.system.active_syndrome_indices)
+        discarded_measurement_qubit_indices = (
+            set(measurement_qubit_indices) & patch_syndrome_qubits
+        )
+        if discarded_measurement_qubit_indices and (
+            discarded_measurement_qubit_indices
+            != set(measurement_qubit_indices)
+        ):
+            raise ValueError(
+                "A measurement block cannot currently mix disposable syndrome "
+                "ancillas with retained data-qubit measurements."
+            )
+
+        no_detector_mask = None
+        if z_only:
+            x_ancillas = set(self.system.active_syndrome_indices_x)
+            no_detector_mask = np.array(
+                [q in x_ancillas for q in measurement_qubit_indices],
+                dtype=bool,
+            )
+
+        return _MeasurementBlockAnalysis(
+            circuit=circuit,
+            forward_symplectic_matrix=forward_symplectic_matrix,
+            back_propagated_paulis=back_propagated_paulis,
+            reset_paulis=reset_paulis,
+            measurement_qubit_indices=measurement_qubit_indices,
+            measurement_bases=measurement_bases,
+            measurement_coords=measurement_coords,
+            discarded_measurement_qubit_indices=(
+                discarded_measurement_qubit_indices
+            ),
+            no_detector_mask=no_detector_mask,
+        )
+
+    def _try_canonicalize_stateful_code_frame(
+        self,
+        analysis: _MeasurementBlockAnalysis,
+        *,
+        tracker: Optional[SyndromeTracker] = None,
+    ) -> bool:
+        """Find and classify a code frame inside a retained-data block."""
+        tracker = self.tracker if tracker is None else tracker
+        if (
+            tracker.expected_num_logicals == 0
+            or tracker.logicals.count
+            == tracker.expected_num_logicals
+        ):
+            return False
+
+        prefix = stim.Circuit()
+        saw_unitary = False
+        unitary_instruction_count = 0
+        checked_instruction_count = 0
+
+        for instruction in analysis.circuit:
+            if not isinstance(instruction, stim.CircuitInstruction):
+                continue
+            gate = stim.gate_data(instruction.name)
+            if gate.is_unitary:
+                prefix.append(
+                    instruction.name,
+                    instruction.targets_copy(),
+                    instruction.gate_args_copy(),
+                )
+                saw_unitary = True
+                unitary_instruction_count += 1
+                continue
+            if instruction.name != "TICK" or not saw_unitary:
+                continue
+            if unitary_instruction_count == checked_instruction_count:
+                continue
+            checked_instruction_count = unitary_instruction_count
+
+            probe = copy.deepcopy(tracker)
+            probe.process_unitary_block(prefix)
+            try:
+                probe.rebase_stabilizers_onto_code_basis(self.system)
+            except RuntimeError:
+                continue
+            if probe.logicals.count != probe.expected_num_logicals:
+                continue
+
+            tracker.process_unitary_block(prefix)
+            tracker.rebase_stabilizers_onto_code_basis(self.system)
+            tracker.process_unitary_block(prefix.inverse())
+            return True
+
+        return False
+
+    def _process_measurement_blocks(
+        self,
+        *,
+        output_circuit: stim.Circuit,
+        analyses: Tuple[_MeasurementBlockAnalysis, ...],
+        shift_round: bool,
+        tracker: Optional[SyndromeTracker] = None,
+    ) -> None:
+        tracker = self.tracker if tracker is None else tracker
+        promotable_stabilizer_rows = []
+        for block_index, analysis in enumerate(analyses):
+            output_circuit += analysis.circuit
+            measurement_base_idx = tracker.total_measurements
+            tracker.meas_rec_to_idx_map.update({
+                measurement_base_idx + i: qubit
+                for i, qubit in enumerate(
+                    analysis.measurement_qubit_indices
+                )
+            })
+            if shift_round and block_index == 0:
+                output_circuit.append("SHIFT_COORDS", [], [0, 0, 1])
+
+            reset_paulis = analysis.reset_paulis
+            if not analysis.discarded_measurement_qubit_indices:
+                if reset_paulis is not None:
+                    tracker.process_resets(reset_paulis)
+                    reset_paulis = None
+                self._try_canonicalize_stateful_code_frame(
+                    analysis,
+                    tracker=tracker,
+                )
+
+            promotable_stabilizer_rows.append(
+                tracker.process_mid_measurement(
+                    circuit=output_circuit,
+                    forward_symplectic_matrix=(
+                        analysis.forward_symplectic_matrix
+                    ),
+                    back_propagated_paulis=(
+                        analysis.back_propagated_paulis
+                    ),
+                    reset_paulis=reset_paulis,
+                    measurement_qubit_indices=(
+                        analysis.measurement_qubit_indices
+                    ),
+                    measurement_bases=analysis.measurement_bases,
+                    measurement_coords=analysis.measurement_coords,
+                    discarded_measurement_qubit_indices=(
+                        analysis.discarded_measurement_qubit_indices
+                    ),
+                    no_detector_mask=analysis.no_detector_mask,
+                )
+            )
+        self._finish_measurement_block_group(
+            analyses,
+            promotable_stabilizer_rows=tuple(
+                promotable_stabilizer_rows
+            ),
+            tracker=tracker,
+        )
+
     def apply_syndrome_extraction(self,
                                   circuit_chunk: stim.Circuit,
                                   rounds: int = 1,
                                   noiseless: bool = False,
-                                  z_only: bool = False):
+                                  z_only: bool = False,
+                                  measurement_blocks: Optional[Tuple[stim.Circuit, ...]] = None):
         """
         Applies syndrome extraction with automated Tracker integration.
 
         Args:
-            circuit_chunk: A Stim circuit representing ONE round of stabilizer measurement.
-                           Only includes circuit operations. The last instruction has to be syndrome qubit measurement.
+            circuit_chunk: The complete physical circuit for one SE round.
+            measurement_blocks: Explicit tracker boundaries within the round.
+                Each block starts from its input preparation and ends in one
+                contiguous readout layer. When omitted, ``circuit_chunk`` is
+                treated as one measurement block.
             rounds: Number of times to repeat.
             noiseless: If True, tag all gate instructions in circuit_chunk as 'noiseless'
                 so the noise injector skips them. Useful for injection-stabilization rounds.
@@ -172,111 +419,391 @@ class CircuitBuilder:
                 X-ancilla are still measured (so the tableau update is correct) but
                 suppressed from the DEM. State is stored for apply_data_readout(z_only=True).
         """
-        if rounds < 1: return
+        if rounds < 1:
+            return
+
+        blocks = tuple(measurement_blocks or (circuit_chunk,))
+        if not blocks:
+            raise ValueError("measurement_blocks must not be empty.")
         if noiseless:
-            circuit_chunk = _make_noiseless(circuit_chunk)
+            blocks = tuple(_make_noiseless(block) for block in blocks)
+        circuit_chunk = self._join_measurement_blocks(blocks)
 
-        # ======================================================================
-        # Phase 1: First Round (Tracker-Driven)
-        # ======================================================================
-        _log.debug("Applying first round of syndrome extraction...")
-        # Analyze Ideal Basis for the Tracker
-        back_propagated_paulis, syn_qubit_indices = self._get_back_propagated_pauli(circuit_chunk, self.tracker.num_qubits)
-        syn_coords = [self.system.qubit_coords[i] for i in syn_qubit_indices] # extract from circuit_chunk, more robust
-
-        # Build Z-only mask: True for X-ancilla (suppress their DETECTORs)
-        no_detector_mask = None
-        if z_only:
-            x_anc_set = set(self.system.active_syndrome_indices_x)
-            no_detector_mask = np.array([q in x_anc_set for q in syn_qubit_indices], dtype=bool)
-            self._z_only_syn_qubit_indices = syn_qubit_indices
-            self._z_only_no_detector_mask  = no_detector_mask
-            self._z_only_n_meas_per_round  = len(syn_qubit_indices)
-
-        # Append chunk to actual circuit (optionally tagging all instructions as noiseless)
-        if noiseless:
-            for inst in circuit_chunk:
-                if isinstance(inst, stim.CircuitInstruction):
-                    self.circuit.append(inst.name, inst.targets_copy(), inst.gate_args_copy(), tag="noiseless")
-                else:
-                    self.circuit.append(inst)
-        else:
+        if not self.if_detector:
             self.circuit += circuit_chunk
+            if rounds > 1:
+                steady_round_body = stim.Circuit()
+                steady_round_body.append("TICK")
+                steady_round_body += circuit_chunk
+                self.circuit += steady_round_body
+                if rounds > 2:
+                    self.circuit.append(stim.CircuitRepeatBlock(
+                        rounds - 2,
+                        steady_round_body,
+                    ))
+            return
 
-        total_measurements = self.tracker.total_measurements
-        meas_rec_to_idx_map_update = {total_measurements + i: syn_idx for i, syn_idx in enumerate(syn_qubit_indices)}
-        self.tracker.meas_rec_to_idx_map.update(meas_rec_to_idx_map_update)
-        # Ask Tracker to process it (Update Tableau + Generate Detectors)
-        if self.if_detector:
-            # Time shift before first-round detectors so that each call to
-            # apply_syndrome_extraction occupies its own time slice.  Without
-            # this, consecutive calls (e.g. surface-only SE then combined SE)
-            # place their detectors at the same t coordinate, confusing the
-            # decoder's matching graph.
-            self.circuit.append("SHIFT_COORDS", [], [0, 0, 1])
-
-            self.tracker.process_mid_measurement(
-                circuit=self.circuit,
-                back_propagated_paulis=back_propagated_paulis,
-                syn_coords=syn_coords,
-                no_detector_mask=no_detector_mask,
+        analyses = tuple(
+            self._analyze_measurement_block(block, z_only=z_only)
+            for block in blocks
+        )
+        if z_only:
+            if len(analyses) != 1:
+                raise ValueError(
+                    "z_only readout currently supports one measurement block per SE round."
+                )
+            analysis = analyses[0]
+            self._z_only_syn_qubit_indices = (
+                analysis.measurement_qubit_indices
+            )
+            self._z_only_no_detector_mask = analysis.no_detector_mask
+            self._z_only_n_meas_per_round = len(
+                analysis.measurement_qubit_indices
             )
 
-        # ======================================================================
-        # Phase 2: Repeat Rounds (Stim Loop)
-        # ======================================================================
-        if rounds > 1:
-            _log.debug("Applying rest rounds of syndrome extraction...")
+        _log.debug("Applying first round of syndrome extraction...")
+        self._process_measurement_blocks(
+            output_circuit=self.circuit,
+            analyses=analyses,
+            shift_round=True,
+        )
 
-            loop_body = stim.Circuit()
-            num_syn = len(syn_coords)
+        if rounds <= 1:
+            return
 
-            # Circuit operations for the repeated block
-            loop_body.append("TICK")
-            if noiseless:
-                for inst in circuit_chunk:
-                    if isinstance(inst, stim.CircuitInstruction):
-                        loop_body.append(inst.name, inst.targets_copy(), inst.gate_args_copy(), tag="noiseless")
-                    else:
-                        loop_body.append(inst)
-            else:
-                loop_body += circuit_chunk
-            
-            if self.if_detector:
-                # Time Shift for visualization
-                loop_body.append("SHIFT_COORDS", [], [0, 0, 1])
+        _log.debug("Applying second syndrome-extraction round...")
+        first_round_logical_components = set(
+            self.tracker.stabilizer_with_logical_components
+        )
+        steady_round_body = stim.Circuit()
+        steady_round_body.append("TICK")
+        self._process_measurement_blocks(
+            output_circuit=steady_round_body,
+            analyses=analyses,
+            shift_round=True,
+        )
+        self.tracker.stabilizer_with_logical_components.update(
+            first_round_logical_components
+        )
+        self.circuit += steady_round_body
 
-                # Construct Repeated Detectors: rec[-k] ^ rec[-k-num_syn]
-                for i in range(num_syn):
-                    if no_detector_mask is not None and no_detector_mask[i]:
-                        continue  # z_only: skip X-ancilla detectors
-                    # Stim record indices are relative to the current moment in the loop
-                    rec_current = -num_syn + i
-                    rec_prev = -num_syn + i - num_syn
+        if rounds <= 2:
+            return
 
-                    coord = list(syn_coords[i]) + [0]
-                    _append_detector(
-                        loop_body,
-                        [stim.target_rec(rec_current), stim.target_rec(rec_prev)],
-                        coord,
-                        post_select=tuple(coord) in self.tracker.post_select_detector_coords,
-                    ) 
-            
-            self.circuit.append(stim.CircuitRepeatBlock(rounds - 1, loop_body))
+        repeated_round_body = self._try_compress_steady_rounds(
+            repetitions=rounds - 2,
+            analyses=analyses,
+        )
+        if repeated_round_body is not None:
+            self.circuit.append(stim.CircuitRepeatBlock(
+                rounds - 2,
+                repeated_round_body,
+            ))
+            return
 
-            # Update the meas_rec_to_idx_map for the repeated rounds
-            total_measurements = self.tracker.total_measurements
-            for r in range(rounds - 1):
-                self.tracker.meas_rec_to_idx_map.update({total_measurements + num_syn * r + i: syn_idx for i, syn_idx in enumerate(syn_qubit_indices)})
-            
-            # Update Tracker Counter, but the tableau does not need to be updated again
-            meas_record_offset = num_syn * (rounds - 1)
-            self.tracker.total_measurements += meas_record_offset
-            for i in range(len(syn_coords)):
-                records = self.tracker.stabilizers.records[i]
-                shift_records = [rec + meas_record_offset for rec in records]
-                self.tracker.stabilizers.records[i] = shift_records
+        if not self._uses_disposable_syndrome_readout(analyses):
+            persistent_logical_components = set(
+                self.tracker.stabilizer_with_logical_components
+            )
+            for _ in range(rounds - 2):
+                explicit_round_body = stim.Circuit()
+                explicit_round_body.append("TICK")
+                self._process_measurement_blocks(
+                    output_circuit=explicit_round_body,
+                    analyses=analyses,
+                    shift_round=True,
+                )
+                self.circuit += explicit_round_body
+                self.tracker.stabilizer_with_logical_components.update(
+                    persistent_logical_components
+                )
+                persistent_logical_components.update(
+                    self.tracker.stabilizer_with_logical_components
+                )
+            return
 
+        self.circuit.append(stim.CircuitRepeatBlock(
+            rounds - 2,
+            steady_round_body,
+        ))
+
+        persistent_logical_components = set(
+            self.tracker.stabilizer_with_logical_components
+        )
+        for _ in range(rounds - 2):
+            promotable_stabilizer_rows = []
+            for analysis in analyses:
+                repeated_base_idx = self.tracker.total_measurements
+                self.tracker.meas_rec_to_idx_map.update({
+                    repeated_base_idx + i: qubit
+                    for i, qubit in enumerate(
+                        analysis.measurement_qubit_indices
+                    )
+                })
+                promotable_stabilizer_rows.append(
+                    self.tracker.process_mid_measurement(
+                        circuit=stim.Circuit(),
+                        forward_symplectic_matrix=(
+                            analysis.forward_symplectic_matrix
+                        ),
+                        back_propagated_paulis=(
+                            analysis.back_propagated_paulis
+                        ),
+                        reset_paulis=analysis.reset_paulis,
+                        measurement_qubit_indices=(
+                            analysis.measurement_qubit_indices
+                        ),
+                        measurement_bases=analysis.measurement_bases,
+                        measurement_coords=analysis.measurement_coords,
+                        discarded_measurement_qubit_indices=(
+                            analysis.discarded_measurement_qubit_indices
+                        ),
+                        no_detector_mask=np.ones(
+                            len(analysis.measurement_qubit_indices),
+                            dtype=bool,
+                        ),
+                    )
+                )
+            self._finish_measurement_block_group(
+                analyses,
+                promotable_stabilizer_rows=tuple(
+                    promotable_stabilizer_rows
+                ),
+            )
+            self.tracker.stabilizer_with_logical_components.update(
+                persistent_logical_components
+            )
+            persistent_logical_components.update(
+                self.tracker.stabilizer_with_logical_components
+            )
+
+    def _try_compress_steady_rounds(
+        self,
+        *,
+        repetitions: int,
+        analyses: Tuple[_MeasurementBlockAnalysis, ...],
+    ) -> Optional[stim.Circuit]:
+        """Compress a verified repeated SE state transition into one Stim body.
+
+        The second round defines a candidate canonical logical representative.
+        Two additional rounds are evaluated on a tracker copy. If stabilizer
+        records remain fixed to an old measurement, adjacent-round detector
+        products remove that anchor before the verified body is repeated.
+        """
+        tracker = self.tracker
+        if (
+            repetitions < 1
+            or tracker.logicals.count != 1
+            or tracker.expected_num_logicals != 1
+            or tracker.stabilizer_with_logical_components
+            or tracker._gauge_logical_vectors
+            or tracker._absorbed_logical_dofs
+            or tracker.post_select_row_indices
+            or self.circuit.num_observables > 0
+        ):
+            return None
+
+        if any(
+            record < 0
+            for tableau in (tracker.stabilizers, tracker.logicals)
+            for records in tableau.records
+            for record in records
+        ):
+            return None
+
+        canonical_logical = {0: tracker.logicals.matrix[0].copy()}
+        baseline_logical_records = set(tracker.logicals.records[0])
+        initial_total_measurements = tracker.total_measurements
+        round_syn_qubits = [
+            qubit
+            for analysis in analyses
+            for qubit in analysis.measurement_qubit_indices
+        ]
+        measurements_per_round = len(round_syn_qubits)
+        probe = copy.deepcopy(tracker)
+        probe_states = []
+        probe_round_bodies = []
+        previous_logical_records = baseline_logical_records
+
+        try:
+            for _ in range(2):
+                probe_round_body = stim.Circuit()
+                probe_round_body.append("TICK")
+                self._process_measurement_blocks(
+                    output_circuit=probe_round_body,
+                    analyses=analyses,
+                    shift_round=True,
+                    tracker=probe,
+                )
+                probe.logical_canonicalization(canonical_logical)
+
+                logical_records = set(probe.logicals.records[0])
+                logical_delta = tuple(sorted(
+                    record - probe.total_measurements
+                    for record in previous_logical_records ^ logical_records
+                ))
+                stabilizer_record_offsets = tuple(
+                    tuple(sorted(
+                        record - probe.total_measurements
+                        for record in records
+                    ))
+                    for records in probe.stabilizers.records
+                )
+                probe_states.append((
+                    probe.stabilizers.matrix.copy(),
+                    stabilizer_record_offsets,
+                    logical_delta,
+                ))
+                probe_round_bodies.append(probe_round_body)
+                previous_logical_records = logical_records
+        except (RuntimeError, ValueError):
+            return None
+
+        first_matrix, first_stabilizer_offsets, first_logical_delta = probe_states[0]
+        second_matrix, second_stabilizer_offsets, second_logical_delta = probe_states[1]
+        if (
+            not np.array_equal(first_matrix, second_matrix)
+            or first_logical_delta != second_logical_delta
+            or any(offset >= 0 for offset in first_logical_delta)
+            or any(
+                offset >= 0
+                for records in first_stabilizer_offsets
+                for offset in records
+            )
+        ):
+            return None
+
+        if (
+            first_stabilizer_offsets == second_stabilizer_offsets
+            and probe_round_bodies[0] == probe_round_bodies[1]
+        ):
+            repeated_round_body = probe_round_bodies[0].copy()
+        else:
+            anchored_stabilizers = all(
+                tuple(
+                    offset - measurements_per_round
+                    for offset in first_offsets
+                )
+                == second_offsets
+                for first_offsets, second_offsets in zip(
+                    first_stabilizer_offsets,
+                    second_stabilizer_offsets,
+                )
+            )
+            if not anchored_stabilizers:
+                return None
+            repeated_round_body = self._make_periodic_detector_body(
+                previous_body=probe_round_bodies[0],
+                current_body=probe_round_bodies[1],
+                measurements_per_round=measurements_per_round,
+            )
+            if repeated_round_body is None:
+                return None
+
+        final_total_measurements = (
+            initial_total_measurements
+            + repetitions * measurements_per_round
+        )
+        final_stabilizer_records = [
+            [final_total_measurements + offset for offset in offsets]
+            for offsets in first_stabilizer_offsets
+        ]
+        if any(
+            record < 0
+            for records in final_stabilizer_records
+            for record in records
+        ):
+            return None
+
+        if first_logical_delta:
+            repeated_round_body.append(
+                "OBSERVABLE_INCLUDE",
+                [stim.target_rec(offset) for offset in first_logical_delta],
+                [0],
+            )
+
+        tracker.stabilizers.matrix = first_matrix
+        tracker.stabilizers.records = final_stabilizer_records
+        tracker.logicals.matrix = canonical_logical[0].reshape(1, -1)
+        tracker.logicals.records = [sorted(baseline_logical_records)]
+        tracker.total_measurements = final_total_measurements
+
+        for records in final_stabilizer_records:
+            for record in records:
+                position = (
+                    record - final_total_measurements
+                ) % measurements_per_round
+                tracker.meas_rec_to_idx_map[record] = round_syn_qubits[position]
+
+        _log.debug(
+            "Compressed %d steady syndrome-extraction rounds with logical delta %s.",
+            repetitions,
+            first_logical_delta,
+        )
+        return repeated_round_body
+
+    @staticmethod
+    def _make_periodic_detector_body(
+        *,
+        previous_body: stim.Circuit,
+        current_body: stim.Circuit,
+        measurements_per_round: int,
+    ) -> Optional[stim.Circuit]:
+        """Eliminate fixed record anchors using adjacent-round detectors."""
+        previous_instructions = list(previous_body)
+        current_instructions = list(current_body)
+        if len(previous_instructions) != len(current_instructions):
+            return None
+
+        result = stim.Circuit()
+        for previous, current in zip(
+            previous_instructions,
+            current_instructions,
+        ):
+            if (
+                not isinstance(previous, stim.CircuitInstruction)
+                or not isinstance(current, stim.CircuitInstruction)
+            ):
+                return None
+            if current.name != "DETECTOR":
+                if previous != current:
+                    return None
+                result.append(
+                    current.name,
+                    current.targets_copy(),
+                    current.gate_args_copy(),
+                    tag=current.tag,
+                )
+                continue
+            if (
+                previous.name != "DETECTOR"
+                or previous.gate_args_copy() != current.gate_args_copy()
+                or previous.tag != current.tag
+            ):
+                return None
+
+            record_offsets = set()
+            for target in current.targets_copy():
+                if not target.is_measurement_record_target:
+                    return None
+                record_offsets.symmetric_difference_update([target.value])
+            for target in previous.targets_copy():
+                if not target.is_measurement_record_target:
+                    return None
+                record_offsets.symmetric_difference_update([
+                    target.value - measurements_per_round
+                ])
+            result.append(
+                "DETECTOR",
+                [
+                    stim.target_rec(offset)
+                    for offset in sorted(record_offsets)
+                ],
+                current.gate_args_copy(),
+                tag=current.tag,
+            )
+
+        return result
 
     # --------------------------------------------------------------------------
     # C. Unitary Block (Logical Gates, Unitary Encoding, etc.)
@@ -363,6 +890,12 @@ class CircuitBuilder:
         """
         if final_measurements is None:
             final_measurements = {q: 'Z' for q in self.system.data_indices}
+
+        # Final destructive data readout must start in a fresh moment. Some
+        # extraction blocks, such as middle-out color-code circuits, end with
+        # data-qubit gauge measurements instead of a trailing TICK.
+        if len(self.circuit) > 0 and self.circuit[-1].name != "TICK":
+            self.circuit.append("TICK")
 
         xs = [q for q, b in final_measurements.items() if b == 'X']
         ys = [q for q, b in final_measurements.items() if b == 'Y']
@@ -517,21 +1050,119 @@ class CircuitBuilder:
         return np.vstack([t_x, t_z, t_y])
 
     @staticmethod
-    def _get_back_propagated_pauli(circuit_chunk: stim.Circuit, num_qubits: int) -> np.ndarray:
+    def _get_terminal_reset_paulis(
+        circuit_chunk: stim.Circuit,
+        num_qubits: int,
+        measurement_qubit_indices: List[int],
+    ) -> Optional[np.ndarray]:
+        """Return input-reset stabilizers for the terminal readout targets."""
+        reset_basis_by_qubit = {}
+        reset_bases = {
+            "R": "Z",
+            "RZ": "Z",
+            "RX": "X",
+            "RY": "Y",
+        }
+        measured_qubits = set(measurement_qubit_indices)
+        instructions = list(circuit_chunk)
+        measurement_names = {"M", "MZ", "MR", "MRZ", "MX", "MRX"}
+        measurement_positions = [
+            k
+            for k, instruction in enumerate(instructions)
+            if (
+                isinstance(instruction, stim.CircuitInstruction)
+                and instruction.name in measurement_names
+            )
+        ]
+        if not measurement_positions:
+            return None
+        terminal_measurement_position = min(measurement_positions)
+        selected_instructions = instructions[:terminal_measurement_position]
+
+        for instruction in selected_instructions:
+            if not isinstance(instruction, stim.CircuitInstruction):
+                continue
+            basis = reset_bases.get(instruction.name)
+            if basis is None:
+                continue
+            for target in instruction.targets_copy():
+                if target.is_qubit_target and target.value in measured_qubits:
+                    reset_basis_by_qubit[target.value] = basis
+
+        missing = sorted(measured_qubits - reset_basis_by_qubit.keys())
+        if len(missing) == len(measured_qubits):
+            return None
+        if missing:
+            raise ValueError(
+                "A measurement block must reset either every terminal target before "
+                "the readout or none of them; partial reset coverage is not yet supported. "
+                f"Missing resets for qubits {missing}."
+            )
+
+        reset_paulis = np.zeros(
+            (len(measurement_qubit_indices), 2 * num_qubits),
+            dtype=np.uint8,
+        )
+        for row_idx, qubit in enumerate(measurement_qubit_indices):
+            basis = reset_basis_by_qubit[qubit]
+            if basis in ("X", "Y"):
+                reset_paulis[row_idx, qubit] = 1
+            if basis in ("Z", "Y"):
+                reset_paulis[row_idx, num_qubits + qubit] = 1
+
+        return reset_paulis
+
+    @staticmethod
+    def _get_back_propagated_pauli(
+        circuit_chunk: stim.Circuit,
+        num_qubits: int,
+        *,
+        include_measurement_bases: bool = False,
+    ) -> Union[
+        Tuple[np.ndarray, List[int]],
+        Tuple[np.ndarray, List[int], List[str]],
+    ]:
         """
-        Analyzes the circuit chunk to find the measured Pauli basis using Tableau inversion.
+        Back-propagate the terminal syndrome-readout layer through the circuit.
+
+        The readout layer may contain several contiguous measurement
+        instructions in X/Z bases. Rows are returned in Stim measurement
+        record order, so a terminal ``M z0 z1; MX x0 x1`` produces the Z rows
+        followed by the X rows.
+
+        Terminal measurement targets, QEC-patch syndrome roles, and qubits
+        explicitly reset by this block are distinct sets. Only Pauli factors
+        fixed by an explicit reset in this physical block are removed from the
+        returned input observables.
+
+        The default two-item return preserves the existing helper contract.
+        Builder internals request the optional measurement-basis list when
+        constructing a physical measurement-block analysis.
         """
-        # Sanity check: The last instruction has to be syndrome qubit measurement
-        # Note: We check the last instruction of the provided chunk.
-        last_instr = circuit_chunk[-1]
-        
-        meas_basis = ""
-        if last_instr.name in ["M", "MZ", "MR", "MRZ"]:
-            meas_basis = "Z"
-        elif last_instr.name in ["MX", "MRX"]:
-            meas_basis = "X"
-        else: 
-            raise ValueError(f"The last instruction has to be X/Z measurement on syndrome qubits. Now {last_instr.name}.")
+        measurement_basis_by_gate = {
+            "M": "Z",
+            "MZ": "Z",
+            "MR": "Z",
+            "MRZ": "Z",
+            "MX": "X",
+            "MRX": "X",
+        }
+        terminal_measurements = []
+        for instruction in reversed(list(circuit_chunk)):
+            if not isinstance(instruction, stim.CircuitInstruction):
+                break
+            basis = measurement_basis_by_gate.get(instruction.name)
+            if basis is None:
+                break
+            terminal_measurements.append((instruction, basis))
+
+        if not terminal_measurements:
+            last_name = circuit_chunk[-1].name if len(circuit_chunk) else "<empty circuit>"
+            raise ValueError(
+                "The circuit chunk must end with an X/Z syndrome-qubit "
+                f"measurement; got {last_name}."
+            )
+        terminal_measurements.reverse()
 
         # Step 1. Get the back-propagated Pauli string
         # Convert to tableau and get numpy representation (binary array in symplectic representation)
@@ -548,34 +1179,76 @@ class CircuitBuilder:
         z2x_int = z2x.astype(int)
         z2z_int = z2z.astype(int)
 
-        syn_meas_targets = last_instr.targets_copy()
-        syn_qubit_indices = [item.value for item in syn_meas_targets if item.is_qubit_target]
+        measurement_qubit_indices = []
+        measurement_bases = []
+        back_pauli_x_rows = []
+        back_pauli_z_rows = []
+        for instruction, basis in terminal_measurements:
+            for target in instruction.targets_copy():
+                if not target.is_qubit_target:
+                    continue
+                qubit = target.value
+                measurement_qubit_indices.append(qubit)
+                measurement_bases.append(basis)
 
-        back_pauli_x = None
-        back_pauli_z = None
+                if basis == "X":
+                    row_x = x2x_int[qubit].copy()
+                    row_z = x2z_int[qubit].copy()
+                else:
+                    row_x = z2x_int[qubit].copy()
+                    row_z = z2z_int[qubit].copy()
 
-        if meas_basis == "Z":
-            # Make the syndrome qubit location zero, focus on the data qubit support
-            # (without this step the back-propagated Pauli string will involve both syndrome and data qubits)
-            # We zero out the columns corresponding to the syndrome qubits themselves
-            z2x_int[syn_qubit_indices, syn_qubit_indices] = 0
-            z2z_int[syn_qubit_indices, syn_qubit_indices] = 0
+                back_pauli_x_rows.append(row_x)
+                back_pauli_z_rows.append(row_z)
 
-            # Get the back-propagated Pauli string corresponding to the measured qubits
-            # We take the rows corresponding to the syndrome indices
-            back_pauli_x = z2x_int[syn_qubit_indices, :]
-            back_pauli_z = z2z_int[syn_qubit_indices, :]
+        back_pauli_x = np.asarray(back_pauli_x_rows, dtype=np.uint8)
+        back_pauli_z = np.asarray(back_pauli_z_rows, dtype=np.uint8)
 
-        elif meas_basis == "X":
-            # Make the syndrome qubit location zero, focus on the data qubit support
-            x2x_int[syn_qubit_indices, syn_qubit_indices] = 0
-            x2z_int[syn_qubit_indices, syn_qubit_indices] = 0
+        reset_bits = {
+            "R": (0, 1),
+            "RZ": (0, 1),
+            "RX": (1, 0),
+            "RY": (1, 1),
+        }
+        reset_by_qubit = {}
+        for instruction in circuit_chunk:
+            if not isinstance(instruction, stim.CircuitInstruction):
+                continue
+            if instruction.name in measurement_basis_by_gate:
+                break
+            bits = reset_bits.get(instruction.name)
+            if bits is None:
+                continue
+            for target in instruction.targets_copy():
+                if target.is_qubit_target:
+                    reset_by_qubit[target.value] = bits
 
-            # Get the back-propagated Pauli string
-            back_pauli_x = x2x_int[syn_qubit_indices, :]
-            back_pauli_z = x2z_int[syn_qubit_indices, :]
-        else:
-            raise ValueError(f"Measurement basis {meas_basis} not supported.")
+        # A factor can be projected out only when this block physically resets
+        # that qubit into the same Pauli eigenbasis. Merely being measured at the
+        # terminal boundary, or carrying a syndrome role in QECPatch, is not
+        # sufficient.
+        removable_reset_qubits = sorted(reset_by_qubit)
+        if removable_reset_qubits:
+
+            for row_idx in range(back_pauli_x.shape[0]):
+                for qubit in removable_reset_qubits:
+                    actual = (
+                        int(back_pauli_x[row_idx, qubit]),
+                        int(back_pauli_z[row_idx, qubit]),
+                    )
+                    if actual == (0, 0):
+                        continue
+                    expected = reset_by_qubit.get(qubit)
+                    if actual != expected:
+                        raise ValueError(
+                            "Back-propagated syndrome factor "
+                            f"{actual} on qubit {qubit} is not stabilized by "
+                            f"its reset basis {expected}. The measurement is "
+                            "not a deterministic syndrome or flag outcome."
+                        )
+
+            back_pauli_x[:, removable_reset_qubits] = 0
+            back_pauli_z[:, removable_reset_qubits] = 0
 
         # Padding the back-propagated Pauli string to the full size of the system
         current_size = back_pauli_x.shape[1]
@@ -592,7 +1265,13 @@ class CircuitBuilder:
         # stack x_part and z_part to get the full 2n-bitstring
         back_pauli = np.hstack([back_pauli_x, back_pauli_z])
         
-        return back_pauli, syn_qubit_indices
+        if include_measurement_bases:
+            return (
+                back_pauli,
+                measurement_qubit_indices,
+                measurement_bases,
+            )
+        return back_pauli, measurement_qubit_indices
 
     def to_stim_circuit(self) -> stim.Circuit:
         return self.circuit

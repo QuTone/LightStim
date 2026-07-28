@@ -59,6 +59,24 @@ class TestMemory:
         c = self._run(ColorCode(distance=3), ColorCodeExtractionBlock)
         assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
 
+    def test_qec_patch_interface_infers_default_extraction_block(self):
+        from lightstim.protocols.memory import MemoryExperiment
+        from lightstim.qec_code.color_code import (
+            ColorCode,
+            ColorCodeExtractionBlock,
+        )
+
+        code = ColorCode(distance=3)
+        code.default_extraction_block_class = ColorCodeExtractionBlock
+        exp = MemoryExperiment(
+            qec_patch=code,
+            rounds=1,
+            noise_params=None,
+            basis="Z",
+        )
+        c = build_quiet(exp.build)
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
     def test_repetition_code(self):
         from lightstim.qec_code.repetition import RepetitionCode, RepetitionCodeExtractionBlock
         c = self._run(RepetitionCode(distance=5), RepetitionCodeExtractionBlock)

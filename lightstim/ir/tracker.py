@@ -51,6 +51,7 @@ class SyndromeTracker:
         self.logicals = PauliTableau(num_qubits)
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
+        self._absorbed_logical_dofs = 0
         self.post_select_detector_coords = post_select_detector_coords or set()
         self.post_select_row_indices = set()  # Stabilizer row indices to post-select in process_data_measurement
 
@@ -60,6 +61,16 @@ class SyndromeTracker:
         (e.g. some logicals are fixed into stabilizers)
         """
         self.expected_num_logicals = k
+
+    def validate_logical_count(self, *, context: str = "tracker state") -> None:
+        """Check that explicit and measurement-absorbed logical DOFs add up."""
+        actual = self.logicals.count + self._absorbed_logical_dofs
+        if actual != self.expected_num_logicals:
+            raise RuntimeError(
+                f"After {context}: logical count {self.logicals.count} plus "
+                f"absorbed logical DOFs {self._absorbed_logical_dofs} != "
+                f"expected {self.expected_num_logicals}."
+            )
 
     def expand(self, delta: int):
         """
@@ -197,12 +208,163 @@ class SyndromeTracker:
         self.logicals.matrix = new_log_matrix
         self.logicals.records = new_log_records
 
-        if self.logicals.count != self.expected_num_logicals:
+        self.validate_logical_count(context="stabilizer canonicalization")
+
+    def rebase_stabilizers_onto_code_basis(
+        self,
+        system: Any,
+        stabilizer_uids: Optional[Set[int]] = None,
+    ) -> None:
+        """Re-express tracked stabilizers in the active code's canonical basis.
+
+        Every requested code stabilizer must already be in the current tracked
+        stabilizer span. Reconstructing the canonical rows from that span also
+        reconstructs their measurement-record parities. Independent remaining
+        directions become the logical tableau.
+
+        This differs from :meth:`stabilizer_canonicalization`, which may insert
+        unmeasured canonical rows when preparing a code for its first SE round.
+        """
+        n = self.num_qubits
+        if stabilizer_uids is None:
+            stabilizer_uids = set(system.active_stabilizer_indices)
+        stab_dicts = [
+            system.stabilizers[uid]
+            for uid in sorted(stabilizer_uids)
+        ]
+        canonical_basis = stabilizers_to_symplectic(system, stab_dicts, n)
+        if canonical_basis.shape[0] == 0:
+            return
+        if self.stabilizers.count == 0:
             raise RuntimeError(
-                f"After stabilizer_canonicalization: logical count {self.logicals.count} "
-                f"!= expected {self.expected_num_logicals}. "
-                "Unitary encoding circuit may be incorrect."
+                "Cannot rebase an empty stabilizer tableau onto the code basis."
             )
+
+        canonical_coeffs, is_dependent, _ = solve_linear_decomposition(
+            basis=self.stabilizers.matrix,
+            targets=canonical_basis,
+            reduce_weight=False,
+        )
+        missing = np.flatnonzero(~is_dependent)
+        if len(missing):
+            raise RuntimeError(
+                "Cannot rebase onto the active code basis; canonical rows "
+                f"{missing.tolist()} are missing from the tracker stabilizer span."
+            )
+
+        canonical_records = []
+        for coeffs in canonical_coeffs:
+            records = set()
+            for row_idx in np.flatnonzero(coeffs):
+                records.symmetric_difference_update(
+                    self.stabilizers.records[row_idx]
+                )
+            canonical_records.append(sorted(records))
+
+        if self.logicals.count:
+            full_matrix = np.vstack([
+                self.stabilizers.matrix,
+                self.logicals.matrix,
+            ])
+            full_records = self.stabilizers.records + self.logicals.records
+        else:
+            full_matrix = self.stabilizers.matrix.copy()
+            full_records = list(self.stabilizers.records)
+
+        _, _, logical_indices = solve_linear_decomposition(
+            basis=canonical_basis,
+            targets=full_matrix,
+            reduce_weight=False,
+        )
+        self.stabilizers.matrix = canonical_basis
+        self.stabilizers.records = canonical_records
+        self.logicals.matrix = full_matrix[logical_indices]
+        self.logicals.records = [
+            full_records[idx]
+            for idx in logical_indices
+        ]
+
+        self.validate_logical_count(context="code-basis rebase")
+
+    def promote_stabilizer_rows_to_logicals(
+        self,
+        row_indices: Set[int],
+    ) -> None:
+        """Move selected tracked stabilizer rows into the logical table.
+
+        This is a basis-classification operation, not a measurement update.
+        ``process_mid_measurement`` identifies rows that are eligible for this
+        classification, and the Builder chooses whether its physical protocol
+        has reached a boundary where they should be promoted.
+        """
+        promoted_indices = sorted(row_indices)
+        invalid_indices = [
+            idx
+            for idx in promoted_indices
+            if idx < 0 or idx >= self.stabilizers.count
+        ]
+        if invalid_indices:
+            raise IndexError(
+                "Cannot promote stabilizer rows outside the tracked tableau: "
+                f"{invalid_indices}."
+            )
+        if not promoted_indices:
+            self.validate_logical_count(
+                context="stabilizer-row classification"
+            )
+            return
+
+        promoted_set = set(promoted_indices)
+        kept_indices = [
+            idx
+            for idx in range(self.stabilizers.count)
+            if idx not in promoted_set
+        ]
+        promoted_matrix = self.stabilizers.matrix[promoted_indices]
+        promoted_records = [
+            self.stabilizers.records[idx]
+            for idx in promoted_indices
+        ]
+
+        if self.logicals.count:
+            self.logicals.matrix = np.vstack([
+                self.logicals.matrix,
+                promoted_matrix,
+            ])
+            self.logicals.records.extend(promoted_records)
+        else:
+            self.logicals.matrix = promoted_matrix.copy()
+            self.logicals.records = promoted_records
+
+        old_to_new = {
+            old_idx: new_idx
+            for new_idx, old_idx in enumerate(kept_indices)
+        }
+        if kept_indices:
+            self.stabilizers.matrix = self.stabilizers.matrix[kept_indices]
+        else:
+            self.stabilizers.matrix = np.zeros(
+                (0, 2 * self.num_qubits),
+                dtype=np.uint8,
+            )
+        self.stabilizers.records = [
+            self.stabilizers.records[idx]
+            for idx in kept_indices
+        ]
+        self.post_select_row_indices = {
+            old_to_new[idx]
+            for idx in self.post_select_row_indices
+            if idx in old_to_new
+        }
+        self.stabilizer_with_logical_components = {
+            old_to_new[idx]
+            for idx in self.stabilizer_with_logical_components
+            if idx in old_to_new
+        }
+
+        self.validate_logical_count(
+            context="stabilizer-row classification"
+        )
     
     def logical_canonicalization(
         self,
@@ -339,109 +501,297 @@ class SyndromeTracker:
         self.stabilizers.add_stabilizers(init_tableau)
 
 
-    def process_unitary_block(self, circuit_chunk: stim.Circuit):
-        """
-        Evolves the internal stabilizer/logical tableau by applying a unitary circuit chunk.
-        Update Rule: S_new = S_old @ Symplectic_Matrix
-        
-        Args:
-            circuit_chunk: A Stim circuit containing only unitary operations (no measurements/resets).
-        """
-        # 1. Convert Circuit to Tableau (Forward Evolution)
-        # We ignore noise/measurement to treat it as a pure Clifford unitary
-        # Note: Unlike back-propagation, we do NOT invert the tableau here.
-        # We want the forward evolution U.
+    @staticmethod
+    def get_forward_symplectic_matrix(
+        circuit_chunk: stim.Circuit,
+        num_qubits: int,
+    ) -> np.ndarray:
+        """Build the padded forward symplectic matrix of a Clifford circuit."""
         u_tableau = stim.Tableau.from_circuit(
-            circuit_chunk, 
-            ignore_noise=True, 
-            ignore_measurement=True, 
-            ignore_reset=True
+            circuit_chunk,
+            ignore_noise=True,
+            ignore_measurement=True,
+            ignore_reset=True,
         )
-        
-        # 2. Get Symplectic Components
-        # Output shapes are (n_chunk, n_chunk)
-        # x2x: X component of X generators' image
-        # x2z: Z component of X generators' image
-        # z2x: X component of Z generators' image
-        # z2z: Z component of Z generators' image
         x2x, x2z, z2x, z2z, _, _ = u_tableau.to_numpy()
-        
-        # Convert to standard integer numpy arrays (uint8 is sufficient for mod 2)
         x2x = x2x.astype(np.uint8)
         x2z = x2z.astype(np.uint8)
         z2x = z2x.astype(np.uint8)
         z2z = z2z.astype(np.uint8)
-        
-        # 3. Padding Logic (Alignment to System Size)
-        n_chunk = len(u_tableau)
-        n_sys = self.num_qubits
-        
-        if n_chunk > n_sys:
-            raise ValueError(f"Circuit chunk involves qubit {n_chunk-1}, exceeding system size {n_sys}.")
-        
-        # We need to construct the full 2N x 2N symplectic matrix M.
-        # The structure of M for right-multiplication (Row Vector @ M) is:
-        # M = [ x2x  x2z ]
-        #     [ z2x  z2z ]
-        
-        if n_chunk == n_sys:
-            # No padding needed, construct directly
-            top = np.hstack([x2x, x2z])      # (N, 2N)
-            bottom = np.hstack([z2x, z2z])   # (N, 2N)
-            symplectic_matrix = np.vstack([top, bottom]) # (2N, 2N)
-            
-        else:
-            # Need padding. The operation is Identity on qubits [n_chunk, n_sys).
-            # Identity Symplectic Matrix structure:
-            # [ I  0 ]
-            # [ 0  I ]
-            
-            # 3.1 Initialize full matrix as Identity
-            full_M = np.eye(2 * n_sys, dtype=np.uint8)
-            
-            # 3.2 Fill the active region
-            # Top-Left (X->X)
-            full_M[:n_chunk, :n_chunk] = x2x
-            # Top-Right (X->Z)
-            full_M[:n_chunk, n_sys:n_sys+n_chunk] = x2z
-            # Bottom-Left (Z->X)
-            full_M[n_sys:n_sys+n_chunk, :n_chunk] = z2x
-            # Bottom-Right (Z->Z)
-            full_M[n_sys:n_sys+n_chunk, n_sys:n_sys+n_chunk] = z2z
-            
-            symplectic_matrix = full_M
 
-        # 4. Perform Symplectic Update (Conjugation) for Stabilizers
-        # self.stabilizers.matrix shape: (K_stabilizers, 2*n_sys)
-        # symplectic_matrix shape: (2*n_sys, 2*n_sys)
-        # Result: Each row P becomes P' = P @ M
+        n_chunk = len(u_tableau)
+        if n_chunk > num_qubits:
+            raise ValueError(
+                f"Circuit chunk involves qubit {n_chunk - 1}, exceeding "
+                f"system size {num_qubits}."
+            )
+
+        if n_chunk == num_qubits:
+            return np.vstack([
+                np.hstack([x2x, x2z]),
+                np.hstack([z2x, z2z]),
+            ])
+
+        full_M = np.eye(2 * num_qubits, dtype=np.uint8)
+        if n_chunk:
+            full_M[:n_chunk, :n_chunk] = x2x
+            full_M[:n_chunk, num_qubits:num_qubits + n_chunk] = x2z
+            full_M[num_qubits:num_qubits + n_chunk, :n_chunk] = z2x
+            full_M[
+                num_qubits:num_qubits + n_chunk,
+                num_qubits:num_qubits + n_chunk,
+            ] = z2z
+        return full_M
+
+    def _apply_symplectic_matrix(self, symplectic_matrix: np.ndarray) -> None:
+        expected_shape = (2 * self.num_qubits, 2 * self.num_qubits)
+        if symplectic_matrix.shape != expected_shape:
+            raise ValueError(
+                f"Expected a symplectic matrix with shape {expected_shape}; "
+                f"got {symplectic_matrix.shape}."
+            )
+
         if self.stabilizers.count > 0:
-            # Using matmul (@) and modulo 2
             self.stabilizers.matrix = (self.stabilizers.matrix @ symplectic_matrix) % 2
             self.stabilizers.matrix = self.stabilizers.matrix.astype(np.uint8)
 
-        # 5. Perform Symplectic Update for Logicals
         if self.logicals.count > 0:
-            # Using matmul (@) and modulo 2
             self.logicals.matrix = (self.logicals.matrix @ symplectic_matrix) % 2
             self.logicals.matrix = self.logicals.matrix.astype(np.uint8)
 
-    def process_mid_measurement(self,
-                                circuit: stim.Circuit,
-                                back_propagated_paulis: np.ndarray,
-                                syn_coords: list,
-                                no_detector_mask: Optional[np.ndarray] = None):
+    def process_unitary_block(self, circuit_chunk: stim.Circuit):
+        """Forward-propagate the tracked state through a Clifford circuit."""
+        self._apply_symplectic_matrix(
+            self.get_forward_symplectic_matrix(circuit_chunk, self.num_qubits)
+        )
+
+    def process_resets(
+        self,
+        reset_paulis: np.ndarray,
+    ) -> None:
+        """Apply physical reset operations to the current tracked state."""
+        if reset_paulis.shape[0] == 0:
+            return
+
+        num_stabs = self.stabilizers.count
+        num_logs = self.logicals.count
+        if num_logs:
+            full_matrix = np.vstack([
+                self.stabilizers.matrix,
+                self.logicals.matrix,
+            ])
+            full_records = self.stabilizers.records + self.logicals.records
+        else:
+            full_matrix = self.stabilizers.matrix.copy()
+            full_records = list(self.stabilizers.records)
+
+        full = PauliTableau(self.num_qubits)
+        full.matrix = full_matrix
+        full.records = [list(records) for records in full_records]
+
+        for reset_pauli in reset_paulis:
+            reset_row = reset_pauli.reshape(1, -1)
+            anti_commuting = np.flatnonzero(
+                check_commutativity(reset_row, full.matrix)[0]
+            )
+            if len(anti_commuting):
+                pivot = int(anti_commuting[0])
+                for other in anti_commuting[1:]:
+                    full.update_row(int(other), pivot)
+                full.replace_row(pivot, reset_pauli, [])
+            else:
+                coeffs, is_dependent, _ = solve_linear_decomposition(
+                    basis=full.matrix,
+                    targets=reset_row,
+                    reduce_weight=False,
+                )
+                if is_dependent[0]:
+                    contributing = np.flatnonzero(coeffs[0])
+                    pivot = int(contributing[0])
+                    for other in contributing[1:]:
+                        full.update_row(pivot, int(other))
+                else:
+                    pivot = num_stabs
+                    full.matrix = np.insert(
+                        full.matrix,
+                        pivot,
+                        reset_pauli,
+                        axis=0,
+                    )
+                    full.records.insert(pivot, [])
+                    num_stabs += 1
+
+            reset_x = np.flatnonzero(reset_pauli[:self.num_qubits])
+            reset_z = np.flatnonzero(reset_pauli[self.num_qubits:])
+            reset_support = set(reset_x) | set(reset_z)
+            for other in range(full.count):
+                if other == pivot:
+                    continue
+                has_same_factor = all(
+                    full.matrix[other, qubit]
+                    == reset_pauli[qubit]
+                    and full.matrix[other, self.num_qubits + qubit]
+                    == reset_pauli[self.num_qubits + qubit]
+                    for qubit in reset_support
+                )
+                if has_same_factor:
+                    full.update_row(other, pivot)
+
+            # The old pivot records were transferred while eliminating this
+            # qubit from the other rows. Reset now prepares the +1 eigenstate.
+            full.records[pivot] = []
+
+        self.stabilizers.matrix = full.matrix[:num_stabs].copy()
+        self.stabilizers.records = [
+            list(records)
+            for records in full.records[:num_stabs]
+        ]
+        self.logicals.matrix = full.matrix[num_stabs:].copy()
+        self.logicals.records = [
+            list(records)
+            for records in full.records[num_stabs:]
+        ]
+
+    def _replace_measured_ancillas_with_records(
+        self,
+        *,
+        measurement_qubit_indices: List[int],
+        measurement_bases: List[str],
+        measurement_base_idx: int,
+    ) -> None:
+        """Eliminate terminal measured-ancilla factors from the current state.
+
+        After forward propagation, a data stabilizer may carry the measured
+        Pauli of a syndrome ancilla. The ancilla Pauli's eigenvalue is exactly
+        the corresponding measurement result, so removing that factor toggles
+        the absolute measurement record into the row's sign history.
         """
-        Handles Mid-circuit measurements (assumed to be on syndrome qubits).
+        if len(measurement_qubit_indices) != len(measurement_bases):
+            raise ValueError(
+                "Syndrome measurement qubits and bases must have equal length."
+            )
+
+        n = self.num_qubits
+        for tableau_name, tableau in (
+            ("stabilizer", self.stabilizers),
+            ("logical", self.logicals),
+        ):
+            for row_idx in range(tableau.count):
+                records = set(tableau.records[row_idx])
+
+                for meas_idx, (qubit, basis) in enumerate(
+                    zip(measurement_qubit_indices, measurement_bases)
+                ):
+                    has_x = bool(tableau.matrix[row_idx, qubit])
+                    has_z = bool(tableau.matrix[row_idx, n + qubit])
+                    if not has_x and not has_z:
+                        continue
+
+                    expected_x = basis == "X"
+                    expected_z = basis == "Z"
+                    if (has_x, has_z) != (expected_x, expected_z):
+                        actual_basis = "Y" if has_x and has_z else "X" if has_x else "Z"
+                        raise RuntimeError(
+                            f"Forward-propagated {tableau_name} row {row_idx} has "
+                            f"{actual_basis} on syndrome qubit {qubit}, but that qubit "
+                            f"is measured in the {basis} basis."
+                        )
+
+                    tableau.matrix[row_idx, qubit] = 0
+                    tableau.matrix[row_idx, n + qubit] = 0
+
+                    record = measurement_base_idx + meas_idx
+                    if record in records:
+                        records.remove(record)
+                    else:
+                        records.add(record)
+
+                tableau.records[row_idx] = sorted(records)
+
+    def _record_measurement_logical_effects(
+        self,
+        surviving_logical_indices: Set[int],
+    ) -> None:
+        """Account for logical DOFs consumed by the current measurement block."""
+        if self._gauge_logical_vectors:
+            gauge_matrix = np.array(
+                self._gauge_logical_vectors,
+                dtype=np.uint8,
+            ).copy()
+            for logical_idx in surviving_logical_indices:
+                if logical_idx < gauge_matrix.shape[1]:
+                    gauge_matrix[:, logical_idx] = 0
+            self._absorbed_logical_dofs += int(
+                np.linalg.matrix_rank(gauge_matrix.astype(float))
+            )
+
+        if surviving_logical_indices and self._gauge_logical_vectors:
+            rows_to_remove = set()
+            for row_idx, logical_vector in zip(
+                sorted(self.stabilizer_with_logical_components),
+                self._gauge_logical_vectors,
+            ):
+                logical_indices = set(np.flatnonzero(logical_vector))
+                if logical_indices.issubset(surviving_logical_indices):
+                    rows_to_remove.add(row_idx)
+            self.stabilizer_with_logical_components -= rows_to_remove
+
+    def process_mid_measurement(
+        self,
+        circuit: stim.Circuit,
+        forward_symplectic_matrix: np.ndarray,
+        back_propagated_paulis: np.ndarray,
+        reset_paulis: Optional[np.ndarray],
+        measurement_qubit_indices: List[int],
+        measurement_bases: List[str],
+        measurement_coords: list,
+        discarded_measurement_qubit_indices: Set[int],
+        no_detector_mask: Optional[np.ndarray] = None,
+    ) -> Set[int]:
+        """
+        Update the tracked state across one physical measurement block.
 
         Args:
+            forward_symplectic_matrix: Clifford forward evolution of the
+                measurement block, padded to the full system size.
+            reset_paulis: Initial syndrome-ancilla reset stabilizers, ordered
+                like the terminal syndrome measurements. ``None`` means the
+                block has no fresh resets; its projected current tableau is
+                forward-propagated to form the output state.
             no_detector_mask: Optional boolean array of length num_meas. When
                 no_detector_mask[i] is True the measurement still updates the
                 stabilizer tableau (Step 3) but no DETECTOR instruction is
                 emitted for it (Step 2). Useful for Z-only / X-only memory
                 experiments where one ancilla type is measured without detectors.
+
+        Returns:
+            Stabilizer row indices that may be promoted to logical rows if the
+            Builder declares this block to be a complete classification
+            boundary.
+
+        This operation has no knowledge of a surrounding syndrome-extraction
+        round. Candidate state constraints remain stabilizer rows until the
+        Builder explicitly classifies or rebases them.
         """
         num_meas = back_propagated_paulis.shape[0]
+        if (
+            reset_paulis is not None
+            and reset_paulis.shape != back_propagated_paulis.shape
+        ):
+            raise ValueError(
+                "Reset and back-propagated Pauli tableaus must have the same shape; "
+                f"got {reset_paulis.shape} and {back_propagated_paulis.shape}."
+            )
+        measured_qubit_set = set(measurement_qubit_indices)
+        if discarded_measurement_qubit_indices not in (
+            set(),
+            measured_qubit_set,
+        ):
+            raise ValueError(
+                "A measurement block cannot currently mix discarded syndrome "
+                "ancillas with retained measured data qubits."
+            )
+        retain_measured_qubits = not discarded_measurement_qubit_indices
         current_base_idx = self.total_measurements
         self.total_measurements += num_meas
 
@@ -519,6 +869,20 @@ class SyndromeTracker:
                 # Detector is formed by decomposing Back-propagated Pauli Measurements into existing STABILIZERS only (rows in the stabilizer tableau).
                 # (Logicals do not contribute to the decomposition)
 
+                # A measurement that reduces to identity after removing known
+                # reset-ancilla factors is a flag. Its expected value is fixed,
+                # so the measurement record is a detector by itself.
+                if not np.any(meas_pauli):
+                    if no_detector_mask is None or not no_detector_mask[i]:
+                        coords = list(measurement_coords[i]) + [0]
+                        _append_detector(
+                            circuit,
+                            [stim.target_rec(meas_abs_idx - self.total_measurements)],
+                            coords,
+                            post_select=tuple(coords) in self.post_select_detector_coords,
+                        )
+                    continue
+
                 if num_stabs > 0:
                     # First check if meas_row is exactly one row in curr_stab_matrix
                     # Directly compare meas_row against current stabilizer rows
@@ -539,8 +903,9 @@ class SyndromeTracker:
                         for r in full_records[row_idx]:
                             if r >= 0:
                                 args.append(stim.target_rec(r - self.total_measurements))
+                        args.sort(key=lambda target: target.value)
                         if no_detector_mask is None or not no_detector_mask[i]:
-                            coords = list(syn_coords[i]) + [0]
+                            coords = list(measurement_coords[i]) + [0]
                             _append_detector(
                                 circuit, args, coords,
                                 post_select=tuple(coords) in self.post_select_detector_coords,
@@ -586,10 +951,13 @@ class SyndromeTracker:
                                         args_set.remove(rec_to_append)
                                     else:
                                         args_set.add(rec_to_append)  # addition modulo 2
-                            args = list(args_set)
+                            args = sorted(
+                                args_set,
+                                key=lambda target: target.value,
+                            )
 
                             if no_detector_mask is None or not no_detector_mask[i]:
-                                coords = list(syn_coords[i]) + [0]
+                                coords = list(measurement_coords[i]) + [0]
                                 _append_detector(
                                     circuit, args, coords,
                                     post_select=tuple(coords) in self.post_select_detector_coords,
@@ -606,6 +974,103 @@ class SyndromeTracker:
         # ======================================================================
         # Step 3: Write Back with "Clean" Basis
         # ======================================================================
+        if retain_measured_qubits:
+            # The projected measurement rows are the freshest representatives
+            # of the post-measurement state. Keep an independent subset with
+            # their current records, then complete the state basis from the
+            # projected old tableau. Preserving the old basis verbatim would
+            # leave commuting measurements anchored to stale records.
+            empty_basis = np.zeros(
+                (0, 2 * self.num_qubits),
+                dtype=np.uint8,
+            )
+            _, _, measured_basis_indices = solve_linear_decomposition(
+                basis=empty_basis,
+                targets=back_propagated_paulis,
+                reduce_weight=False,
+            )
+            measured_basis = back_propagated_paulis[
+                measured_basis_indices
+            ]
+            measured_records = [
+                [current_base_idx + idx]
+                for idx in measured_basis_indices
+            ]
+
+            if num_logs > 0:
+                reordered_targets = np.vstack([
+                    full_matrix[num_stabs:],
+                    full_matrix[:num_stabs],
+                ])
+            else:
+                reordered_targets = full_matrix
+
+            _, _, complement_indices = solve_linear_decomposition(
+                basis=measured_basis,
+                targets=reordered_targets,
+                reduce_weight=False,
+            )
+
+            old_stab_basis_indices = []
+            new_log_basis_indices = []
+            for reordered_idx in complement_indices:
+                if reordered_idx < num_logs:
+                    new_log_basis_indices.append(
+                        num_stabs + reordered_idx
+                    )
+                else:
+                    old_stab_basis_indices.append(
+                        reordered_idx - num_logs
+                    )
+
+            old_stab_matrix = full_matrix[
+                old_stab_basis_indices
+            ]
+            new_stab_matrix = np.vstack([
+                measured_basis,
+                old_stab_matrix,
+            ])
+            self.stabilizers.matrix = new_stab_matrix
+            self.stabilizers.records = measured_records + [
+                list(full_records[idx])
+                for idx in old_stab_basis_indices
+            ]
+            self.logicals.matrix = full_matrix[
+                new_log_basis_indices
+            ].copy()
+            self.logicals.records = [
+                list(full_records[idx])
+                for idx in new_log_basis_indices
+            ]
+
+            if self.post_select_row_indices:
+                new_post_select_rows = set()
+                for old_idx in self.post_select_row_indices:
+                    if old_idx >= num_stabs:
+                        continue
+                    coeffs, is_dependent, _ = solve_linear_decomposition(
+                        basis=new_stab_matrix,
+                        targets=full_matrix[old_idx:old_idx + 1],
+                        reduce_weight=False,
+                    )
+                    if is_dependent[0]:
+                        new_post_select_rows.update(
+                            int(idx)
+                            for idx in np.flatnonzero(coeffs[0])
+                        )
+                self.post_select_row_indices = new_post_select_rows
+
+            self._apply_symplectic_matrix(forward_symplectic_matrix)
+            surviving_logical_indices = {
+                idx - num_stabs
+                for idx in new_log_basis_indices
+                if idx >= num_stabs
+            }
+            self._record_measurement_logical_effects(
+                surviving_logical_indices
+            )
+            return set()
+
         # After detector construction, we always decompose the system into the "Clean Basis" of the measurements we just performed.
         # - Dependent rows in Full Tableau -> Replaced by Clean Measurements (Stabilizers).
         # - Independent rows in Full Tableau -> Identified as Logicals.
@@ -640,26 +1105,24 @@ class SyndromeTracker:
             else:
                 return idx - num_logs            # stabilizer row
 
-        # 1. Update Logicals
+        # 1. Update explicit logical rows and preserve unclassified constraints.
         # Independent rows fall into:
         # (a) Logical rows: stay as logicals
-        # (b) Stab rows with records: stay as old stabilizers (not measured this round)
-        # (c) Stab rows without records: become logicals
+        # (b) Stabilizer rows: remain stabilizers until Builder classification
         if len(new_basis_indices) > 0:
             new_log_basis_indices = []
             old_stab_basis_indices = []
 
             for ri in new_basis_indices:
                 orig_idx = _remap(ri)
-                orig_record = reordered_records[ri]
                 if orig_idx >= num_stabs:
                     # Logical row → stays as logical
                     new_log_basis_indices.append(orig_idx)
-                elif orig_record == []:
-                    # Stab row without records → becomes logical
-                    new_log_basis_indices.append(orig_idx)
                 else:
-                    # Stab row with records → stays as old stabilizer
+                    # A physical measurement update cannot decide whether an
+                    # unmeasured state constraint is a code stabilizer or an
+                    # encoded logical state. Preserve it until the Builder
+                    # requests a code-basis rebase.
                     old_stab_basis_indices.append(orig_idx)
 
             self.logicals.matrix = full_matrix[new_log_basis_indices]
@@ -670,33 +1133,71 @@ class SyndromeTracker:
             self.logicals = PauliTableau(self.num_qubits)  # empty logicals
 
         # 2. Update Stabilizers
-        # Reset stabilizer tableau to the canonical measurement basis.
-        new_stab_records = [[self.total_measurements - num_meas + i] for i in range(num_meas)]
+        # The back-propagated measurement basis describes the input boundary
+        # and was used above for detector construction and state projection.
+        # The output stabilizers instead originate from the freshly reset
+        # syndrome ancillas. Forward propagation turns these reset factors into
+        # data stabilizers carrying the terminal measurement results.
+        new_stab_records = [[] for _ in range(num_meas)]
 
         # Build old_stab part: rows with records that stayed as stabilizers
         old_stab_matrix = full_matrix[old_stab_basis_indices]
         old_stab_records = [full_records[i] for i in old_stab_basis_indices]
+        promotable_old_positions = [
+            position
+            for position, old_idx in enumerate(old_stab_basis_indices)
+            if full_records[old_idx] == []
+        ]
 
-        self.stabilizers.matrix = np.vstack([back_propagated_paulis, old_stab_matrix])
+        self.stabilizers.matrix = np.vstack([reset_paulis, old_stab_matrix])
         self.stabilizers.records = new_stab_records + old_stab_records
 
+        # The measurement update above occurred at the block's input boundary.
+        # Evolve the reset-seeded output basis through the extraction circuit,
+        # then eliminate terminal syndrome-ancilla factors using their outcomes.
+        self._apply_symplectic_matrix(forward_symplectic_matrix)
+        self._replace_measured_ancillas_with_records(
+            measurement_qubit_indices=measurement_qubit_indices,
+            measurement_bases=measurement_bases,
+            measurement_base_idx=current_base_idx,
+        )
+
+        # Flag reset rows forward-propagate into measured ancilla factors only.
+        # Once those factors are replaced by their records, the Pauli row is
+        # identity and carries no quantum-state information. The detector above
+        # already records its deterministic parity, so do not retain the
+        # identity row in the stabilizer tableau.
+        output_rows = self.stabilizers.matrix[:num_meas]
+        kept_output_indices = np.flatnonzero(np.any(output_rows, axis=1)).tolist()
+        measurement_to_output_row = {
+            measurement_idx: output_idx
+            for output_idx, measurement_idx in enumerate(kept_output_indices)
+        }
+        num_output_stabilizers = len(kept_output_indices)
+        if num_output_stabilizers != num_meas:
+            old_output_indices = list(range(num_meas, self.stabilizers.count))
+            kept_indices = kept_output_indices + old_output_indices
+            self.stabilizers.matrix = self.stabilizers.matrix[kept_indices]
+            self.stabilizers.records = [
+                self.stabilizers.records[idx]
+                for idx in kept_indices
+            ]
+            self.stabilizer_with_logical_components = {
+                measurement_to_output_row[idx]
+                for idx in self.stabilizer_with_logical_components
+                if idx in measurement_to_output_row
+            }
+
         # Update post_select_row_indices: map old full_matrix indices to new stabilizer indices.
-        # - Old stab rows in old_stab_basis_indices → new indices num_meas, num_meas+1, ...
+        # - Old stab rows in old_stab_basis_indices follow the retained output rows.
         # - Dependent rows (absorbed into measurement basis) → find which measurement rows captured them
         if self.post_select_row_indices:
             new_ps = set()
             # Map old stab rows that survived
             for j, old_idx in enumerate(old_stab_basis_indices):
                 if old_idx in self.post_select_row_indices:
-                    new_ps.add(num_meas + j)
-            # Map dependent rows: decompose against measurement basis to find which rows captured them
-            # Map dependent rows: decompose against measurement basis to find which rows captured them
-            # Note: is_dependent uses reordered indices; map post_select old_idx to reordered idx
-            coeffs_ps, _, _ = solve_linear_decomposition(
-                basis=back_propagated_paulis,
-                targets=full_matrix,
-                reduce_weight=False,
-            )
+                    new_ps.add(num_output_stabilizers + j)
+            # Map dependent rows by finding which measurement rows captured them.
             for old_idx in self.post_select_row_indices:
                 if old_idx < full_matrix.shape[0]:
                     # Decompose against original full_matrix (not reordered)
@@ -704,47 +1205,24 @@ class SyndromeTracker:
                     c, dep, _ = solve_linear_decomposition(basis=back_propagated_paulis, targets=row, reduce_weight=False)
                     if dep[0]:
                         meas_indices = np.where(c[0])[0]
-                        new_ps.update(int(m) for m in meas_indices)
+                        new_ps.update(
+                            measurement_to_output_row[int(m)]
+                            for m in meas_indices
+                            if int(m) in measurement_to_output_row
+                        )
             self.post_select_row_indices = new_ps
 
-        # 3. Final Sanity Check (The Guardrail)
-        # Determine which logical indices survived in the logicals tableau
+        # Account for logical components measured by this physical block. The
+        # Builder validates the final logical count at its chosen boundary.
         surviving_log_indices = set(
             i - num_stabs for i in new_log_basis_indices
             if i >= num_stabs
         ) if new_log_basis_indices else set()
-
-        # Count the number of independent logical degrees of freedom consumed by gauge measurements.
-        # A logical is "consumed" only if it appears in gauge vectors AND did NOT survive as a logical.
-        if self._gauge_logical_vectors:
-            gauge_matrix = np.array(self._gauge_logical_vectors, dtype=np.uint8).copy()
-            for j in surviving_log_indices:
-                if j < gauge_matrix.shape[1]:
-                    gauge_matrix[:, j] = 0
-            num_absorbed = int(np.linalg.matrix_rank(gauge_matrix.astype(float)))
-        else:
-            num_absorbed = 0
-
-        if (num_absorbed + self.logicals.count) != self.expected_num_logicals:
-            raise RuntimeError(
-                 f"[Error] Logical Count Mismatch!\n"
-                 f"Expected: {self.expected_num_logicals}, \n"
-                 f"Found: (1) Logicals {self.logicals.count}, \n"
-                 f"(2) Absorbed Logical DOF (rank) {num_absorbed}\n"
-                 f"(3) Measurements with Logical Components {len(self.stabilizer_with_logical_components)}\n"
-             )
-
-        # 4. Clear redundant swlc entries for surviving logicals.
-        # If a gauge measurement's logical components ALL survived as logicals,
-        # the logical itself will be the observable — the swlc row is redundant.
-        if surviving_log_indices and self._gauge_logical_vectors:
-            swlc_sorted = sorted(self.stabilizer_with_logical_components)
-            swlc_to_remove = set()
-            for meas_idx, log_vec in zip(swlc_sorted, self._gauge_logical_vectors):
-                log_indices = set(np.where(log_vec)[0])
-                if log_indices.issubset(surviving_log_indices):
-                    swlc_to_remove.add(meas_idx)
-            self.stabilizer_with_logical_components -= swlc_to_remove
+        self._record_measurement_logical_effects(surviving_log_indices)
+        return {
+            num_output_stabilizers + position
+            for position in promotable_old_positions
+        }
 
     def process_data_measurement(self,
                                   circuit: stim.Circuit,

@@ -116,6 +116,8 @@ class QECPatch(ABC):
                 self.syndrome_indices_x.add(uid)
             elif role == 'syndrome_z':
                 self.syndrome_indices_z.add(uid)
+            elif role == 'syndrome':
+                pass
             else:
                 raise ValueError(f"Invalid role: {role}")
         else:
@@ -411,4 +413,3 @@ class QECPatch(ABC):
     
     def reset_transposition(self):
         self.is_transposed = False
-

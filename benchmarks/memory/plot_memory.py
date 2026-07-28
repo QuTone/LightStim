@@ -2,7 +2,8 @@
 Plot memory benchmark results: logical error rate vs physical error rate.
 
 Reads any CSV produced by run_memory.py.
-Groups curves by (code, distance) — one line per group.
+Groups curves by code, SE circuit, basis, distance, rounds, noise model, and
+decoder so distinct detector models are never merged into one line.
 
 Usage
 -----
@@ -12,9 +13,9 @@ Usage
     # Multiple files merged:
     venv/bin/python benchmarks/memory/plot_memory.py results/*.csv
 
-    # Filter codes/distances, custom output:
+    # Filter codes/SE circuits/distances, custom output:
     venv/bin/python benchmarks/memory/plot_memory.py results/surface_pymatching.csv \\
-        --codes rotated_sc --distances 3 5 7 \\
+        --codes color --se-circuits bell_flagging --distances 3 5 7 \\
         --output results/rotated_sc.png
 """
 import argparse
@@ -24,7 +25,6 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -35,16 +35,50 @@ from lightstim.plot.styles import apply_paper_style, bold_ticks, PALETTE_DISTANC
 apply_paper_style()
 
 _MARKERS = ["o", "s", "^", "D", "v", "P", "*", "X"]
+_GROUP_COLUMNS = [
+    "code",
+    "se_circuit",
+    "basis",
+    "distance",
+    "rounds",
+    "noise_model",
+    "decoder_name",
+]
+
+
+def _with_group_defaults(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize older result files to the current grouping schema."""
+    df = df.copy()
+    defaults = {
+        "se_circuit": "default",
+        "basis": "Z",
+        "rounds": -1,
+        "noise_model": "circuit_level",
+        "decoder_name": "unknown",
+    }
+    for column, default in defaults.items():
+        if column not in df:
+            df[column] = default
+        else:
+            df[column] = df[column].fillna(default)
+    return df
 
 
 def plot_ler_vs_p(df: pd.DataFrame, ax: plt.Axes, title: str = "") -> None:
-    """Plot one curve per (code, distance) group."""
-    groups = df.groupby(["code", "distance"], sort=True)
-    for i, ((code, d), sub) in enumerate(groups):
+    """Plot one curve per complete memory-experiment configuration."""
+    df = _with_group_defaults(df)
+    groups = df.groupby(_GROUP_COLUMNS, sort=True, dropna=False)
+    for i, (group, sub) in enumerate(groups):
+        code, se_circuit, basis, d, rounds, noise_model, decoder = group
         sub = sub.sort_values("p")
         color  = PALETTE_DISTANCE.get(int(d), f"C{i % 10}")
         marker = _MARKERS[i % len(_MARKERS)]
-        label  = f"{code} d={d}"
+        se_label = "" if se_circuit == "default" else f" {se_circuit}"
+        label = f"{code}{se_label} d={d} {basis} {decoder}"
+        if df["rounds"].nunique() > 1:
+            label += f" r={rounds}"
+        if df["noise_model"].nunique() > 1:
+            label += f" {noise_model}"
         ax.plot(
             sub["p"], sub["logical_error_rate"],
             marker=marker, color=color, lw=2, ms=7,
@@ -75,16 +109,28 @@ def main():
                     help="Filter to specific code name(s)")
     ap.add_argument("--distances", nargs="*", type=int, default=None,
                     help="Filter to specific distance(s)")
+    ap.add_argument("--se-circuits", nargs="*", default=None,
+                    help="Filter to specific SE circuit name(s)")
+    ap.add_argument("--basis", nargs="*", default=None,
+                    help="Filter to logical basis/bases")
+    ap.add_argument("--decoders", nargs="*", default=None,
+                    help="Filter to decoder name(s)")
     ap.add_argument("--title", default=None, help="Plot title")
     args = ap.parse_args()
 
     dfs = [pd.read_csv(p) for p in args.inputs]
-    df  = pd.concat(dfs, ignore_index=True)
+    df = _with_group_defaults(pd.concat(dfs, ignore_index=True))
 
     if args.codes:
         df = df[df["code"].isin(args.codes)]
     if args.distances:
         df = df[df["distance"].isin(args.distances)]
+    if args.se_circuits:
+        df = df[df["se_circuit"].isin(args.se_circuits)]
+    if args.basis:
+        df = df[df["basis"].isin(args.basis)]
+    if args.decoders:
+        df = df[df["decoder_name"].isin(args.decoders)]
 
     if df.empty:
         print("No data after filtering — nothing to plot.")
