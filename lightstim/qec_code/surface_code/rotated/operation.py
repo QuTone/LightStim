@@ -188,6 +188,26 @@ def _insert_fold_after_second_cnot_layer(
     return result
 
 
+def _disable_extraction_idle_noise(circuit: stim.Circuit) -> stim.Circuit:
+    """Retag an explicit SE round so noiseless mode also excludes idle noise."""
+    result = stim.Circuit()
+    for instruction in circuit:
+        if not isinstance(instruction, stim.CircuitInstruction):
+            raise ValueError("Expected an explicit syndrome-extraction round.")
+        tag = (
+            "noiseless"
+            if instruction.name == "TICK" and instruction.tag == "SE_start"
+            else instruction.tag
+        )
+        result.append(
+            instruction.name,
+            instruction.targets_copy(),
+            instruction.gate_args_copy(),
+            tag=tag,
+        )
+    return result
+
+
 # ------------------------------------------------------------------------------
 # Module-level helpers — state injection
 # ------------------------------------------------------------------------------
@@ -356,6 +376,8 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
             ordinary_round,
             fold_layer,
         )
+        if noiseless:
+            dynamical_round = _disable_extraction_idle_noise(dynamical_round)
         builder.apply_syndrome_extraction(
             circuit_chunk=dynamical_round,
             rounds=1,

@@ -56,6 +56,7 @@ import io
 import sys
 import time
 from itertools import product
+from numbers import Real
 from pathlib import Path
 
 import pandas as pd
@@ -479,11 +480,22 @@ _RESULT_COLS = frozenset({
 
 
 def _ck_key(row: dict) -> tuple:
-    """Stable checkpoint key from input-only fields (floats normalized to 6-digit sci)."""
-    return tuple(
-        f"{v:.6e}" if isinstance(v, float) else str(v)
-        for k, v in sorted(row.items()) if k not in _RESULT_COLS
-    )
+    """Stable checkpoint key from input-only fields.
+
+    CSV round-trips can promote optional integer fields to floats and represent
+    missing fields as NaN. Normalize those cases so a persisted task still
+    matches the metadata produced by a fresh benchmark run.
+    """
+    key = []
+    for field, value in sorted(row.items()):
+        if field in _RESULT_COLS or pd.isna(value):
+            continue
+        if isinstance(value, Real) and not isinstance(value, bool):
+            value = f"{float(value):.12g}"
+        else:
+            value = str(value)
+        key.append((field, value))
+    return tuple(key)
 
 
 def _load_done_keys(path: Path) -> set:
@@ -491,6 +503,48 @@ def _load_done_keys(path: Path) -> set:
         return set()
     df = pd.read_csv(path)
     return {_ck_key(r) for r in df.to_dict("records")}
+
+
+def _ensure_csv_schema(path: Path, rows) -> None:
+    """Add newly introduced fields to an existing results CSV."""
+    if not path.exists():
+        return
+
+    df = pd.read_csv(path)
+    missing = []
+    for row in rows:
+        for field in row:
+            if field not in df.columns and field not in missing:
+                missing.append(field)
+    if not missing:
+        return
+
+    columns = list(df.columns)
+    insert_at = next(
+        (i for i, field in enumerate(columns) if field in _RESULT_COLS),
+        len(columns),
+    )
+    for field in missing:
+        df.insert(insert_at, field, pd.NA)
+        insert_at += 1
+    df.to_csv(path, index=False)
+
+
+def _append_result_row(path: Path, row: dict) -> None:
+    """Append one result while preserving the CSV's column alignment."""
+    _ensure_csv_schema(path, [row])
+    exists = path.exists()
+    columns = (
+        list(pd.read_csv(path, nrows=0).columns)
+        if exists
+        else list(row)
+    )
+    pd.DataFrame([row], columns=columns).to_csv(
+        path,
+        mode="a",
+        header=not exists,
+        index=False,
+    )
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
@@ -505,6 +559,7 @@ def _run_tasks(task_list, decoder_cfg: DecoderConfig,
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    _ensure_csv_schema(output_path, (metadata for _, metadata in task_list))
     done_keys = _load_done_keys(output_path)
     if done_keys:
         print(f"  Checkpoint: {len(done_keys)} task(s) already done, skipping.")
@@ -545,9 +600,7 @@ def _run_tasks(task_list, decoder_cfg: DecoderConfig,
             "decoder": stats.decoder,
         }
         # Persist immediately — a kill/OOM never loses this result
-        pd.DataFrame([row]).to_csv(
-            output_path, mode="a", header=not output_path.exists(), index=False,
-        )
+        _append_result_row(output_path, row)
         print(f"  -> LER={stats.logical_error_rate:.2e} "
               f"({stats.errors} errors, {stats.shots:,} shots, {elapsed:.1f}s)", flush=True)
 

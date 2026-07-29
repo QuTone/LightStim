@@ -9,13 +9,17 @@ import pathlib
 import sys
 
 import numpy as np
+import pandas as pd
 import pytest
 import stim
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from conftest import assert_dem_valid, assert_noiseless, assert_valid_circuit
 from benchmarks.logical_ops.run_logical_ops import (
+    _append_result_row,
+    _ck_key,
     _decoder_config,
+    _load_done_keys,
     build_tasks,
 )
 from lightstim.ir.builder import CircuitBuilder
@@ -26,6 +30,7 @@ from lightstim.protocols.rotated_logical_s import (
     build_rotated_s_two_way_circuit,
     build_rotated_s_y_injection_circuit,
 )
+from lightstim.protocols.state_injection import StateInjectionExperiment
 from lightstim.qec_code.surface_code.rotated import (
     RotatedSurfaceCode,
     RotatedSurfaceCodeExtractionBlock,
@@ -369,6 +374,25 @@ def test_y_injection_noise_is_confined_to_target_s_round():
 
 
 @pytest.mark.smoke
+def test_state_injection_noiseless_s_dag_excludes_idle_noise():
+    circuit = StateInjectionExperiment(
+        distance=3,
+        rounds=0,
+        inject_state="Y",
+        noise_params=NoiseConfig(p_idle=1e-3),
+    ).build()
+
+    assert all(
+        instruction.name != "DEPOLARIZE1"
+        for instruction in circuit.flattened()
+    )
+    assert all(
+        instruction.name != "TICK" or instruction.tag != "SE_start"
+        for instruction in circuit.flattened()
+    )
+
+
+@pytest.mark.smoke
 def test_logical_ops_runner_builds_all_rotated_s_experiments():
     tasks = build_tasks(
         "S_rotated",
@@ -392,6 +416,51 @@ def test_logical_ops_runner_builds_all_rotated_s_experiments():
     } == {1, 2}
     assert all(metadata["gate"] == "S_rotated" for _, metadata in tasks)
     assert all(circuit.num_observables == 1 for circuit, _ in tasks)
+
+
+@pytest.mark.smoke
+def test_mixed_gate_checkpoint_csv_round_trip(tmp_path):
+    output_path = tmp_path / "logical_ops.csv"
+    common_result = {
+        "shots": 100,
+        "post_selected_shots": 100,
+        "post_selection_rate": 0.0,
+        "errors": 1,
+        "logical_error_rate": 0.01,
+        "seconds": 0.1,
+        "decoder": "test",
+    }
+    h_metadata = {
+        "gate": "H",
+        "sub_experiment": "H_ZtoX",
+        "init_basis": "Z",
+        "measure_basis": "X",
+        "d": 3,
+        "rounds": 2,
+        "p": 1e-3,
+    }
+    rotated_s_metadata = {
+        "gate": "S_rotated",
+        "sub_experiment": "S_DAG_plusY_to_X",
+        "init_basis": "+Y",
+        "measure_basis": "X",
+        "d": 3,
+        "rounds": 2,
+        "p": 1e-3,
+        "noisy_gate_count": 1,
+    }
+
+    _append_result_row(output_path, {**h_metadata, **common_result})
+    _append_result_row(output_path, {**rotated_s_metadata, **common_result})
+
+    persisted = pd.read_csv(output_path)
+    assert list(persisted["gate"]) == ["H", "S_rotated"]
+    assert pd.isna(persisted.loc[0, "noisy_gate_count"])
+    assert persisted.loc[1, "noisy_gate_count"] == 1
+    assert _load_done_keys(output_path) == {
+        _ck_key(h_metadata),
+        _ck_key(rotated_s_metadata),
+    }
 
 
 @pytest.mark.smoke
