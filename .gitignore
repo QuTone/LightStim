@@ -67,3 +67,9 @@ Thumbs.db
 benchmarks/*/results/
 paper_artifact/table/results/*.txt
 paper_artifact/table/results/*.log
+
+# large regenerated detector-slice diagram (Example 8)
+notebooks/LogicalOps/example8_detslice.svg
+
+# cloned baseline reference (not vendored)
+tqec/

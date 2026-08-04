@@ -32,6 +32,7 @@ def _decode_worker_cpu(
     gpu_id: Optional[int] = None,
     on_decode_failure: str = "error",
     completed_counter=None,
+    base_seed: Optional[int] = None,
 ) -> None:
     """
     Single worker process: reserve shots -> sample -> post-select -> decode.
@@ -55,7 +56,9 @@ def _decode_worker_cpu(
         decompose_errors=getattr(decoder, "decompose_errors", False),
     )
     compiled = decoder.compile_decoder_for_dem(dem=dem)
-    sampler = dem.compile_sampler(seed=os.getpid() + worker_id * 10000)
+    sampler = dem.compile_sampler(
+        seed=(base_seed + worker_id) if base_seed is not None
+        else os.getpid() + worker_id * 10000)
 
     while True:
         with lock:

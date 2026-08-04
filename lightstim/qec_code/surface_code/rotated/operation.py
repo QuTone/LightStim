@@ -8,12 +8,18 @@ LogicalOpSet methods, callable via
 LogicalExecutor.apply_logical_operation().
 """
 
-from typing import Literal, Tuple, Dict, Any, Type, List
+from typing import Literal, Optional, Tuple, Dict, Any, Type, List
 
 from lightstim.ir.operation import CSSLogicalOpSet
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
+from lightstim.qec_code.surface_code.rotated.litinski_rotation import (
+    rotate_patches_litinski,
+)
+from lightstim.qec_code.surface_code.rotated.swap_rotation import (
+    rotate_patches_swap,
+)
 import stim
 
 
@@ -330,11 +336,14 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
     Clifford gates as composable operations for use with LogicalExecutor.
     """
 
-    def __init__(self, extraction_block_class: Type):
+    def __init__(self, extraction_block_class: Optional[Type] = None):
         """
         Args:
             extraction_block_class: SE block class for this code
                 (e.g. RotatedSurfaceCodeExtractionBlock). Takes system, has .circuit.
+                Only required by operations that emit their own SE round
+                (the dynamical fold-transversal phase gates); rotation and
+                state preparation work without it.
         """
         super().__init__()
         self.name = "RotatedSurfaceCode"
@@ -382,6 +391,10 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
             circuit_chunk=dynamical_round,
             rounds=1,
             noiseless=noiseless,
+            # The mid-cycle fold layer needs the measurement-block engine's
+            # retained-data semantics; opt in explicitly (the legacy engine
+            # is the default for calls without measurement_blocks).
+            measurement_blocks=(dynamical_round,),
         )
 
     def fold_transversal_s(
@@ -421,6 +434,86 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
             inverse=True,
             noiseless=noiseless,
         )
+
+    # ------------------------------------------------------------------
+    # Physical 90-degree patch rotations
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _registered_patch_names(builder: CircuitBuilder,
+                                patches: Tuple[QECPatch, ...],
+                                op_name: str) -> List[str]:
+        """Resolve patch objects to their names in the builder's system."""
+        names = []
+        for patch in patches:
+            name = next((nm for nm, (p, _off)
+                         in builder.system.patches.items() if p is patch),
+                        None)
+            if name is None:
+                raise ValueError(
+                    f"{op_name}: patch is not registered in the builder's "
+                    f"system")
+            names.append(name)
+        return names
+
+    def swap_rotation(self, builder: CircuitBuilder, *patches: QECPatch):
+        """Rotate the given patch(es) 90 degrees via SWAP networks.
+
+        Thin LogicalOpSet adapter over
+        :func:`~lightstim.qec_code.surface_code.rotated.swap_rotation.rotate_patches_swap`:
+        several patches rotate CONCURRENTLY (disjoint per-patch
+        nearest-neighbour networks merged tick-for-tick, so the total depth
+        stays that of ONE rotation).  The caller runs syndrome extraction
+        before and after; the first post-rotation round's detectors bridge
+        automatically.  Swaps the red/blue colours and the live logical
+        orientation; weight-2 positions are unchanged.
+
+        Returns:
+            The SWAP-layer list for a single patch, else the per-patch
+            lists in argument order.
+        """
+        names = self._registered_patch_names(builder, patches,
+                                             "swap_rotation")
+        if not names:
+            return []
+        summaries = rotate_patches_swap(builder.system, builder, names)
+        return summaries[0] if len(names) == 1 else summaries
+
+    def litinski_rotation(self, builder: CircuitBuilder, *patches: QECPatch,
+                          direction: str = '-y',
+                          directions: Optional[Dict[str, str]] = None,
+                          rounds: Optional[int] = None):
+        """Rotate the given patch(es) 90 degrees via the Litinski protocol.
+
+        Thin LogicalOpSet adapter over
+        :func:`~lightstim.qec_code.surface_code.rotated.litinski_rotation.rotate_patches_litinski`:
+        several patches rotate CONCURRENTLY (the five deformation stages
+        advance in lockstep sharing the system-wide SE rounds, so the total
+        duration stays approximately one rotation regardless of the patch
+        count).
+
+        Args:
+            builder: The circuit builder (injected by LogicalExecutor).
+            *patches: Patches registered in the builder's system.
+            direction: '-y'|'+y'|'-x'|'+x', applied to every patch
+                (±y needs an X-bar-horizontal start, ±x its transpose; the
+                sign is fixed by the live checkerboard phase).
+            directions: Optional {patch_name: direction} per-patch override.
+            rounds: SE rounds per stage (default: d).
+
+        Returns:
+            The summary dict for a single patch, else {patch_name: summary}.
+        """
+        names = self._registered_patch_names(builder, patches,
+                                             "litinski_rotation")
+        if not names:
+            return {}
+        dirs = {nm: direction for nm in names}
+        if directions:
+            dirs.update(directions)
+        summaries = rotate_patches_litinski(
+            builder.system, builder, names, rounds=rounds, directions=dirs)
+        return summaries[names[0]] if len(names) == 1 else summaries
 
     # ------------------------------------------------------------------
     # State preparation / teardown

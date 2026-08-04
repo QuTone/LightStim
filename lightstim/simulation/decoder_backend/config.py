@@ -66,6 +66,10 @@ class PipelineConfig:
     post_select_observable_indices: Optional[List[int]] = None
     post_select_corrected_observable_indices: Optional[List[int]] = None
     target_observable_indices: Optional[List[int]] = None  # None = all observables
+    # Deterministic sampling: worker w uses seed base_seed + w (None = legacy
+    # per-process seeds).  Aggregate counts are still subject to worker-race
+    # shot splits; bit-exact totals need num_workers=1.
+    base_seed: Optional[int] = None
     allow_gauge_detectors: bool = False
     output_dir: Optional[str] = None
     output_filename: Optional[str] = None

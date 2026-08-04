@@ -20,6 +20,18 @@ class RotatedSurfaceCodeExtractionBlock:
         scheduling: CNOT scheduling variant.
             'perpendicular' (default) — fault-tolerant zigzag, achieves full code distance.
             'parallel' — non-FT zigzag, effective distance is halved due to hook errors.
+            'gidney' — the interaction order of arXiv:2302.07395 (``order_S`` for
+                X tiles, ``order_N`` for Z tiles, ``midout/circuits/steps/_patches.py``).
+                REQUIRED for the rounds that surround a Y-transition round
+                (:mod:`~lightstim.qec_code.surface_code.rotated.y_transition_round`):
+                that chunk is a gate-for-gate port of Gidney's round, so its hook
+                errors only line up with neighbouring rounds that use his order.
+            'gidney_reversed' — the time-reverse of 'gidney'.  Gidney builds the
+                first half of the Y-memory experiment out of *inverted* chunks
+                (``boundary_round.inverted()`` in ``_y_memory_circuit.py``), so the
+                degenerate-Y-boundary rounds that PRECEDE a ``direction='init'``
+                transition round must run in this reversed order; running them
+                forward costs one unit of fault distance.
     """
 
     SCHEDULES = {
@@ -41,7 +53,21 @@ class RotatedSurfaceCodeExtractionBlock:
             ((-1, +1), (+1, -1)),  # Tick 3: X→NW, Z→SE  (swap of perpendicular tick 2/3)
             ((-1, -1), (-1, -1)),  # Tick 4: SW interaction
         ],
+        # arXiv:2302.07395, midout/circuits/steps/_patches.py::order_func:
+        #   order_S = [UR, UL, DR, DL]   (X tiles)
+        #   order_N = [UR, DR, UL, DL]   (Z tiles)
+        # Gidney's DIRS = (0.5+0.5j)*1j**d, i.e. DR=(+1,+1), DL=(-1,+1),
+        # UL=(-1,-1), UR=(+1,-1) after the (2*gx+1, 2*gy+1) coordinate bridge.
+        'gidney': [
+            ((+1, -1), (+1, -1)),  # Tick 1: X→UR, Z→UR
+            ((-1, -1), (+1, +1)),  # Tick 2: X→UL, Z→DR
+            ((+1, +1), (-1, -1)),  # Tick 3: X→DR, Z→UL
+            ((-1, +1), (-1, +1)),  # Tick 4: X→DL, Z→DL
+        ],
     }
+    # Time-reverse of 'gidney' (Gidney's ``Chunk.inverted()``): same tiles, the
+    # interaction layers emitted back to front.
+    SCHEDULES['gidney_reversed'] = SCHEDULES['gidney'][::-1]
 
     def __init__(self, system, scheduling='perpendicular'):
         self.system = system

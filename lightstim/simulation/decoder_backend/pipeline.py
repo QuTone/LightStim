@@ -46,6 +46,7 @@ class SimulationPipeline:
         post_select_observable_indices: Optional[List[int]] = None,
         post_select_corrected_observable_indices: Optional[List[int]] = None,
         target_observable_indices: Optional[List[int]] = None,
+        base_seed: Optional[int] = None,
         allow_gauge_detectors: bool = False,
         output_dir: Optional[str] = None,
         output_filename: Optional[str] = None,
@@ -77,6 +78,7 @@ class SimulationPipeline:
             post_select_observable_indices=post_select_observable_indices,
             post_select_corrected_observable_indices=post_select_corrected_observable_indices,
             target_observable_indices=target_observable_indices,
+            base_seed=base_seed,
             allow_gauge_detectors=allow_gauge_detectors,
             output_dir=output_dir,
             output_filename=output_filename,
@@ -201,6 +203,7 @@ class SimulationPipeline:
                     wid if self.config.decoder.backend != "cpu" else None,
                     self.config.decoder.on_decode_failure,
                     completed_counter,
+                    self.config.base_seed,
                 ),
             )
             p.start()
@@ -261,7 +264,8 @@ class SimulationPipeline:
             ignore_decomposition_failures=self.config.allow_gauge_detectors,
         )
         compiled = decoder_instance.compile_decoder_for_dem(dem=dem)
-        sampler = circuit.compile_detector_sampler(seed=0)
+        sampler = circuit.compile_detector_sampler(
+            seed=self.config.base_seed if self.config.base_seed is not None else 0)
 
         total_shots = 0
         post_selected_shots = 0
