@@ -152,36 +152,42 @@ The pattern has three parts:
 ### 1. DEM → matrices
 
 Convert a `stim.DetectorErrorModel` into the (H, observable matrix,
-priors) triple your decoder needs. **Reuse the shared helper** rather than
-re-deriving it: `from ..dem_matrices import dem_to_matrices`. It handles
-flattened DEMs, detector targets, observable targets, and decomposed errors,
-and returns C-contiguous matrices. The equivalent code (shown here for
-reference) is:
+priors) triple your decoder needs. **Always reuse the shared helper** rather
+than re-deriving it — `dem_matrices.py` encodes two behaviours that are easy
+to get subtly wrong (parity semantics and duplicate merging, both below):
 
 ```python
-def _dem_to_matrices(dem: stim.DetectorErrorModel):
-    """Returns (H, obs_matrix, priors) — see cudaqx.py for full impl."""
-    n_dets = dem.num_detectors
-    n_obs = dem.num_observables
-    error_cols = []
-    for inst in dem.flattened():
-        if inst.type != "error": continue
-        p = inst.args_copy()[0]
-        dets, obs = [], []
-        for t in inst.targets_copy():
-            if t.is_relative_detector_id():    dets.append(t.val)
-            elif t.is_logical_observable_id(): obs.append(t.val)
-        error_cols.append({"p": p, "dets": dets, "obs": obs})
-    n_err = len(error_cols)
-    H   = np.zeros((n_dets, n_err), dtype=np.uint8, order="C")
-    obs = np.zeros((n_obs,  n_err), dtype=np.uint8, order="C")
-    p   = np.zeros(n_err, dtype=np.float64)
-    for e, col in enumerate(error_cols):
-        p[e] = col["p"]
-        for d in col["dets"]: H[d, e] = 1
-        for o in col["obs"]:  obs[o, e] = 1
-    return H, obs, p
+from ..dem_matrices import dem_to_matrices
+
+H, obs_matrix, priors = dem_to_matrices(
+    dem,
+    sparse=False,           # True -> scipy CSR, never materialises a dense array
+    merge_duplicates=True,  # default; fuses identical-footprint mechanisms
+)
 ```
+
+| | `sparse=False` (default) | `sparse=True` |
+|---|---|---|
+| `H`, `obs_matrix` | dense C-contiguous `uint8` | `scipy.sparse.csr_matrix` |
+| use for | CUDA / C extensions needing row-major | large multi-round LDPC, where dense is many GB and OOMs a worker |
+
+Two behaviours to know about:
+
+**Parity, not assignment.** stim treats a target listed an even number of
+times as cancelling, so `error(0.1) D0 D0 D1` flips only `D1`. The helper
+XORs (`np.add.at(...)` then `& 1`); writing `H[d, e] = 1` instead silently
+produces a wrong matrix. Regression test:
+`test_dem_to_matrices_repeated_targets_cancel`.
+
+**`merge_duplicates` changes the column count.** Mechanisms with identical
+(detector, observable) footprints fuse into one column, with priors combined
+by the XOR rule `p1(1-p2) + p2(1-p1)`. stim does not always do this itself —
+in `z_only` circuits X- and Y-type data errors keep separate columns despite
+identical symptoms, and those degenerate twins measurably degrade BP. So
+**`H.shape[1]` may be smaller than `dem.num_errors`** — derive the error-
+mechanism count from `H.shape[1]`, never from the DEM. Pass
+`merge_duplicates=False` if your decoder must stay column-aligned with the
+original DEM instructions.
 
 ### 2. Custom `CompiledDecoder`
 
@@ -253,6 +259,8 @@ class MyDecoder(ExternalDecoder):
     def setup(self, *, H, obs_matrix, priors, num_detectors, num_observables, dem):
         # Called ONCE per DEM. Stash whatever you need on self.
         # self.params holds the DecoderConfig(params=...) dict.
+        # H and obs_matrix are scipy CSR — call .toarray() if your library
+        # needs dense (only safe for small DEMs; see the note below).
         self._inner = my_lib.Decoder(H, priors, **self.params)
 
     # Implement EITHER decode_single OR decode_batch — LightStim bridges the other.
@@ -266,6 +274,19 @@ class MyDecoder(ExternalDecoder):
 
 register_decoder("my-decoder", MyDecoder, backend="cpu")
 ```
+
+### What `setup` receives
+
+The facade calls `dem_to_matrices(dem, sparse=True, merge_duplicates=True)`,
+so `H` and `obs_matrix` are **`scipy.sparse.csr_matrix`**, and `n_err`
+(= `H.shape[1]`) is the *merged* mechanism count, which **may be smaller than
+`dem.num_errors`** — see the `merge_duplicates` note in Pattern C. Size your
+`"correction"` output from `H.shape[1]`, not from the DEM.
+
+Sparse is deliberate: these are the decoders that run on large LDPC circuits
+where a dense `(n_detectors, n_error_mechanisms)` matrix can be many GB and
+OOM a worker. If your library needs dense input, `H.toarray()` works but
+reintroduces that cost.
 
 ### The three axes `ExternalDecoder` formalises
 
@@ -386,7 +407,8 @@ so CI doesn't fail when the library isn't installed.
 | `lightstim/simulation/decoder_backend/decoders/bposd.py` | **Pattern B reference** — param translation |
 | `lightstim/simulation/decoder_backend/decoders/cudaqx.py` | **Pattern C reference** — DEM matrix + custom CompiledDecoder + GPU |
 | `lightstim/simulation/decoder_backend/external.py` | **Pattern D** — `ExternalDecoder` facade + adapter |
-| `lightstim/simulation/decoder_backend/dem_matrices.py` | Shared `dem_to_matrices()` (H, obs_matrix, priors) |
+| `lightstim/simulation/decoder_backend/dem_matrices.py` | Shared `dem_to_matrices(dem, *, sparse=False, merge_duplicates=True)` → (H, obs_matrix, priors) |
+| `lightstim/simulation/decoder_backend/pcm.py` | Older `dem_to_check_matrices()` → CSC + priors. Merges duplicates by **summing** priors; prefer `dem_to_matrices` for new code |
 | `lightstim/simulation/decoder_backend/_accounting.py` | Shared `count_batch()` — denominator/error counting + failure-flag policy |
 | `lightstim/simulation/decoder_backend/pipeline.py` | Consumer of the registry; you shouldn't need to touch it |
 | `lightstim/simulation/decoder_backend/config.py` | `DecoderConfig` dataclass (incl. `on_decode_failure`) |
@@ -404,34 +426,41 @@ prediction will be wrong but the shape will be right — a silent
 correctness bug. (Pattern D handles this for you.)
 
 ### 2. C-contiguous matrices for GPU
-Pattern C constructs `H` and `obs_matrix` with `order="C"`. Most C++/CUDA
+`dem_to_matrices(sparse=False)` returns `order="C"` arrays. Most C++/CUDA
 extensions assume row-major; passing Fortran-ordered arrays silently
 transposes the decode and produces nonsense predictions.
 
-### 3. GPU decoders must use `num_workers=1`
+### 3. `H.shape[1]` is the mechanism count, not `dem.num_errors`
+`dem_to_matrices` merges identical-footprint mechanisms by default, so the two
+can differ (a `chen_p96` `z_only` DEM had ~36k duplicate columns). A
+`"correction"`-output decoder sized from `dem.num_errors` will then emit
+wrong-length predictions. Always use `H.shape[1]`, or pass
+`merge_duplicates=False` if you need DEM-column alignment.
+
+### 4. GPU decoders must use `num_workers=1`
 `cudaq_qec` decoders pre-allocate GPU memory in `compile_decoder_for_dem`.
 Running with `num_workers > 1` either OOMs or returns garbage. Document
 this in your decoder's docstring and in the smoke test.
 
-### 4. `sinter.collect` is bypassed for GPU
+### 5. `sinter.collect` is bypassed for GPU
 If your decoder needs GPU resources, `SimulationPipeline` already handles
 this — see the custom decode loop in `pipeline.py` and `worker.py`. You
 don't need to do anything special, but **do not** rely on
 `sinter.collect` semantics in your `compile_decoder_for_dem`.
 
-### 5. Soft-import discipline
+### 6. Soft-import discipline
 Inside your decoder file, the `try: import upstream_lib` block must
 catch `ImportError`. Use `pytest.importorskip` in tests. Otherwise a user
 without your library gets a hard import failure when they call
 `SimulationPipeline(...)`, not your decoder.
 
-### 6. Post-selection: usually free
+### 7. Post-selection: usually free
 If your decoder just consumes syndromes and emits predictions,
 post-selection (state injection, distillation) works automatically — the
 pipeline filters shots before they reach you. If you need to inspect the
 post-selection mask, see `lightstim/simulation/decoder_backend/post_select.py`.
 
-### 7. Failure flags need LightStim's pipeline (Pattern D)
+### 8. Failure flags need LightStim's pipeline (Pattern D)
 Per-shot failure flags ride a side channel (`compiled.last_flags`) that the
 LightStim pipeline reads in-process. They are **not** carried by the sinter
 bit-packed return, so a decoder that relies on `on_decode_failure` heralding
