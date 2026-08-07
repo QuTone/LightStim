@@ -12,10 +12,11 @@ user-invocable: true
 
 # Add a New Decoder
 
-LightStim's decoder backend is a small registry of `sinter.Decoder`
-subclasses. Each decoder is registered under a name + backend (`cpu`,
-`gpu`, or `fpga`), then `DecoderConfig(name="…", backend="…", params={})`
-looks it up at runtime.
+LightStim's decoder backend is a small registry of decoder classes (by
+convention `sinter.Decoder` subclasses, though the pipeline only duck-types
+the interface — see the contract below). Each decoder is registered under a
+name + backend (`cpu`, `gpu`, or `fpga`), then
+`DecoderConfig(name="…", backend="…", params={})` looks it up at runtime.
 
 Adding a decoder is **always one new file** in
 `lightstim/simulation/decoder_backend/decoders/`, plus **one line** in
@@ -31,18 +32,15 @@ one that matches your situation.
 
 ## The contract
 
-Every decoder must subclass `sinter.Decoder` and implement
-`compile_decoder_for_dem`. That method takes a `stim.DetectorErrorModel`
-and returns a `sinter.CompiledDecoder`:
+The pipeline is **duck-typed** — it never checks `isinstance(..., sinter.Decoder)`.
+A decoder is any object with a `compile_decoder_for_dem` method that takes a
+`stim.DetectorErrorModel` and returns a compiled decoder:
 
 ```python
-import sinter
 import stim
 
-class MyDecoder(sinter.Decoder):
-    def compile_decoder_for_dem(
-        self, *, dem: stim.DetectorErrorModel
-    ) -> sinter.CompiledDecoder:
+class MyDecoder:                       # sinter.Decoder base is optional
+    def compile_decoder_for_dem(self, *, dem: stim.DetectorErrorModel):
         ...   # one-time prep per DEM
 ```
 
@@ -51,7 +49,7 @@ The compiled decoder must implement
 -> np.ndarray` — bit-packed in, bit-packed out:
 
 ```python
-class _MyCompiledDecoder(sinter.CompiledDecoder):
+class _MyCompiledDecoder:              # sinter.CompiledDecoder base is optional
     def decode_shots_bit_packed(
         self, *, bit_packed_detection_event_data: np.ndarray
     ) -> np.ndarray:
@@ -59,6 +57,12 @@ class _MyCompiledDecoder(sinter.CompiledDecoder):
         # output shape: (n_shots, ceil(n_observables / 8)), uint8, LSB-first
         ...
 ```
+
+Subclassing `sinter.Decoder` / `sinter.CompiledDecoder` is still the repo
+convention (the built-in decoders do, and it's required if you also want your
+decoder usable with a raw `sinter.collect` outside LightStim), but the method
+signatures above are the whole contract — `sinter` matching them is why
+sinter-native decoders plug in unchanged (Pattern A).
 
 If your underlying library already implements `sinter.Decoder` and
 `sinter.CompiledDecoder` correctly (e.g. `stimbposd.SinterDecoder_BPOSD`,
