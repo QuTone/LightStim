@@ -92,7 +92,7 @@ def test_relay_bp_registered_and_runs():
 
 
 def test_ldpc_bp_registered_and_runs():
-    """Plain BP (ldpc.BpDecoder, Pattern D) registers and decodes when installed."""
+    """Plain BP (ldpc.BpDecoder, Pattern C facade) registers and decodes when installed."""
     importorskip_safe("ldpc")
 
     assert "ldpc-bp" in list_decoders()
