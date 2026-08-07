@@ -32,6 +32,12 @@ one that matches your situation.
 
 ## The contract
 
+**Pattern D skips this section entirely.** If you subclass `ExternalDecoder`,
+the facade already implements this interface — you only write `setup` plus
+`decode_single`/`decode_batch` on plain unpacked numpy arrays, and never touch
+bit-packing or these method signatures. The contract below is what Patterns
+A–C implement (and what the facade implements *for* you).
+
 The pipeline is **duck-typed** — it never checks `isinstance(..., sinter.Decoder)`.
 A decoder is any object with a `compile_decoder_for_dem` method that takes a
 `stim.DetectorErrorModel` and returns a compiled decoder:
