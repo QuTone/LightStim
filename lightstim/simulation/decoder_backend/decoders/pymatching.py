@@ -1,4 +1,4 @@
-"""PyMatching MWPM decoder (CPU) — wraps pymatching directly."""
+"""PyMatching MWPM decoder (CPU) with Stim graphlike decomposition."""
 from __future__ import annotations
 
 import numpy as np
@@ -24,7 +24,14 @@ try:
             )
 
     class PyMatchingDecoder(sinter.Decoder):
-        """MWPM decoder backed by pymatching."""
+        """MWPM decoder backed by pymatching.
+
+        PyMatching consumes graphlike DEM components. This flag tells the
+        pipeline to ask Stim to decompose decomposable circuit-level hyperedges
+        before compiling the matching graph.
+        """
+
+        decompose_errors = True
 
         def compile_decoder_for_dem(
             self, *, dem: stim.DetectorErrorModel
