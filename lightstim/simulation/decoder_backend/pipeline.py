@@ -139,8 +139,8 @@ class SimulationPipeline:
             )
             return
 
-        # pymatching now uses decompose_errors=True + enable_correlations=True,
-        # so it handles hyperedges correctly — no warning needed.
+        # PyMatching requests decompose_errors=True, so Stim converts
+        # decomposable hyperedges into graphlike components before compilation.
 
     def _run_custom(
         self,

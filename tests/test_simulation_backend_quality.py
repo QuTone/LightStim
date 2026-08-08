@@ -7,7 +7,10 @@ from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeli
 from lightstim.simulation.decoder_backend._accounting import count_batch
 from lightstim.simulation.decoder_backend.dem_matrices import dem_to_matrices
 from lightstim.simulation.decoder_backend.external import ExternalDecoder
-from lightstim.simulation.decoder_backend.registry import register_decoder
+from lightstim.simulation.decoder_backend.registry import (
+    get_decoder,
+    register_decoder,
+)
 from lightstim.simulation.simulator import ExperimentTask, QECSimulator
 
 
@@ -19,6 +22,22 @@ def _simple_observable_circuit(error_probability: float = 0.0) -> stim.Circuit:
     circuit.append("DETECTOR", [stim.target_rec(-1)])
     circuit.append("OBSERVABLE_INCLUDE", [stim.target_rec(-1)], 0)
     return circuit
+
+
+def _max_detectors_per_error_component(dem: stim.DetectorErrorModel) -> int:
+    maximum = 0
+    for instruction in dem.flattened():
+        if instruction.type != "error":
+            continue
+        component_size = 0
+        for target in instruction.targets_copy():
+            if target.is_separator():
+                maximum = max(maximum, component_size)
+                component_size = 0
+            elif target.is_relative_detector_id():
+                component_size += 1
+        maximum = max(maximum, component_size)
+    return maximum
 
 
 @pytest.mark.smoke
@@ -51,6 +70,27 @@ def test_cpu_decoder_does_not_import_cudaq_qec():
         f"cudaq_qec was imported by the CPU path:\nstdout: {result.stdout}\n"
         f"stderr: {result.stderr}"
     )
+
+
+@pytest.mark.smoke
+def test_pymatching_requests_graphlike_dem_decomposition():
+    """PyMatching must not silently drop undecomposed circuit hyperedges."""
+    decoder = get_decoder("pymatching", backend="cpu")
+    assert decoder.decompose_errors is True
+
+    circuit = stim.Circuit.generated(
+        "surface_code:rotated_memory_z",
+        distance=3,
+        rounds=3,
+        after_clifford_depolarization=0.001,
+    )
+    raw_dem = circuit.detector_error_model()
+    decoder_dem = circuit.detector_error_model(
+        decompose_errors=decoder.decompose_errors
+    )
+
+    assert _max_detectors_per_error_component(raw_dem) > 2
+    assert _max_detectors_per_error_component(decoder_dem) <= 2
 
 
 def test_multiprocess_unknown_decoder_raises_in_parent():
@@ -92,7 +132,7 @@ def test_relay_bp_registered_and_runs():
 
 
 def test_ldpc_bp_registered_and_runs():
-    """Plain BP (ldpc.BpDecoder, Pattern D) registers and decodes when installed."""
+    """Plain BP (ldpc.BpDecoder, Pattern C facade) registers and decodes when installed."""
     importorskip_safe("ldpc")
 
     assert "ldpc-bp" in list_decoders()

@@ -6,7 +6,7 @@ natively), returns the correction over error mechanisms, and reports per-shot
 convergence so ``DecoderConfig(on_decode_failure=...)`` can herald or count
 non-converged shots.
 
-It is registered via the :class:`ExternalDecoder` facade (Pattern D), so
+It is registered via the :class:`ExternalDecoder` facade (Pattern C), so
 bit-packing, the correction→observable multiply, and multi-process workers are
 all handled by :class:`SimulationPipeline`.
 

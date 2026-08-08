@@ -12,479 +12,238 @@ user-invocable: true
 
 # Add a New Decoder
 
-LightStim's decoder backend is a small registry of `sinter.Decoder`
-subclasses. Each decoder is registered under a name + backend (`cpu`,
-`gpu`, or `fpga`), then `DecoderConfig(name="…", backend="…", params={})`
-looks it up at runtime.
+LightStim's decoder backend is a registry of decoder classes. Register a class
+under a name + backend (`cpu` / `gpu` / `fpga`), and
+`DecoderConfig(name="…", backend="…", params={…})` finds it at runtime —
+everywhere: pipeline, server, notebooks, benchmarks.
 
-Adding a decoder is **always one new file** in
-`lightstim/simulation/decoder_backend/decoders/`, plus **one line** in
-`decoders/__init__.py` to soft-import it, plus **one smoke test** in
-`tests/test_simulation_backend_quality.py`.
+Adding a decoder is always three things:
 
-This skill walks through four patterns, ordered by complexity. Patterns A/B/C
-are real decoders in the repo; Pattern D is the `ExternalDecoder` facade — the
-recommended path for any decoder that isn't already sinter-compatible. Pick the
-one that matches your situation.
+1. **One new file** in `lightstim/simulation/decoder_backend/decoders/`.
+2. **One soft-import line** in `decoders/__init__.py`.
+3. **One smoke test** in `tests/test_simulation_backend_quality.py`.
+
+A runnable version of everything below (with live benchmarks) is
+`tutorials/how-to-add-new-decoders.ipynb`.
+
+## Which pattern?
+
+| Situation | Pattern |
+|---|---|
+| Upstream library ships a `sinter.Decoder` | **A** — register the class directly |
+| Anything else | **C** — subclass `ExternalDecoder` (recommended) |
+| You need to own the unpack → decode → pack loop yourself | **B** — build from the DEM matrices |
 
 ---
 
-## The contract
+## The contract (duck-typed)
 
-Every decoder must subclass `sinter.Decoder` and implement
-`compile_decoder_for_dem`. That method takes a `stim.DetectorErrorModel`
-and returns a `sinter.CompiledDecoder`:
-
-```python
-import sinter
-import stim
-
-class MyDecoder(sinter.Decoder):
-    def compile_decoder_for_dem(
-        self, *, dem: stim.DetectorErrorModel
-    ) -> sinter.CompiledDecoder:
-        ...   # one-time prep per DEM
-```
-
-The compiled decoder must implement
-`decode_shots_bit_packed(*, bit_packed_detection_event_data: np.ndarray)
--> np.ndarray` — bit-packed in, bit-packed out:
+The pipeline never checks `isinstance(..., sinter.Decoder)`. A decoder is any
+object with:
 
 ```python
-class _MyCompiledDecoder(sinter.CompiledDecoder):
-    def decode_shots_bit_packed(
-        self, *, bit_packed_detection_event_data: np.ndarray
-    ) -> np.ndarray:
-        # input  shape: (n_shots, ceil(n_detectors / 8)), uint8, LSB-first
-        # output shape: (n_shots, ceil(n_observables / 8)), uint8, LSB-first
+class MyDecoder:                       # sinter.Decoder base optional
+    def compile_decoder_for_dem(self, *, dem: stim.DetectorErrorModel):
+        return _MyCompiled(...)        # one-time prep per DEM
+
+class _MyCompiled:                     # sinter.CompiledDecoder base optional
+    def decode_shots_bit_packed(self, *, bit_packed_detection_event_data):
+        # in:  (n_shots, ceil(n_detectors/8))   uint8, LSB-first
+        # out: (n_shots, ceil(n_observables/8)) uint8, LSB-first
         ...
 ```
 
-If your underlying library already implements `sinter.Decoder` and
-`sinter.CompiledDecoder` correctly (e.g. `stimbposd.SinterDecoder_BPOSD`,
-`mwpf.SinterMWPFDecoder`), **you don't need to write a CompiledDecoder
-yourself** — see Pattern A.
+Subclassing the sinter bases is the repo convention and the documented API, but
+it is not a runtime requirement — raw `sinter.collect` accepts duck-typed
+classes too (verified on sinter 1.15/1.16). Matching this signature is why
+sinter-native decoders plug in unchanged.
+
+**Pattern C skips this contract entirely** — the `ExternalDecoder` facade
+implements it for you; you only write methods on plain unpacked arrays.
 
 ---
 
-## Pattern A: thin wrapper around an existing `sinter.Decoder`
-
-**When to use**: the upstream library already implements `sinter.Decoder`.
-You just want it registered under a LightStim name.
-
-**Real example**: `lightstim/simulation/decoder_backend/decoders/mwpf.py`
-(30 lines including imports). It's literally:
+## Pattern A — sinter-native: register directly
 
 ```python
+# decoders/my_decoder.py
 from ..registry import register_decoder
 
 try:
     from mwpf import SinterMWPFDecoder
-    _AVAILABLE = True
+    register_decoder("mwpf", SinterMWPFDecoder)
 except ImportError:
-    _AVAILABLE = False
-
-if _AVAILABLE:
-    register_decoder("mwpf", SinterMWPFDecoder, aliases=[])
+    pass
 ```
 
-That's it. No subclass needed.
+That's the entire built-in `mwpf.py`; `relay_bp.py` is the same shape. User
+params flow straight through `DecoderConfig(params={…})` to the upstream class
+— don't add a translation layer for a single library.
+
+**Lazy variant** (`tesseract.py`): when the upstream package is a native
+extension whose import can fail on a given host, don't import it at module
+load. Register a thin `sinter.Decoder` subclass that imports inside
+`__init__` and delegates `compile_decoder_for_dem` to the upstream object,
+guarded by `importlib.util.find_spec` so a broken wheel breaks only
+`DecoderConfig("tesseract")` and not the whole registry. This also covers the
+case — as with Tesseract — where the upstream class merely duck-types the
+sinter interface instead of subclassing it.
+
+**Need renamed params or defaults?** Give a thin wrapper class an
+`__init__(**params)` that merges defaults and renames keys before constructing
+the inner decoder, and delegate `compile_decoder_for_dem` to it. `bposd.py`
+does this to share one parameter vocabulary between its CPU (`stimbposd`) and
+GPU (`cudaq_qec`) backends.
 
 ---
 
-## Pattern B: wrapper with parameter translation
+## Pattern C — `ExternalDecoder` facade (recommended for non-sinter)
 
-**When to use**: you're registering a sinter-native decoder (Pattern A) and want
-to (a) expose a *unified* parameter vocabulary across several backends of the
-**same** decoder family — the reason this pattern exists in LightStim, where
-`bposd` spans a CPU (`stimbposd`) and a GPU (`cudaqx`) backend that take different
-kwarg names — or (b) set sensible defaults / rename an awkward upstream API.
-
-**When *not* to use**: a brand-new, unrelated decoder. The translation table
-below is tailored to BP+OSD and does **not** generalize. If you're just wrapping
-one library, prefer plain Pattern A and let users pass its native parameter names
-straight through `DecoderConfig(params={...})`; only add a translation layer once
-you have a second backend to keep consistent, or a concrete renaming/default need.
-
-**Real example**:
-`lightstim/simulation/decoder_backend/decoders/bposd.py`. The user passes
-`max_iterations`, `bp_method='min_sum'`, etc., but `stimbposd`'s API uses
-`max_bp_iters` and `bp_method='minimum_sum'`. The wrapper translates:
-
-```python
-class BpOsdCpuDecoder(sinter.Decoder):
-    def __init__(self, **params):
-        translated = _unified_to_cpu({**_DEFAULTS, **params})
-        self._inner = SinterDecoder_BPOSD(**translated)
-
-    def compile_decoder_for_dem(self, *, dem):
-        return self._inner.compile_decoder_for_dem(dem=dem)
-
-if _BPOSD_AVAILABLE:
-    register_decoder("bposd", BpOsdCpuDecoder, aliases=["bp_osd"], backend="cpu")
-```
-
-Key things to copy from this pattern:
-1. `__init__(self, **params)` — accept arbitrary kwargs so users can pass
-   anything through `DecoderConfig(params={...})`.
-2. `_DEFAULTS` dict at module level — defines sensible defaults; user
-   params override them via dict-merge.
-3. A `_translate(params: dict) -> dict` function — rename keys, normalize
-   case, drop irrelevant ones.
-4. Hold the wrapped decoder in `self._inner` and delegate
-   `compile_decoder_for_dem` to it.
-
----
-
-## Pattern C: custom decoder from a DEM matrix (full control)
-
-**When to use**: the upstream library is **not** sinter-compatible and you need
-lower-level control than Pattern D gives — e.g. you want to own the
-`sinter.CompiledDecoder` lifecycle yourself. You parse the DEM into matrices and
-write the decode loop by hand.
-
-**Real example**:
-`lightstim/simulation/decoder_backend/decoders/cudaqx.py` — wraps NVIDIA's
-`cudaq_qec` GPU decoder, which takes raw H matrices, not stim DEMs.
-
-The pattern has three parts:
-
-### 1. DEM → matrices
-
-Convert a `stim.DetectorErrorModel` into the (H, observable matrix,
-priors) triple your decoder needs. **Reuse the shared helper** rather than
-re-deriving it: `from ..dem_matrices import dem_to_matrices`. It handles
-flattened DEMs, detector targets, observable targets, and decomposed errors,
-and returns C-contiguous matrices. The equivalent code (shown here for
-reference) is:
-
-```python
-def _dem_to_matrices(dem: stim.DetectorErrorModel):
-    """Returns (H, obs_matrix, priors) — see cudaqx.py for full impl."""
-    n_dets = dem.num_detectors
-    n_obs = dem.num_observables
-    error_cols = []
-    for inst in dem.flattened():
-        if inst.type != "error": continue
-        p = inst.args_copy()[0]
-        dets, obs = [], []
-        for t in inst.targets_copy():
-            if t.is_relative_detector_id():    dets.append(t.val)
-            elif t.is_logical_observable_id(): obs.append(t.val)
-        error_cols.append({"p": p, "dets": dets, "obs": obs})
-    n_err = len(error_cols)
-    H   = np.zeros((n_dets, n_err), dtype=np.uint8, order="C")
-    obs = np.zeros((n_obs,  n_err), dtype=np.uint8, order="C")
-    p   = np.zeros(n_err, dtype=np.float64)
-    for e, col in enumerate(error_cols):
-        p[e] = col["p"]
-        for d in col["dets"]: H[d, e] = 1
-        for o in col["obs"]:  obs[o, e] = 1
-    return H, obs, p
-```
-
-### 2. Custom `CompiledDecoder`
-
-Holds your already-prepared decoder instance + the observable matrix.
-Implements the unpack → decode → pack loop:
-
-```python
-class _MyCompiledDecoder(sinter.CompiledDecoder):
-    def __init__(self, inner, obs_matrix, n_detectors):
-        self._inner = inner
-        self._obs_matrix = obs_matrix
-        self._n_dets = n_detectors
-
-    def decode_shots_bit_packed(self, *, bit_packed_detection_event_data):
-        # 1. Unpack syndromes: bit_packed → (n_shots, n_dets) uint8
-        syndromes = np.unpackbits(
-            bit_packed_detection_event_data, axis=1, bitorder="little"
-        )[:, : self._n_dets]
-        # 2. Call your underlying decoder shot-by-shot or batched
-        predictions = self._inner.decode_batch(syndromes)  # (n_shots, n_err) uint8
-        # 3. Compute which observables flipped: obs_flip = predictions @ obs_matrix.T  mod 2
-        obs_flips = (predictions @ self._obs_matrix.T) & 1
-        # 4. Pack back: (n_shots, n_obs) → bit-packed uint8
-        return np.packbits(obs_flips.astype(np.uint8), axis=1, bitorder="little")
-```
-
-### 3. Top-level `sinter.Decoder`
-
-Calls `_dem_to_matrices`, constructs the inner decoder, returns the
-`CompiledDecoder`:
-
-```python
-class MyDecoder(sinter.Decoder):
-    def __init__(self, **params):
-        self._params = params
-
-    def compile_decoder_for_dem(self, *, dem):
-        H, obs_matrix, priors = _dem_to_matrices(dem)
-        inner = my_lib.Decoder(H=H, priors=priors, **self._params)
-        return _MyCompiledDecoder(inner, obs_matrix, dem.num_detectors)
-```
-
----
-
-## Pattern D: `ExternalDecoder` facade (recommended for non-sinter decoders)
-
-**When to use**: the upstream library is **not** sinter-compatible (most
-research-paper decoders, GPU libraries, neural networks) **and** you'd rather
-not touch bit-packing, the observable matrix, or the sinter contract. This is
-the friendliest path — prefer it over Pattern C unless you need full control.
-
-**What you write**: subclass
-`lightstim.simulation.decoder_backend.external.ExternalDecoder`, declare
-`output_type`, build your decoder in `setup`, and implement **one** of
-`decode_batch` / `decode_single`. LightStim handles the rest (bit-packing, the
-correction→observable multiply, parallel workers, and failure-flag accounting).
+Subclass, declare `output_type`, build in `setup`, implement **one** of
+`decode_single` / `decode_batch`. The facade owns bit-packing, the
+observable-matrix multiply, worker plumbing, and failure-flag routing.
 
 ```python
 import numpy as np
-from lightstim.simulation.decoder_backend.external import ExternalDecoder
-from lightstim.simulation.decoder_backend.registry import register_decoder
+from ..external import ExternalDecoder
+from ..registry import register_decoder
 
 class MyDecoder(ExternalDecoder):
-    # REQUIRED. "correction" => you return a correction over error mechanisms
-    # (length n_err) and LightStim computes the observable flips for you.
-    # "observables" => you already return logical-observable flips (length n_obs).
-    output_type = "correction"
+    output_type = "correction"   # REQUIRED, no default — see below
 
-    def setup(self, *, H, obs_matrix, priors, num_detectors, num_observables, dem):
-        # Called ONCE per DEM. Stash whatever you need on self.
-        # self.params holds the DecoderConfig(params=...) dict.
+    def setup(self, *, H, obs_matrix, priors, num_detectors,
+              num_observables, dem):
+        # Called once per DEM. self.params holds DecoderConfig(params=...).
+        # H / obs_matrix are scipy CSR; .toarray() only for small DEMs.
         self._inner = my_lib.Decoder(H, priors, **self.params)
 
-    # Implement EITHER decode_single OR decode_batch — LightStim bridges the other.
-    def decode_single(self, syndrome):          # syndrome: (n_dets,) uint8, UNPACKED
+    def decode_single(self, syndrome):        # (n_dets,) uint8, unpacked
         correction, converged = self._inner.run(syndrome)
-        return correction, converged            # flag: True/None = ok, False = failed
-
-    # def decode_batch(self, syndromes):        # syndromes: (n_shots, n_dets) uint8
-    #     preds, flags = self._inner.run_batch(syndromes)
-    #     return preds, flags                   # flags: (n_shots,) bool, or None
+        return correction, converged          # flag: True/None ok, False failed
 
 register_decoder("my-decoder", MyDecoder, backend="cpu")
 ```
 
-### The three axes `ExternalDecoder` formalises
+Three knobs:
 
-1. **`output_type` (mandatory, no default).** `"correction"` (length `n_err`,
-   LightStim multiplies by the observable matrix) vs `"observables"` (length
-   `n_obs`, used directly). Forgetting it raises at compile time — never a
-   silent wrong-axis bug.
-2. **single vs batch.** Override whichever is natural. LightStim loops a
-   single-shot decoder over a batch, and feeds a batch decoder one-row batches.
-   Don't implement both.
-3. **failure flags.** Return a per-shot `bool` (`False` = the decoder failed to
-   converge, e.g. BP) or `None`/`True` for "always converged". What LightStim
-   does with a `False` is set by `DecoderConfig(on_decode_failure=...)`:
-   - `"error"` (default) — count the shot as a logical error.
-   - `"discard"` — herald the failure: drop it from the denominator.
-   - `"ignore"` — trust the returned prediction anyway.
+- **`output_type`** — `"correction"`: you return a correction over error
+  mechanisms, length `H.shape[1]`, and LightStim computes the observable
+  flips. `"observables"`: you return the logical flips directly, length
+  `n_obs`. Forgetting it raises at compile time.
+- **single vs batch** — implement whichever is natural
+  (`decode_batch(syndromes) -> (preds, flags)`); LightStim bridges the other.
+- **failure flags** — return `False` for shots the decoder failed on (e.g. BP
+  non-convergence), `True`/`None` otherwise.
+  `DecoderConfig(on_decode_failure=...)` decides what a `False` means:
+  `"error"` (default, count as logical error), `"discard"` (herald it out of
+  the denominator), `"ignore"` (trust the prediction).
 
-### What you never touch
-Bit-packing (LSB-first), the `sinter.Decoder`/`CompiledDecoder` classes, the
-`obs @ correction mod 2` step, and worker plumbing. The facade owns all of it.
-DEM→matrix conversion is shared via
-`decoder_backend/dem_matrices.py::dem_to_matrices` if you want it directly.
+What `setup` receives: the facade calls
+`dem_to_matrices(dem, sparse=True, merge_duplicates=True)`, so `H` and
+`obs_matrix` are CSR and duplicate-footprint mechanisms are already merged —
+**`H.shape[1]` can be smaller than `dem.num_errors`** (gotcha 2).
 
-See `tests/test_simulation_backend_quality.py` for worked examples covering the
-single→batch bridge and all three failure-flag policies.
+Working examples: `decoders/ldpc_bp.py` (correction + real convergence
+flags), and the `tests/test_simulation_backend_quality.py` externals.
 
 ---
 
-## Registration
+## Pattern B — custom decoder from the DEM (full control)
 
-After your decoder file is written, add one call at module bottom:
+Only when you must own the `CompiledDecoder` lifecycle (e.g. GPU memory
+management). Reference implementation: `decoders/cudaqx.py`.
+
+Get matrices from the shared helper — never re-derive the conversion:
 
 ```python
-register_decoder(
-    name="my-decoder",          # canonical name; user types DecoderConfig(name="my-decoder")
-    decoder_class=MyDecoder,
-    aliases=["my_dec", "mwpm2"],  # optional; excluded from list_decoders()
-    backend="cpu",              # or "gpu" or "fpga"
-)
+from ..dem_matrices import dem_to_matrices
+
+H, obs_matrix, priors = dem_to_matrices(dem)              # dense uint8, C-order
+H, obs_matrix, priors = dem_to_matrices(dem, sparse=True) # scipy CSR
 ```
 
-A single name can have multiple backends. E.g. `cudaqx.py` registers both
-the GPU `nv-qldpc-decoder` name and a `bposd` `backend="gpu"` override, so
-`DecoderConfig(name="bposd", backend="cpu")` hits the CPU implementation
-and `backend="gpu"` hits the GPU one.
+Two behaviours it encodes that hand-rolled versions get wrong:
+
+- **Parity, not assignment.** stim cancels a target listed an even number of
+  times (`error(0.1) D0 D0 D1` flips only `D1`); the helper XORs. Writing
+  `H[d, e] = 1` yourself silently builds a wrong matrix.
+- **`merge_duplicates=True` (default) changes the column count.** Mechanisms
+  with identical (detector, observable) footprints fuse into one column,
+  priors combined with the XOR rule `p1(1-p2) + p2(1-p1)` — stim leaves such
+  duplicates in z_only-style circuits and they measurably degrade BP. Pass
+  `merge_duplicates=False` if you need DEM-column alignment.
+
+Then write the compiled decoder: unpack syndromes
+(`np.unpackbits(..., bitorder="little")[:, :n_dets]`), decode, compute
+`(predictions @ obs_matrix.T) & 1` if your decoder returns corrections, and
+`np.packbits(..., bitorder="little")` the result.
 
 ---
 
-## Wire it into discovery
+## Ship it
 
-`lightstim/simulation/decoder_backend/decoders/__init__.py` does
-**soft imports** so missing libraries don't crash the registry. Follow
-the existing pattern — add your module behind an `importlib.util.find_spec`
-guard:
+**Soft-import** in `decoders/__init__.py` so missing libraries never break the
+registry:
 
 ```python
-# In decoders/__init__.py, append:
 if importlib.util.find_spec("my_lib") is not None:
     try:
         from . import my_decoder  # noqa: F401 — registers my-decoder/cpu
     except ImportError as exc:
         _log.debug("my_decoder import failed: %s", exc)
-else:
-    _log.debug("my_lib not installed; skipping my-decoder")
 ```
 
-This is mandatory. If you `import` your module unconditionally and the
-underlying library isn't installed, every LightStim user will hit an
-`ImportError` at startup.
-
-(`ExternalDecoder` subclasses register themselves the same way — there is no
-auto-discovery for them, so add the soft-import hook here too if the decoder
-depends on an optional library.)
-
----
-
-## Smoke test
-
-Add to `tests/test_simulation_backend_quality.py`. The minimum bar: your
-decoder must appear in `list_decoders()` and successfully decode the
-trivial single-qubit observable circuit defined at the top of that file.
+**Smoke test** in `tests/test_simulation_backend_quality.py`:
 
 ```python
 def test_my_decoder_registered_and_runs():
-    from lightstim.simulation.decoder_backend import list_decoders
+    importorskip_safe("my_lib")   # or pytest.importorskip
     assert "my-decoder" in list_decoders()
-
-    pipeline = SimulationPipeline(
+    stats = SimulationPipeline(
         decoder_config=DecoderConfig("my-decoder"),
-        max_shots=100,
-        max_errors=1,
-        batch_size=50,
-        num_workers=1,
-        print_progress=False,
-    )
-    stats = pipeline.run(_simple_observable_circuit(error_probability=0.1))
+        max_shots=200, max_errors=10_000, batch_size=100,
+        num_workers=1, print_progress=False,
+    ).run(_simple_observable_circuit(error_probability=0.1))
     assert stats.shots > 0
 ```
 
-If your decoder needs an optional dependency, gate the test:
-
-```python
-my_lib = pytest.importorskip("my_lib")
-```
-
-so CI doesn't fail when the library isn't installed.
-
----
-
-## Where things live (quick reference)
-
-| File | What it is |
-|---|---|
-| `lightstim/simulation/decoder_backend/registry.py` | The registry — `register_decoder()`, `get_decoder()`, `list_decoders()` |
-| `lightstim/simulation/decoder_backend/decoders/__init__.py` | Soft-import dispatcher — add your import here |
-| `lightstim/simulation/decoder_backend/decoders/pymatching.py` | **Pattern A reference** (30 lines, simplest) |
-| `lightstim/simulation/decoder_backend/decoders/mwpf.py` | **Pattern A reference** (no subclass at all) |
-| `lightstim/simulation/decoder_backend/decoders/bposd.py` | **Pattern B reference** — param translation |
-| `lightstim/simulation/decoder_backend/decoders/cudaqx.py` | **Pattern C reference** — DEM matrix + custom CompiledDecoder + GPU |
-| `lightstim/simulation/decoder_backend/external.py` | **Pattern D** — `ExternalDecoder` facade + adapter |
-| `lightstim/simulation/decoder_backend/dem_matrices.py` | Shared `dem_to_matrices()` (H, obs_matrix, priors) |
-| `lightstim/simulation/decoder_backend/_accounting.py` | Shared `count_batch()` — denominator/error counting + failure-flag policy |
-| `lightstim/simulation/decoder_backend/pipeline.py` | Consumer of the registry; you shouldn't need to touch it |
-| `lightstim/simulation/decoder_backend/config.py` | `DecoderConfig` dataclass (incl. `on_decode_failure`) |
-| `tests/test_simulation_backend_quality.py` | Decoder smoke tests live here |
+Run `venv/bin/python -m pytest tests/ -m "not slow" -q` before opening a PR,
+and document any new `params` in `lightstim/simulation/README.md`.
 
 ---
 
 ## Gotchas
 
-### 1. Bit-packing is little-endian (LSB first)
-`bit_packed_detection_event_data` and the predictions you return both
-use `np.unpackbits(..., bitorder="little")` / `np.packbits(...,
-bitorder="little")`. Use big-endian by accident and every observable
-prediction will be wrong but the shape will be right — a silent
-correctness bug. (Pattern D handles this for you.)
-
-### 2. C-contiguous matrices for GPU
-Pattern C constructs `H` and `obs_matrix` with `order="C"`. Most C++/CUDA
-extensions assume row-major; passing Fortran-ordered arrays silently
-transposes the decode and produces nonsense predictions.
-
-### 3. GPU decoders must use `num_workers=1`
-`cudaq_qec` decoders pre-allocate GPU memory in `compile_decoder_for_dem`.
-Running with `num_workers > 1` either OOMs or returns garbage. Document
-this in your decoder's docstring and in the smoke test.
-
-### 4. `sinter.collect` is bypassed for GPU
-If your decoder needs GPU resources, `SimulationPipeline` already handles
-this — see the custom decode loop in `pipeline.py` and `worker.py`. You
-don't need to do anything special, but **do not** rely on
-`sinter.collect` semantics in your `compile_decoder_for_dem`.
-
-### 5. Soft-import discipline
-Inside your decoder file, the `try: import upstream_lib` block must
-catch `ImportError`. Use `pytest.importorskip` in tests. Otherwise a user
-without your library gets a hard import failure when they call
-`SimulationPipeline(...)`, not your decoder.
-
-### 6. Post-selection: usually free
-If your decoder just consumes syndromes and emits predictions,
-post-selection (state injection, distillation) works automatically — the
-pipeline filters shots before they reach you. If you need to inspect the
-post-selection mask, see `lightstim/simulation/decoder_backend/post_select.py`.
-
-### 7. Failure flags need LightStim's pipeline (Pattern D)
-Per-shot failure flags ride a side channel (`compiled.last_flags`) that the
-LightStim pipeline reads in-process. They are **not** carried by the sinter
-bit-packed return, so a decoder that relies on `on_decode_failure` heralding
-must run through `SimulationPipeline`, not a raw `sinter.collect`.
+1. **Bit order is little-endian** (LSB-first) for syndromes in and predictions
+   out. Big-endian gives the right shapes and wrong answers. (Pattern C
+   handles this for you.)
+2. **`H.shape[1]` is the mechanism count, not `dem.num_errors`** — duplicate
+   merging can shrink it (a chen_p96 z_only DEM had ~36k duplicate columns).
+   Sizing a `"correction"` output from the DEM gives wrong-length predictions.
+3. **C-contiguous matrices for GPU/C extensions** — `dem_to_matrices` dense
+   output is `order="C"`; keep it that way or the decode silently transposes.
+4. **GPU decoders need `num_workers=1`** — `cudaq_qec` pre-allocates GPU
+   memory per compile; more workers OOM or corrupt results.
+5. **Failure flags need `SimulationPipeline`** — they ride an in-process side
+   channel (`compiled.last_flags`), not the bit-packed return, so raw
+   `sinter.collect` never sees them.
 
 ---
 
-## End-to-end checklist
+## Where things live
 
-Before opening a PR:
-
-- [ ] One new file in `lightstim/simulation/decoder_backend/decoders/`.
-- [ ] `register_decoder(name, cls, aliases=[...], backend="…")` at module bottom.
-- [ ] Soft-import hook added to `decoders/__init__.py` behind a
-      `importlib.util.find_spec` guard.
-- [ ] Smoke test added to `tests/test_simulation_backend_quality.py` that
-      verifies registration and decodes the trivial circuit.
-- [ ] CI passes: `venv/bin/python -m pytest tests/ -m "not slow" -q`.
-- [ ] If the decoder needs special hardware (GPU/FPGA), document the
-      `num_workers` constraint in the docstring.
-- [ ] If your decoder needs new parameters in `DecoderConfig.params`,
-      document them in `lightstim/simulation/README.md` (the decoder
-      backend reference).
-
----
-
-## Working examples
-
-The simplest possible decoder to extend from is **PyMatching** — read
-`lightstim/simulation/decoder_backend/decoders/pymatching.py` end to end
-(it's 56 lines including imports). For parameter handling, read
-`bposd.py`. For an end-to-end custom decoder with DEM parsing and GPU
-integration, read `cudaqx.py`. For the high-level facade, read `external.py`.
-
-Once your decoder is registered, it's usable from anywhere:
-
-```python
-from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
-
-pipeline = SimulationPipeline(
-    decoder_config=DecoderConfig(
-        name="my-decoder",
-        backend="cpu",
-        params={"max_iterations": 500},
-    ),
-    max_shots=100_000,
-    max_errors=200,
-    num_workers=4,
-)
-stats = pipeline.run(noisy_circuit)
-print(f"LER: {stats.logical_error_rate:.3e}")
-```
-
-No other code changes are required. The HTTP server, notebooks, and
-benchmark scripts all go through `DecoderConfig`, so they pick up your
-new decoder by name with no further plumbing.
+| File | What it is |
+|---|---|
+| `decoder_backend/registry.py` | `register_decoder()`, `get_decoder()`, `list_decoders()` |
+| `decoder_backend/decoders/__init__.py` | soft-import dispatcher — add your import here |
+| `decoder_backend/decoders/{mwpf,relay_bp}.py` | Pattern A references — direct registration |
+| `decoder_backend/decoders/tesseract.py` | Pattern A lazy variant — deferred native import |
+| `decoder_backend/decoders/bposd.py` | Pattern A + param translation |
+| `decoder_backend/decoders/cudaqx.py` | Pattern B reference (DEM matrices + GPU) |
+| `decoder_backend/external.py` | Pattern C — the `ExternalDecoder` facade |
+| `decoder_backend/decoders/ldpc_bp.py` | Pattern C reference (flags, serial BP) |
+| `decoder_backend/decoders/chain.py` | multi-level chain over registered decoders |
+| `decoder_backend/dem_matrices.py` | `dem_to_matrices(dem, *, sparse, merge_duplicates)` |
+| `decoder_backend/pcm.py` | older `dem_to_check_matrices` — merges priors by **summing**; prefer `dem_to_matrices` |
+| `decoder_backend/config.py` | `DecoderConfig` (incl. `on_decode_failure`) |
+| `tutorials/how-to-add-new-decoders.ipynb` | runnable walkthrough of all three patterns |
