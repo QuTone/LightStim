@@ -53,9 +53,10 @@ class _MyCompiled:                     # sinter.CompiledDecoder base optional
         ...
 ```
 
-Subclassing the sinter bases remains the repo convention (and is required if
-you also want the decoder usable with raw `sinter.collect`); matching this
-signature is why sinter-native decoders plug in unchanged.
+Subclassing the sinter bases is the repo convention and the documented API, but
+it is not a runtime requirement — raw `sinter.collect` accepts duck-typed
+classes too (verified on sinter 1.15/1.16). Matching this signature is why
+sinter-native decoders plug in unchanged.
 
 **Pattern C skips this contract entirely** — the `ExternalDecoder` facade
 implements it for you; you only write methods on plain unpacked arrays.
@@ -75,9 +76,18 @@ except ImportError:
     pass
 ```
 
-That's the entire built-in `mwpf.py`. `relay_bp.py` and `tesseract.py` are the
-same shape. User params flow straight through `DecoderConfig(params={…})` to
-the upstream class — don't add a translation layer for a single library.
+That's the entire built-in `mwpf.py`; `relay_bp.py` is the same shape. User
+params flow straight through `DecoderConfig(params={…})` to the upstream class
+— don't add a translation layer for a single library.
+
+**Lazy variant** (`tesseract.py`): when the upstream package is a native
+extension whose import can fail on a given host, don't import it at module
+load. Register a thin `sinter.Decoder` subclass that imports inside
+`__init__` and delegates `compile_decoder_for_dem` to the upstream object,
+guarded by `importlib.util.find_spec` so a broken wheel breaks only
+`DecoderConfig("tesseract")` and not the whole registry. This also covers the
+case — as with Tesseract — where the upstream class merely duck-types the
+sinter interface instead of subclassing it.
 
 **Need renamed params or defaults?** Give a thin wrapper class an
 `__init__(**params)` that merges defaults and renames keys before constructing
@@ -226,7 +236,8 @@ and document any new `params` in `lightstim/simulation/README.md`.
 |---|---|
 | `decoder_backend/registry.py` | `register_decoder()`, `get_decoder()`, `list_decoders()` |
 | `decoder_backend/decoders/__init__.py` | soft-import dispatcher — add your import here |
-| `decoder_backend/decoders/{mwpf,relay_bp,tesseract}.py` | Pattern A references |
+| `decoder_backend/decoders/{mwpf,relay_bp}.py` | Pattern A references — direct registration |
+| `decoder_backend/decoders/tesseract.py` | Pattern A lazy variant — deferred native import |
 | `decoder_backend/decoders/bposd.py` | Pattern A + param translation |
 | `decoder_backend/decoders/cudaqx.py` | Pattern B reference (DEM matrices + GPU) |
 | `decoder_backend/external.py` | Pattern C — the `ExternalDecoder` facade |
