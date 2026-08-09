@@ -38,6 +38,38 @@ def _gf2_rank(M):
     return r
 
 
+def _gf2_rref(M):
+    """GF(2) reduced row-echelon form of a 0/1 matrix.
+
+    Returns (R, pivots): R the non-zero reduced rows, pivots the pivot
+    column of each row of R (each pivot column is zero in every other
+    row of R).
+    """
+    M = (np.asarray(M, dtype=np.uint8) % 2).copy()
+    if M.size == 0:
+        return M.reshape(0, -1), []
+    rows, cols = M.shape
+    r = 0
+    pivots = []
+    for c in range(cols):
+        piv = None
+        for i in range(r, rows):
+            if M[i, c]:
+                piv = i
+                break
+        if piv is None:
+            continue
+        M[[r, piv]] = M[[piv, r]]
+        mask = M[:, c].astype(bool).copy()
+        mask[r] = False
+        M[mask] ^= M[r]
+        pivots.append(c)
+        r += 1
+        if r == rows:
+            break
+    return M[:r], pivots
+
+
 def _append_detector(
     circuit: stim.Circuit,
     args: list,
@@ -1642,6 +1674,17 @@ class SyndromeTracker:
                                                 'STAB')
                                         _parts.append(f"{kind}@{c}(rec={recs if len(recs) < 4 else recs[:3]+['…']})")
                                     print(f"[cand-debug] meas#{i} decomposes -> {_parts}")
+                                    _fr = _gf2_rank(full_matrix)
+                                    print(f"[rank-debug] full_matrix rows={full_matrix.shape[0]} "
+                                          f"rank={_fr} deficiency={full_matrix.shape[0] - _fr}")
+                                    _nq = full_matrix.shape[1] // 2
+                                    for c in comp_indices:
+                                        if c < num_stabs and len(full_records[c]) > 2:
+                                            _r = full_matrix[c]
+                                            _sup = sorted(set(np.where(_r[:_nq])[0].tolist())
+                                                          | set(np.where(_r[_nq:])[0].tolist()))
+                                            print(f"[rank-debug] carrier STAB@{c} w={len(_sup)} "
+                                                  f"sup={_sup}")
                                 continue
                             # Otherwise, purely depends on stabilizers, construct a detector
                             # Use set-based XOR for O(1) toggle instead of O(n) list scan
@@ -1788,6 +1831,7 @@ class SyndromeTracker:
                     _pend_n += 1
                     _pending += 1
             _n_promoted = 0
+            _gauge_filed = []
             for ri in new_basis_indices:
                 orig_idx = _remap(ri)
                 orig_record = reordered_records[ri]
@@ -1844,6 +1888,7 @@ class SyndromeTracker:
                         # global parity would attach an irreducible third
                         # symptom to every one of them).
                         old_stab_basis_indices.append(orig_idx)
+                        _gauge_filed.append(orig_idx)
                         # sentinel record -1 marks the UNWATCHED gauge row
                         # explicitly (readout must not infer gauge-ness from
                         # an empty record list: legitimately records-less
@@ -1857,6 +1902,30 @@ class SyndromeTracker:
                 else:
                     # Stab row with records → stays as old stabilizer
                     old_stab_basis_indices.append(orig_idx)
+
+            # Shadow-row purge: a gauge row filed above must carry NO
+            # standing-logical content.  The row is a free combination the
+            # rebuild happened to emit (e.g. logical x corridor-ribbon x
+            # checks); filed verbatim, a later measurement's UNIQUE
+            # decomposition over the full tableau routes that logical
+            # component through the stab section, so its log_vec misses
+            # the bit and the absorb census loses the DOF (measured:
+            # steane program-order M(Z3Z4Z5) decomposed as logicals {3,4}
+            # with q5 hidden in a gauge row — Logical Count Mismatch at
+            # block end).  XORing standing logicals into the row changes
+            # neither the span nor its independence, and gauge x free DOF
+            # is still value-undefined, so the records-less filing
+            # semantics are untouched.  After the purge no records-less
+            # stab row (nor any XOR of them) overlaps a logical pivot
+            # column: the logical part of every decomposition is forced
+            # through the logical section.
+            if _gauge_filed and new_log_basis_indices:
+                _log_rref, _log_pivots = _gf2_rref(
+                    full_matrix[new_log_basis_indices])
+                for _gi in _gauge_filed:
+                    for _k, _c in enumerate(_log_pivots):
+                        if full_matrix[_gi, _c]:
+                            full_matrix[_gi] ^= _log_rref[_k]
 
             self.logicals.matrix = full_matrix[new_log_basis_indices]
             self.logicals.records = [full_records[i] for i in new_log_basis_indices]
@@ -2101,8 +2170,42 @@ class SyndromeTracker:
             n = self.num_qubits
             meas_q = set(int(c % n) for c in np.where(final_paulis.any(axis=0))[0])
             mcols = [q for q in meas_q] + [q + n for q in meas_q]
+            _half_read_rems = []
             if resolve_absorbed:
-                keep = [r for r in range(A.count) if not A.matrix[r, mcols].any()]
+                # A relation touched by a patch readout resolves only on the
+                # measured columns.  Fold the measured support out via the
+                # stabilizers PLUS this readout: a nonzero remainder is a
+                # direction the records now DETERMINE.  Dropping the row
+                # without re-pricing that remainder leaves any standing
+                # logical it overlaps dependent on the stabilizer span — a
+                # rank-deficient tableau whose decompositions are ambiguous
+                # (steane no_sched: the retired patch's half of Z3~Zp was
+                # read out, q3's row stayed standing, and the next window's
+                # M(Z3Z4Z5) decomposition hid the q3 component inside a
+                # record-bearing stab row; the banking census then lost the
+                # DOF — Logical Count Mismatch).  Remainders are re-priced
+                # after the pruning below: one standing representative is
+                # folded out and the remainder enters absorbed_ops, so
+                # standing + absorbed stays balanced and the tableau keeps
+                # full rank.
+                keep = []
+                _fold_basis = np.vstack([self.stabilizers.matrix,
+                                         final_paulis])
+                for r in range(A.count):
+                    if not A.matrix[r, mcols].any():
+                        keep.append(r)
+                        continue
+                    _cf, _depf, _ = solve_linear_decomposition(
+                        basis=_fold_basis[:, mcols],
+                        targets=A.matrix[r:r + 1][:, mcols],
+                        reduce_weight=False)
+                    if _depf[0]:
+                        _comb = (_cf[0][None, :] @ _fold_basis) % 2
+                        _rem = ((A.matrix[r] + _comb[0]) % 2).astype(np.uint8)
+                        _rem[mcols] = 0
+                        if _rem.any():
+                            _half_read_rems.append(_rem)
+                    # no isolatable remainder: legacy drop (fully resolved)
             else:
                 A.matrix = A.matrix.copy()
                 # An absorbed relation is only defined MOD the stabilizer group; a
@@ -2130,6 +2233,44 @@ class SyndromeTracker:
             if len(keep) != A.count:
                 A.matrix = A.matrix[keep] if keep else np.zeros((0, 2 * n), dtype=np.uint8)
                 A.records = [A.records[r] for r in keep] if A.records else []
+
+            # Re-price the half-read remainders: each is a determined
+            # direction; if it overlaps the standing logicals, that DOF is
+            # now folded into the stabilizer group — fold ONE participating
+            # standing row out (any representative works: the others keep
+            # spanning the quotient) and hold the remainder in absorbed_ops.
+            # Books: standing -1, absorbed net 0 per remainder, so the
+            # budget delta at the end retires exactly the fully-read slot.
+            for _rem in _half_read_rems:
+                if not self.logicals.count:
+                    break
+                _full = np.vstack([self.stabilizers.matrix,
+                                   self.logicals.matrix])
+                _c2, _dep2, _ = solve_linear_decomposition(
+                    basis=_full, targets=_rem.reshape(1, -1),
+                    reduce_weight=False)
+                if not _dep2[0]:
+                    continue
+                _ns = self.stabilizers.count
+                _lcomp = [int(j) - _ns for j in np.where(_c2[0])[0]
+                          if j >= _ns]
+                if not _lcomp:
+                    continue        # pure stab content: fully resolved
+                if not (_gf2_rank(np.vstack([A.matrix, _rem])) > A.count
+                        if A.count else True):
+                    continue        # direction already priced
+                # prefer a records-less representative (record-pinned rows
+                # carry value information the ledger must not discard)
+                _kill = next((j for j in reversed(_lcomp)
+                              if not any(rr >= 0
+                                         for rr in self.logicals.records[j])),
+                             _lcomp[-1])
+                self.logicals.matrix = np.delete(
+                    self.logicals.matrix, _kill, axis=0)
+                self.logicals.records.pop(_kill)
+                A.matrix = (np.vstack([A.matrix, _rem]) if A.count
+                            else _rem.reshape(1, -1).astype(np.uint8))
+                A.records = list(A.records) + [[]]
 
         num_stabs = self.stabilizers.count
         num_logs = self.logicals.count
