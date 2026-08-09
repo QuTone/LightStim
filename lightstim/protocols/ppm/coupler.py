@@ -1241,6 +1241,8 @@ class SubsetRoute:
     cut: tuple = ()                                   # convex-corner qubits removed (corner-cut only)
     n_walls: int = 0                                  # stretched (kf) seam walls in the layout - band
                                                       # apparatus is real cost, chargeable like cells
+    certificate: dict = None                          # MultiPatchLayout.verify() items for the
+                                                      # accepted layout (None on failures/probes)
 
     @property
     def ok(self):
@@ -1935,14 +1937,15 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                                   extra_connect=frozenset(extra_connect),
                                   retyped_bus=retyped_bus,
                                   retire_lobes=frozenset(retire_lobes))
-        if layout is not None and all(layout.verify().values()):
+        cert = layout.verify() if layout is not None else None
+        if cert is not None and all(cert.values()):
             cutq = tuple(sorted(set(data) - set(layout.data)))
             how = "corner-cut" if cutq else "standard"
             msg = f"verified subset joint ({how}, rule-based, EXPLICIT route)"
             return SubsetRoute(status="ok", message=msg,
                                layout=layout, root=root0, tree=tree, attempted=tree,
                                data=sorted(layout.data), tried=1, how=how, cut=cutq,
-                               n_walls=len(wall_descr),
+                               n_walls=len(wall_descr), certificate=cert,
                                **base0)
         return SubsetRoute(status="no_verified_route", root=root0, tried=1, attempted=tree,
                            message=("the EXPLICIT route does not pass the rule-based "

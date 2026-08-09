@@ -31,15 +31,12 @@ from lightstim.qec_code.surface_code.rotated.bent_joint_se import se_round_chunk
 from lightstim.qec_code.surface_code.rotated.diagonal_se import (
     DiagonalSurfaceCodeExtractionBlock)
 
-from .spec import PPMStep, cell_index, conjugate_patch_records
-from .coupler import route_and_build, RotatedRoutedMultiPatchCoupler
-from .seam_rules import (
-    RotatedSeamWallCoupler, SeamRuleError, classify_seam, patch_view,
-    wall_spec)
+from .spec import PPMStep, conjugate_patch_records
+from .lowering import (PPMRequest, apply_plan, is_cell_adjacent_pair,
+                       lower_ppm)
 
 __all__ = ["SequentialPPMExperiment"]
 
-_CONJ = {'X': 'Z', 'Z': 'X'}
 _FLIP_O = {'X_horizontal': 'X_vertical', 'X_vertical': 'X_horizontal'}
 
 
@@ -125,11 +122,6 @@ class SequentialPPMExperiment:
                                  else s.orientation)
                         for s in self.patches}
 
-    @staticmethod
-    def _bus_of(interaction_type):
-        n_x = sum(1 for _, P in interaction_type if P == 'X')
-        return 'X' if n_x >= len(interaction_type) - n_x else 'Z'
-
     def _conj(self, step):
         """The conj-registered (colour-swapped) subset of the step's targets —
         reaches route_and_build as ``conj_names`` so the seam table is
@@ -144,91 +136,38 @@ class SequentialPPMExperiment:
         return [replace(s, orientation=self._orient[s.name])
                 for s in self.patches]
 
+    def _request(self, step):
+        """Bridge a PPMStep to the kernel's declarative request."""
+        return PPMRequest(targets=tuple(step.interaction_type),
+                          route=tuple(tuple(c) for c in step.route),
+                          construction=step.construction,
+                          schedule=step.schedule)
+
     def _adjacent_pair(self, step):
-        """True iff the step's targets are exactly two patches on
-        edge-adjacent coarse cells — the direct-seam territory of the rule
-        table (rows 1-4); distant targets go through the routed corridor."""
-        names = [nm for nm, _ in step.interaction_type]
-        if len(names) != 2:
-            return False
-        cells = [cell_index(self._by_name[nm].origin,
-                            self._by_name[nm].distance, seam=True)
-                 for nm in names]
-        (a1, b1), (a2, b2) = cells
-        return abs(a1 - a2) + abs(b1 - b2) == 1
+        return is_cell_adjacent_pair(self._by_name, self._request(step))
 
-    def _register_adjacent(self, i, step):
-        """Classify the direct seam by the rule table (live probe = ground
-        truth) and register the chosen construction: rows 2/3 -> the
-        stretched-stabilizer wall coupler; rows 1/4 -> the plain/recoloured
-        merge through the zero-cell corridor (route=[])."""
-        names = [nm for nm, _ in step.interaction_type]
-        views = {nm: patch_view(self.system, nm) for nm in names}
-        tgt = dict(step.interaction_type)
-        rule = classify_seam(views[names[0]], tgt[names[0]],
-                             views[names[1]], tgt[names[1]])
-        cons = step.construction if step.construction != 'auto' \
-            else rule.construction
-        if cons == 'wall':
-            spec = wall_spec(views[names[0]], views[names[1]], tgt)
-            self.system.register_coupler(
-                RotatedSeamWallCoupler(), patch_names=names, name=f'ppm_{i}',
-                spec=spec, occupied=frozenset(self.system.index_map))
-            self._walls[i] = spec
-            self._sched[i] = self._pick_schedule(step, is_wall=True,
-                                                 collinear=True)
+    def _register_step(self, i, step):
+        """Lower PPM ``i`` through the kernel and register its plan.  All
+        construction decisions (rule row, wall vs merge, schedule, corridor
+        routing, certificate) are the kernel's; the driver only stores the
+        plan and applies it."""
+        try:
+            plan = lower_ppm(self._specs(), self._request(step),
+                             system=self.system, conj_names=self._conj(step),
+                             schedule_policy=self.schedule)
+        except ValueError as e:
+            if 'route_and_build failed' in str(e):
+                raise ValueError(f'PPM {i}: {e}') from None
+            raise
+        apply_plan(self.system, plan, f'ppm_{i}')
+        self._plans[i] = plan
+        self._sched[i] = plan.schedule
+        if plan.kind == 'wall':
+            self._walls[i] = plan.wall
         else:
-            self._register_ppm(i, step)
-            self._sched[i] = self._pick_schedule(step, is_wall=False,
-                                                 collinear=True)
-        self._rules[i] = rule
-
-    def _pick_schedule(self, step, *, is_wall, collinear):
-        """The merged-round schedule, decided right after routing: a wall or
-        any corridor bend forces the whole merged block onto the diagonal
-        schedule; straight corridors stay bent."""
-        if is_wall:
-            if step.schedule == 'bent' or self.schedule == 'bent':
-                raise SeamRuleError(
-                    "a wall step cannot run the bent schedule: the bent chunk "
-                    "cannot express stretched (kf) checks — use 'diagonal'")
-            return 'diagonal'
-        if step.schedule is not None:
-            return step.schedule
-        if self.schedule in ('bent', 'diagonal'):
-            return self.schedule
-        return 'bent' if collinear else 'diagonal'
-
-    def _register_ppm(self, i, step):
-        """Route (explicit route only) and register PPM ``i``'s coupler."""
-        specs = self._specs()
-        r = route_and_build(specs, step.interaction_type, seam=True,
-                            route=step.route, conj_names=self._conj(step))
-        if r.status != 'ok':
-            raise ValueError(
-                f'route_and_build failed at PPM {i}: {r.status} — {r.message}')
-        # a dispatch-raised stretched wall in the layout makes this a WALL
-        # step: kf records demand the diagonal schedule
-        has_kf = any(ch.get('kf')
-                     for ch in (r.layout.checks if r.layout is not None else ()))
-        if i not in self._sched:
-            # schedule decision straight off the route geometry: any bend
-            # (cells not collinear) forces the diagonal schedule
-            names = [nm for nm, _ in step.interaction_type]
-            cells = [cell_index(self._by_name[nm].origin,
-                                self._by_name[nm].distance, seam=True)
-                     for nm in names] + [tuple(c) for c in (r.tree or ())]
-            collinear = (len({a for a, _ in cells}) == 1
-                         or len({b for _, b in cells}) == 1)
-            self._sched[i] = self._pick_schedule(step, is_wall=has_kf,
-                                                 collinear=collinear)
-        self.system.register_coupler(
-            RotatedRoutedMultiPatchCoupler(),
-            patch_names=[nm for nm, _ in step.interaction_type],
-            name=f'ppm_{i}', specs=specs,
-            target=step.interaction_type, subset_route=r, seam=True,
-            minority_names=self._conj(step))
-        self._routes[i] = r
+            self._routes[i] = plan.route_result
+        if plan.rule is not None:
+            self._rules[i] = plan.rule
 
     def _alloc_patch(self, name):
         """Create one patch's physical qubits in the system: the DECLARED
@@ -289,7 +228,7 @@ class SequentialPPMExperiment:
         return se_round_chunk(self.system, domains=domains_merged)
 
     def _apply_ppm_step(self, i, step):
-        bus = self._bus_of(step.interaction_type)
+        init_basis = self._plans[i].corridor_init_basis
         cname = f'ppm_{i}'
         # idle standalone SE between PPMs (debug knob; default 0)
         if self.idle_rounds:
@@ -298,7 +237,7 @@ class SequentialPPMExperiment:
         self.builder.activate_coupler(cname)
         coupler_patch = self.system.coupler_patches[cname]
         l2g = self.system.local_to_global_map[cname]
-        coupler_init = {l2g[q]: _CONJ[bus] for q in coupler_patch.data_indices}
+        coupler_init = {l2g[q]: init_basis for q in coupler_patch.data_indices}
         if coupler_init:
             self.builder.initialize(init_dict=coupler_init,
                                     n=self.system.num_qubits)
@@ -353,6 +292,7 @@ class SequentialPPMExperiment:
         self._walls = {}
         self._rules = {}
         self._sched = {}
+        self._plans = {}
 
         # allocate ALL patches up front (no liveness / first-use init here)
         for s in self.patches:
@@ -364,7 +304,7 @@ class SequentialPPMExperiment:
         for i, step in enumerate(self.ppm_sequence):
             if i in self._adj_steps:
                 continue
-            self._register_ppm(i, step)
+            self._register_step(i, step)
 
         self._setup()
         self.builder.write_coordinates()
@@ -373,7 +313,7 @@ class SequentialPPMExperiment:
         for i, step in enumerate(self.ppm_sequence):
             if i in self._adj_steps and i not in self._walls \
                     and self._routes[i] is None:
-                self._register_adjacent(i, step)
+                self._register_step(i, step)
             if i in self._walls:
                 self._apply_wall_step(i, step)
                 continue

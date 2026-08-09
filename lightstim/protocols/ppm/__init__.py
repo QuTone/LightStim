@@ -13,6 +13,9 @@ from .seam_rules import (MergeRule, PatchView, RotatedSeamWallCoupler,
                          wall_spec)
 from .coupler import (MultiPatchLayout, RotatedRoutedMultiPatchCoupler,
                       SubsetRoute, route_and_build)
+from .lowering import (LoweringCertificate, LoweringPlan, PPMRequest,
+                       UnsupportedPauliError, apply_plan,
+                       is_cell_adjacent_pair, lower_ppm)
 from .sequential import SequentialPPMExperiment
 
 __all__ = [
@@ -21,5 +24,8 @@ __all__ = [
     "MergeRule", "PatchView", "RotatedSeamWallCoupler", "SeamRuleError",
     "WallSpec", "classify_seam", "patch_view", "wall_spec",
     "MultiPatchLayout", "RotatedRoutedMultiPatchCoupler", "SubsetRoute",
-    "route_and_build", "SequentialPPMExperiment",
+    "route_and_build",
+    "LoweringCertificate", "LoweringPlan", "PPMRequest",
+    "UnsupportedPauliError", "apply_plan", "is_cell_adjacent_pair",
+    "lower_ppm", "SequentialPPMExperiment",
 ]
