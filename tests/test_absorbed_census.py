@@ -21,31 +21,51 @@ def _z_row(n, qubits):
     return row
 
 
-def test_census_counts_up_to_logical_equivalence():
+def test_census_dedups_representatives_at_insertion():
     # Reviewer-mandated regression: two representatives differing by a
-    # stabilizer are ONE logical relation, not two.
+    # stabilizer are ONE logical relation, not two.  The dedup happens at
+    # insertion: the second representative reduces to zero against the
+    # bank + ledger and is skipped.
     n = 4
     tracker = SyndromeTracker(n, 0)
     tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
     tracker.stabilizers.records = [[0]]
     rep_a = _z_row(n, [2, 3])
     rep_b = (_z_row(n, [2, 3]) + _z_row(n, [0, 1])) % 2  # rep_a * stabilizer
-    tracker.absorbed_ops.matrix = np.vstack([rep_a, rep_b]).astype(np.uint8)
-    tracker.absorbed_ops.records = [[], []]
 
+    assert tracker.record_absorbed_op(rep_a) is True
+    assert tracker.record_absorbed_op(rep_b) is False
+    assert tracker.absorbed_ops.count == 1
     assert tracker.num_absorbed_dof() == 1
 
 
-def test_group_member_relation_holds_no_dof():
-    # A relation that has itself become a stabilizer holds no logical DOF.
+def test_group_member_relation_is_not_banked():
+    # An operator already expressed by the current stabilizer rows holds
+    # no NEW logical DOF at insertion time and must not enter the ledger.
     n = 4
     tracker = SyndromeTracker(n, 0)
     tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
     tracker.stabilizers.records = [[0]]
-    tracker.absorbed_ops.matrix = _z_row(n, [0, 1]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[]]
 
+    assert tracker.record_absorbed_op(_z_row(n, [0, 1])) is False
     assert tracker.num_absorbed_dof() == 0
+
+
+def test_banked_relation_survives_its_own_closure_row():
+    # After a merge, the joint's CLOSURE row (same relation, carrying the
+    # merge records) legitimately enters the stabilizer bank.  The banked
+    # DOF must keep counting — the census is the ledger's own rank, never
+    # quotiented by the bank (regression for the measurement-block round
+    # over post-PPM state, where the quotient version tripped the alarm).
+    n = 4
+    tracker = SyndromeTracker(n, 1)
+    assert tracker.record_absorbed_op(_z_row(n, [0, 1])) is True
+    # the closure row appears in the bank AFTER the relation was banked
+    tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
+    tracker.stabilizers.records = [[3]]
+
+    assert tracker.num_absorbed_dof() == 1
+    tracker.validate_logical_count(context="closure row coexists")
 
 
 def test_alarm_fires_when_a_relation_is_lost():
