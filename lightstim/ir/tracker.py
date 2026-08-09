@@ -102,19 +102,44 @@ class SyndromeTracker:
         self.expected_num_logicals = k
 
     def num_absorbed_dof(self) -> int:
-        """Number of live logical DOFs currently folded into the stabilizer group
-        (cross-round persistent), counted UP TO logical equivalence: two
-        representatives that differ by a stabilizer are ONE relation, and a
-        relation that has itself become an element of the stabilizer group
-        holds no DOF and contributes zero.  Computed as
-        rank([stabilizers; absorbed]) - rank(stabilizers) over GF(2)."""
-        A = self.absorbed_ops.matrix
-        if A.shape[0] == 0:
-            return 0
-        S = self.stabilizers.matrix
-        if S.shape[0] == 0:
-            return _gf2_rank(A)
-        return _gf2_rank(np.vstack([S, A])) - _gf2_rank(S)
+        """Number of banked absorbed logical DOFs (cross-round persistent):
+        the GF(2) rank of the ledger itself.
+
+        Deliberately NOT quotiented by the current stabilizer bank: after a
+        merge the joint's CLOSURE row (same relation, carrying the merge
+        records) legitimately lives in the bank, and modding the ledger by
+        the bank would cancel the banked DOF against its own reflection
+        (found the hard way: the census tripped on a measurement-block
+        round over post-PPM state).  Logical-equivalence deduplication
+        happens at INSERTION instead — see record_absorbed_op — so two
+        representatives differing by a stabilizer never both enter the
+        ledger, while a banked relation keeps counting regardless of how
+        the group later expresses it."""
+        return _gf2_rank(self.absorbed_ops.matrix)
+
+    def record_absorbed_op(self, op: np.ndarray, records=()) -> bool:
+        """Bank one absorbed logical relation, deduplicated up to logical
+        equivalence AT THIS MOMENT: the operator is reduced against the
+        current stabilizer rows and the already-banked relations, and only
+        an irreducible residue is recorded.  A second representative of an
+        already-banked relation (differing by stabilizers) reduces to zero
+        and is skipped.  Returns True iff a new row was banked."""
+        op = np.asarray(op, dtype=np.uint8).reshape(1, -1)
+        if not op.any():
+            return False
+        A = self.absorbed_ops
+        basis_parts = [M for M in (self.stabilizers.matrix, A.matrix)
+                       if M.shape[0] > 0]
+        if basis_parts:
+            basis = np.vstack(basis_parts)
+            _, dep, _ = solve_linear_decomposition(basis=basis, targets=op,
+                                                   reduce_weight=False)
+            if dep[0]:
+                return False
+        A.matrix = (np.vstack([A.matrix, op]).astype(np.uint8)
+                    if A.count else op.astype(np.uint8))
+        A.records = list(A.records) + [list(records)]
+        return True
 
     def allocate_observable(self) -> int:
         """Reserve and return the next OBSERVABLE_INCLUDE index.
@@ -871,13 +896,8 @@ class SyndromeTracker:
                 n_logs = old_logicals_current_frame.shape[0]
                 ops = (gauge_matrix[:, :n_logs]
                        @ old_logicals_current_frame) % 2
-                ops = ops[ops.any(axis=1)].astype(np.uint8)
-                if ops.shape[0]:
-                    A = self.absorbed_ops
-                    A.matrix = (np.vstack([A.matrix, ops]).astype(np.uint8)
-                                if A.count else ops)
-                    A.records = list(A.records) + [
-                        [] for _ in range(ops.shape[0])]
+                for op in ops:
+                    self.record_absorbed_op(op)
 
         if surviving_logical_indices and self._gauge_logical_vectors:
             rows_to_remove = set()
