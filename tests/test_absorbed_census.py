@@ -96,3 +96,36 @@ def test_block_absorb_requires_the_frame():
 
     with pytest.raises(ValueError, match="cannot be recorded"):
         tracker._record_measurement_logical_effects(set())
+
+
+def test_reset_folds_relation_off_reset_qubits_mod_group():
+    # A relation is only defined mod the stabilizer group: when qubit 0 is
+    # re-initialized, Z0Z1 survives as Z1Z2 via the group element Z0Z2.
+    n = 4
+    tracker = SyndromeTracker(n, 1)
+    tracker.stabilizers.matrix = _z_row(n, [0, 2]).reshape(1, -1)
+    tracker.stabilizers.records = [[0]]
+    tracker.absorbed_ops.matrix = _z_row(n, [0, 1]).reshape(1, -1)
+    tracker.absorbed_ops.records = [[]]
+
+    tracker.reset_records_for_qubits([0])
+
+    assert tracker.absorbed_ops.count == 1
+    assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [1, 2])).all()
+    assert tracker.num_absorbed_dof() == 1
+    tracker.validate_logical_count(context="after fold")  # still accounted
+
+
+def test_reset_annihilates_unfoldable_relation_and_alarm_fires():
+    # No group element can move Z0Z1 off qubit 0: the re-init destroys the
+    # relation.  The row is dropped and the census alarm reports the loss.
+    n = 4
+    tracker = SyndromeTracker(n, 1)
+    tracker.absorbed_ops.matrix = _z_row(n, [0, 1]).reshape(1, -1)
+    tracker.absorbed_ops.records = [[]]
+
+    tracker.reset_records_for_qubits([0])
+
+    assert tracker.absorbed_ops.count == 0
+    with pytest.raises(RuntimeError, match="absorbed logical DOFs"):
+        tracker.validate_logical_count(context="after destructive reset")

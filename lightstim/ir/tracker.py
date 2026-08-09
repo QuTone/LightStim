@@ -297,6 +297,40 @@ class SyndromeTracker:
         self._remap_rows_after_removal(
             [i for i in range(n_stab_before) if i not in kept])
 
+        # Absorbed relations are Pauli strings too: a re-init destroys any
+        # support they carry on the reset qubits.  A relation is only
+        # defined modulo the stabilizer group, so first try to re-express
+        # each touched row off the reset columns using the (cleaned)
+        # surviving group; a relation that cannot be re-expressed is
+        # annihilated by the reset — drop it, and let the census alarm
+        # catch the loss unless the caller adjusted the budget for an
+        # intentional discard.
+        A = self.absorbed_ops
+        if A.count:
+            cols = ([q for q in qubit_set]
+                    + [n + q for q in qubit_set])
+            touched = [r for r in range(A.count) if A.matrix[r, cols].any()]
+            if touched:
+                A.matrix = A.matrix.copy()
+                if self.stabilizers.count:
+                    coeffs, dep, _ = solve_linear_decomposition(
+                        basis=self.stabilizers.matrix[:, cols],
+                        targets=A.matrix[np.ix_(touched, cols)],
+                        reduce_weight=False)
+                    for k, r in enumerate(touched):
+                        if dep[k]:
+                            comb = (coeffs[k][None, :]
+                                    @ self.stabilizers.matrix) % 2
+                            A.matrix[r] = (A.matrix[r] + comb[0]) % 2
+                A.matrix = A.matrix.astype(np.uint8)
+                keep_rows = [r for r in range(A.count)
+                             if not A.matrix[r, cols].any()]
+                if len(keep_rows) != A.count:
+                    A.matrix = (A.matrix[keep_rows] if keep_rows
+                                else np.zeros((0, 2 * n), dtype=np.uint8))
+                    A.records = ([A.records[r] for r in keep_rows]
+                                 if A.records else [])
+
     def _reject_pending_row_metadata(self, context: str) -> None:
         """Basis recombination replaces rows by linear combinations, so old
         row indices carry no meaning afterwards — a shift cannot fix them.
