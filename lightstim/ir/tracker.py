@@ -198,14 +198,39 @@ class SyndromeTracker:
         self.retired_qubits |= S
 
     def _remap_rows_after_removal(self, removed_sorted):
-        """Shift post_select_row_indices down past removed stabilizer rows."""
+        """Shift stabilizer-row metadata down past removed stabilizer rows.
+
+        Every deletion of stabilizer rows must come through here (or rebuild
+        the sets itself, as the measurement-block paths do): both
+        post_select_row_indices and stabilizer_with_logical_components hold
+        ROW indices, and a stale index silently post-selects or reclassifies
+        a different row.  stabilizer_with_logical_components pairs
+        positionally with _gauge_logical_vectors via sorted order, so
+        entries dropped here drop their paired vector too (the shift is
+        monotone, so surviving pairs stay aligned).
+        """
         removed = sorted(set(removed_sorted))
-        if not self.post_select_row_indices:
+        if not removed:
             return
+        rem = set(removed)
+
         def shift(idx):
             return idx - sum(1 for r in removed if r < idx)
-        self.post_select_row_indices = {shift(i) for i in self.post_select_row_indices
-                                        if i not in set(removed)}
+
+        if self.post_select_row_indices:
+            self.post_select_row_indices = {
+                shift(i) for i in self.post_select_row_indices
+                if i not in rem}
+        if self.stabilizer_with_logical_components:
+            swlc_sorted = sorted(self.stabilizer_with_logical_components)
+            vectors = list(self._gauge_logical_vectors)
+            paired = list(zip(swlc_sorted, vectors)) if vectors else \
+                [(i, None) for i in swlc_sorted]
+            kept = [(i, v) for i, v in paired if i not in rem]
+            self.stabilizer_with_logical_components = {
+                shift(i) for i, _ in kept}
+            if vectors:
+                self._gauge_logical_vectors = [v for _, v in kept]
 
     def reset_records_for_qubits(self, qubit_indices):
         """
@@ -251,9 +276,31 @@ class SyndromeTracker:
             else:
                 tableau.matrix = np.zeros((0, 2 * n), dtype=np.uint8)
             tableau.records = new_records
+            return new_indices
 
-        _clean_rows(self.stabilizers)
+        n_stab_before = self.stabilizers.count
+        kept = set(_clean_rows(self.stabilizers))
         _clean_rows(self.logicals)
+        self._remap_rows_after_removal(
+            [i for i in range(n_stab_before) if i not in kept])
+
+    def _reject_pending_row_metadata(self, context: str) -> None:
+        """Basis recombination replaces rows by linear combinations, so old
+        row indices carry no meaning afterwards — a shift cannot fix them.
+        Fail loud instead of silently post-selecting or reclassifying a
+        recombined row.  (The measurement-block paths that CAN remap by
+        decomposition do so themselves and never call this.)"""
+        if self.post_select_row_indices:
+            raise RuntimeError(
+                f"{context}: post_select_row_indices is non-empty but the "
+                f"stabilizer basis is about to be recombined; row indices "
+                f"would silently point at different rows. Resolve or clear "
+                f"the post-selection marks first.")
+        if self.stabilizer_with_logical_components:
+            raise RuntimeError(
+                f"{context}: stabilizer_with_logical_components is non-empty "
+                f"but the stabilizer basis is about to be recombined; the "
+                f"pending gauge/logical classification would be lost.")
 
     def stabilizer_canonicalization(
         self,
@@ -268,6 +315,7 @@ class SyndromeTracker:
 
         Call after encoding, before SE. Raises if logical count does not match expected.
         """
+        self._reject_pending_row_metadata("stabilizer_canonicalization")
         n = self.num_qubits
         if stabilizer_uids is not None:
             stab_dicts = [system.stabilizers[i] for i in range(len(system.stabilizers)) if i in stabilizer_uids]
@@ -513,6 +561,7 @@ class SyndromeTracker:
         drop = pinning[-1]
         self.stabilizers.matrix = np.delete(self.stabilizers.matrix, drop, axis=0)
         self.stabilizers.records.pop(drop)
+        self._remap_rows_after_removal([drop])
         self.logicals.add_stabilizers(pauli_vec, [list(records)])
         self.expected_num_logicals += 1
         return list(records)
@@ -1364,6 +1413,7 @@ class SyndromeTracker:
         This differs from :meth:`stabilizer_canonicalization`, which may insert
         unmeasured canonical rows when preparing a code for its first SE round.
         """
+        self._reject_pending_row_metadata("rebase_stabilizers_onto_code_basis")
         n = self.num_qubits
         if stabilizer_uids is None:
             stabilizer_uids = set(system.active_stabilizer_indices)
@@ -2367,8 +2417,13 @@ class SyndromeTracker:
             self.logicals.matrix = np.zeros((0, 2 * self.num_qubits), dtype=np.uint8)
             self.logicals.records = []
 
+        # Rows consumed by this readout leave; surviving rows keep their
+        # post-select marking for any later readout at their new positions.
+        self._remap_rows_after_removal(
+            [k for k in range(num_stabs) if k in rows_to_remove])
         # Reset per-call tracking that uses row indices (now invalidated)
         self.stabilizer_with_logical_components = set()
+        self._gauge_logical_vectors = []
 
         # A PATCH readout retires however many live logical DOFs it actually read out
         # (free ones consumed + absorbed relations resolved). A CORRIDOR/bus readout
