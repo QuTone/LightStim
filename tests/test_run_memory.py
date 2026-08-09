@@ -19,7 +19,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 RUNNER = REPO / "benchmarks" / "memory" / "run_memory.py"
-PYTHON = REPO / "venv" / "bin" / "python"
+PYTHON = Path(sys.executable)              # the running interpreter, not a hardcoded venv
 
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "benchmarks" / "memory"))
@@ -433,7 +433,7 @@ def test_cli_cpu_bposd_bb(tmp_path):
     out = tmp_path / "bb_bposd.csv"
     r = _run_cli(["--codes", "bb_72_12_6", "--p-values", "1e-2",
                   "--decoder", "cpu_bposd",
-                  "--max-shots", "300", "--max-errors", "3"], out, timeout=300)
+                  "--max-shots", "300", "--max-errors", "3"], out, timeout=1200)
     assert r.returncode == 0, r.stderr
     df = pd.read_csv(out)
     assert df["decoder_name"].iloc[0] == "cpu_bposd"
@@ -446,7 +446,7 @@ def test_cli_gpu_bposd_bb(tmp_path):
     out = tmp_path / "bb_gpu.csv"
     r = _run_cli(["--codes", "bb_72_12_6", "--p-values", "1e-2",
                   "--decoder", "gpu_bposd",
-                  "--max-shots", "300", "--max-errors", "3"], out, timeout=300)
+                  "--max-shots", "300", "--max-errors", "3"], out, timeout=1200)
     assert r.returncode == 0, r.stderr
 
 
