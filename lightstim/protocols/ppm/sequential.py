@@ -32,8 +32,9 @@ from lightstim.qec_code.surface_code.rotated.diagonal_se import (
     DiagonalSurfaceCodeExtractionBlock)
 
 from .spec import PPMStep, conjugate_patch_records
-from .lowering import (PPMRequest, apply_plan, is_cell_adjacent_pair,
-                       lower_ppm)
+from .lowering import (PPMOutcome, PPMRequest, apply_plan,
+                       is_cell_adjacent_pair, joint_pauli_vector, lower_ppm,
+                       record_parity)
 
 __all__ = ["SequentialPPMExperiment"]
 
@@ -227,9 +228,23 @@ class SequentialPPMExperiment:
                     tuple(self.system.qubit_coords[q]), self._orient[nm])
         return se_round_chunk(self.system, domains=domains_merged)
 
+    def _capture_outcome(self, i, step, pre):
+        """Bank PPM ``i``'s protocol output: the joint's record parity
+        before the merge (None = free coin) and after the split."""
+        post = record_parity(
+            self.tracker, joint_pauli_vector(self.system,
+                                             step.interaction_type))
+        self.ppm_outcomes[i] = PPMOutcome(
+            step=i, targets=tuple(step.interaction_type),
+            records_pre_merge=tuple(pre) if pre is not None else None,
+            records_post_split=tuple(post) if post is not None else None)
+
     def _apply_ppm_step(self, i, step):
         init_basis = self._plans[i].corridor_init_basis
         cname = f'ppm_{i}'
+        pre = record_parity(
+            self.tracker, joint_pauli_vector(self.system,
+                                             step.interaction_type))
         # idle standalone SE between PPMs (debug knob; default 0)
         if self.idle_rounds:
             self._standalone_se(self.idle_rounds)
@@ -249,6 +264,7 @@ class SequentialPPMExperiment:
         self.builder.deactivate_coupler(cname)
         self.builder.apply_data_readout(final_measurements=dict(coupler_init),
                                         resolve_absorbed=False)
+        self._capture_outcome(i, step, pre)
 
     def _apply_wall_step(self, i, step):
         """A stretched-stabilizer wall step: activate the wall coupler (its
@@ -259,11 +275,15 @@ class SequentialPPMExperiment:
         cname = f'ppm_{i}'
         if self.idle_rounds:
             self._standalone_se(self.idle_rounds)
+        pre = record_parity(
+            self.tracker, joint_pauli_vector(self.system,
+                                             step.interaction_type))
         self.builder.activate_coupler(cname)
         self.builder.apply_syndrome_extraction(
             DiagonalSurfaceCodeExtractionBlock(self.system).circuit,
             rounds=self.rounds)
         self.builder.deactivate_coupler(cname)
+        self._capture_outcome(i, step, pre)
 
     def _init_and_baseline(self, names):
         """Reset the data qubits owned by ``names`` to their initial states,
@@ -293,6 +313,9 @@ class SequentialPPMExperiment:
         self._rules = {}
         self._sched = {}
         self._plans = {}
+        # protocol outputs, one per applied PPM (review §3: distinct from
+        # the evaluation observables the final readout emits)
+        self.ppm_outcomes: Dict[int, PPMOutcome] = {}
 
         # allocate ALL patches up front (no liveness / first-use init here)
         for s in self.patches:
