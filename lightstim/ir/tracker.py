@@ -103,6 +103,21 @@ class SyndromeTracker:
         (cross-round persistent). Independent of the standing (free) logicals."""
         return _gf2_rank(self.absorbed_ops.matrix)
 
+    def allocate_observable(self) -> int:
+        """Reserve and return the next OBSERVABLE_INCLUDE index.
+
+        Every emitter of a NEW observable must allocate here — never from
+        circuit.num_observables — so that two independent logical results
+        can never share an ID (a shared ID XORs them into one observable,
+        and the XOR of two deterministic bits stays deterministic, so p=0
+        sampling cannot catch the collision).  Re-using a previously
+        allocated index to ACCUMULATE into the same observable remains
+        legal and does not go through this method.
+        """
+        idx = self.total_observables
+        self.total_observables += 1
+        return idx
+
     def expand(self, delta: int):
         """
         Expand the tracker to include delta new qubits (define-by-run).
@@ -2197,7 +2212,6 @@ class SyndromeTracker:
         )
 
         num_rows = full_matrix.shape[0]
-        logical_observable_idx = self.total_observables
         _used_final_coords: set = set()  # dedup: each final detector gets a unique (x,y) coord
         for k in range(num_rows):
             # Condition 1: Must NOT be destroyed (anti-commuted).
@@ -2290,10 +2304,8 @@ class SyndromeTracker:
                                  or k in self.post_select_row_indices),
                 )
             else:
-                circuit.append("OBSERVABLE_INCLUDE", args, [logical_observable_idx])
-                logical_observable_idx += 1
-
-        self.total_observables = logical_observable_idx
+                circuit.append("OBSERVABLE_INCLUDE", args,
+                               [self.allocate_observable()])
 
         # ======================================================================
         # Step 4: Partial reduction of remaining rows (incremental support)

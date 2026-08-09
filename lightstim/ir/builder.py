@@ -1254,11 +1254,10 @@ class CircuitBuilder:
         if result.measured_logicals:
             total = self.tracker.total_measurements
             for _, recs in result.measured_logicals:
-                obs_index = self.circuit.num_observables
                 self.circuit.append(
                     "OBSERVABLE_INCLUDE",
                     [stim.target_rec(r - total) for r in recs],
-                    [obs_index])
+                    [self.tracker.allocate_observable()])
                 self.tracker.expected_num_logicals -= 1
 
     # --------------------------------------------------------------------------

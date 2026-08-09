@@ -116,6 +116,49 @@ def test_two_relay_rounds_full_detector_complement():
     assert _noiseless_clean(builder.circuit)
 
 
+def test_relay_and_readout_observable_ids_do_not_collide():
+    """Centralized observable allocation (review blocker: relay allocated
+    from circuit.num_observables without advancing tracker.total_observables,
+    so a later data readout reused the same ID and XORed two independent
+    logical results into one observable — silently: the XOR of two
+    deterministic bits is still deterministic, so p=0 sampling stays clean).
+
+    Scenario: patch P is measured out by a relay chunk (one observable),
+    then patch Q is read out terminally (a second observable).  The two
+    OBSERVABLE_INCLUDEs must carry distinct IDs and both counters agree."""
+    system = QECSystem()
+    system.add_patch(RotatedSurfaceCode(distance=D), name="P", offset=(0, 0))
+    system.add_patch(RotatedSurfaceCode(distance=D), name="Q", offset=(20, 0))
+    tracker = SyndromeTracker(num_qubits=system.num_qubits,
+                              expected_num_logicals=system.num_logicals)
+    builder = CircuitBuilder(tracker=tracker, system_config=system,
+                             if_detector=True)
+    system.register_tracker(tracker)
+    system.register_builder(builder)
+    _init_z(system, builder)
+    builder.apply_syndrome_extraction(
+        circuit_chunk=RotatedSurfaceCodeExtractionBlock(system).circuit,
+        rounds=1)
+
+    p_qubits = system.patches["P"][0].num_qubits
+    relay = stim.Circuit()
+    for q in sorted(q for q in system.data_indices if q < p_qubits):
+        relay.append("M", [q])
+    builder.apply_relay_chunk(relay)
+    assert tracker.total_observables == builder.circuit.num_observables == 1
+
+    builder.apply_data_readout(
+        final_measurements={q: 'Z' for q in system.data_indices
+                            if q >= p_qubits})
+    c = builder.circuit
+    obs_ids = sorted(int(i.gate_args_copy()[0]) for i in c.flattened()
+                     if i.name == 'OBSERVABLE_INCLUDE')
+    assert obs_ids == [0, 1], f"independent observables share an ID: {obs_ids}"
+    assert c.num_observables == 2
+    assert tracker.total_observables == 2
+    assert _noiseless_clean(c)
+
+
 def test_readout_after_relay_round_emits_observable():
     system, tracker, builder = _fresh()
     _init_z(system, builder)
