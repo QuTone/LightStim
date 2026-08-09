@@ -10,13 +10,15 @@ Topological (require --distances):
     rotated_sc, unrotated_sc, toric, color, xzzx_sc
 BB codes (distance fixed by code, --distances ignored):
     bb_72_12_6, bb_108_8_10, bb_144_12_12, bb_288_12_18
+HGP codes (distance fixed by code, --distances ignored):
+    hgp_13_1_3, hgp_18_2_3, hgp_225_9_4
 
 Decoders
 --------
     pymatching   CPU MWPM        (default for surface codes)
     mwpf         CPU MWPF        (general purpose)
     cpu_bposd    CPU BP+OSD      (good for QLDPC codes, requires stimbposd)
-    gpu_bposd    GPU BP+OSD      (recommended for BB codes, requires CUDA)
+    gpu_bposd    GPU BP+OSD      (recommended for BB/HGP codes, requires CUDA)
 
 CSV output schema (keys / data)
 ---------------------------------
@@ -37,6 +39,13 @@ Usage
     venv/bin/python benchmarks/memory/run_memory.py \\
         --codes bb_72_12_6 bb_144_12_12 \\
         --p-values 1e-3 3e-3 1e-2 \\
+        --decoder gpu_bposd
+
+    # HGP product-coloration memory on GPU:
+    venv/bin/python benchmarks/memory/run_memory.py \\
+        --codes hgp_13_1_3 hgp_18_2_3 hgp_225_9_4 \\
+        --p-values 1e-3 2e-3 3e-3 \\
+        --basis Z X \\
         --decoder gpu_bposd
 
     # Color code with MWPF, save to custom path:
@@ -65,6 +74,12 @@ from lightstim.ir.qec_system import QECSystem
 from lightstim.noise.config import NoiseConfig
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
+from lightstim.qec_code.HGP import (
+    HGPProductColorationExtractionBlock,
+    hgp_13_1_3,
+    hgp_18_2_3,
+    hgp_225_9_4,
+)
 from lightstim.qec_code.color_code import (
     ColorCode,
     ColorCodeBellFlaggingBlock,
@@ -95,9 +110,28 @@ _BB_CONFIGS = {
     "bb_288_12_18": {"l": 12, "m": 12, "A": [[3,0],[0,2],[0,7]], "B": [[0,3],[1,0],[2,0]], "d": 18},  # needs logical_presets entry
 }
 
+_HGP_CONFIGS = {
+    "hgp_13_1_3": {
+        "factory": hgp_13_1_3,
+        "d": 3,
+        "se_circuit": "product_coloration",
+    },
+    "hgp_18_2_3": {
+        "factory": hgp_18_2_3,
+        "d": 3,
+        "se_circuit": "product_coloration",
+    },
+    "hgp_225_9_4": {
+        "factory": hgp_225_9_4,
+        "d": 4,
+        "se_circuit": "product_coloration",
+    },
+}
+
 _TOPO_CODES = {"rotated_sc", "unrotated_sc", "toric", "color", "xzzx_sc"}
 _BB_CODES   = set(_BB_CONFIGS)
-ALL_CODES   = sorted(_TOPO_CODES | _BB_CODES)
+_HGP_CODES  = set(_HGP_CONFIGS)
+ALL_CODES   = sorted(_TOPO_CODES | _BB_CODES | _HGP_CODES)
 
 DEFAULT_COLOR_SE_CIRCUIT = "space_multiplexing"
 
@@ -160,6 +194,17 @@ def _make_code(code_name: str, distance: int, se_circuit: str | None = None):
     if code_name in _BB_CONFIGS:
         cfg = _BB_CONFIGS[code_name]
         return BBCode(l=cfg["l"], m=cfg["m"], A=cfg["A"], B=cfg["B"]), BBCodeExtractionBlock
+    if code_name in _HGP_CONFIGS:
+        cfg = _HGP_CONFIGS[code_name]
+        selected_se_circuit = (
+            cfg["se_circuit"] if se_circuit in (None, "default") else se_circuit
+        )
+        if selected_se_circuit != cfg["se_circuit"]:
+            raise ValueError(
+                f"Unknown HGP SE circuit: {selected_se_circuit!r}. "
+                f"Available for {code_name}: {cfg['se_circuit']}"
+            )
+        return cfg["factory"](), HGPProductColorationExtractionBlock
     raise ValueError(f"Unknown code: {code_name!r}. Available: {ALL_CODES}")
 
 
@@ -331,6 +376,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
             color_spec = _color_se_spec(task["se_circuit"])
             layout = color_spec.layout
             block_class = color_spec.block_class.__name__
+        elif task["code"] in _HGP_CODES:
+            layout = "canonical_interleaved_product"
+            block_class = HGPProductColorationExtractionBlock.__name__
         else:
             layout = "code_default"
             block_class = "code_default"
@@ -368,7 +416,7 @@ def main():
                     help=f"QEC code(s) to benchmark. Built-in: {', '.join(ALL_CODES)}")
     ap.add_argument("--distances", nargs="+", type=int, default=None,
                     help="Distances to sweep (required for topological codes; "
-                         "BB codes use their built-in distance)")
+                         "BB/HGP codes use their built-in distance)")
     ap.add_argument("--p-values", nargs="+", type=float,
                     default=np.logspace(-3, -1.5, 6).tolist(),
                     help="Physical error rate values (default: 6 log-spaced points)")
@@ -443,11 +491,16 @@ def main():
     for code in args.codes:
         if code in _BB_CONFIGS:
             distances = [_BB_CONFIGS[code]["d"]]
+        elif code in _HGP_CONFIGS:
+            distances = [_HGP_CONFIGS[code]["d"]]
         else:
             distances = args.distances
-        se_circuits = (
-            args.color_se_circuits if code == "color" else ["default"]
-        )
+        if code == "color":
+            se_circuits = args.color_se_circuits
+        elif code in _HGP_CONFIGS:
+            se_circuits = [_HGP_CONFIGS[code]["se_circuit"]]
+        else:
+            se_circuits = ["default"]
         for d in distances:
             r = args.rounds if args.rounds is not None else d
             for se_circuit in se_circuits:

@@ -27,6 +27,7 @@ sys.path.insert(0, str(REPO / "benchmarks" / "memory"))
 from run_memory import (
     COLOR_SE_CIRCUITS,
     _BB_CONFIGS,
+    _HGP_CONFIGS,
     _TOPO_CODES,
     _decoder_config,
     _task_key,
@@ -91,6 +92,51 @@ def test_build_circuit_bb(code):
     circuit, n_data, n_total, k = build_circuit(code, d, p=1e-2)
     assert circuit.num_qubits > 0
     assert k > 1  # BB codes are high-rate
+
+
+@pytest.mark.parametrize(
+    "code_name,expected_n_data,expected_n_total,expected_k",
+    [
+        ("hgp_13_1_3", 13, 25, 1),
+        ("hgp_18_2_3", 18, 36, 2),
+        ("hgp_225_9_4", 225, 441, 9),
+    ],
+)
+@pytest.mark.parametrize("basis", ["Z", "X"])
+def test_build_circuit_hgp(
+    code_name,
+    expected_n_data,
+    expected_n_total,
+    expected_k,
+    basis,
+):
+    cfg = _HGP_CONFIGS[code_name]
+    circuit, n_data, n_total, k = build_circuit(
+        code_name,
+        cfg["d"],
+        p=1e-2,
+        basis=basis,
+        se_circuit=cfg["se_circuit"],
+    )
+
+    assert n_data == expected_n_data
+    assert n_total == expected_n_total
+    assert k == expected_k
+    assert circuit.num_detectors > 0
+    assert circuit.num_observables == k
+    dem = circuit.detector_error_model()
+    assert dem.num_detectors == circuit.num_detectors
+    assert dem.num_observables == k
+
+
+def test_hgp_rejects_unknown_se_circuit():
+    with pytest.raises(ValueError, match="Unknown HGP SE circuit"):
+        build_circuit(
+            "hgp_225_9_4",
+            4,
+            p=1e-2,
+            se_circuit="not_a_schedule",
+        )
 
 
 def test_build_circuit_xzzx_gets_checkerboard_basis():
