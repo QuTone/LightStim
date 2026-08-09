@@ -96,6 +96,22 @@ def test_explicit_corridor_zz_full_distance():
     _verify(exp, c)
 
 
+def test_joint_closure_detector_emitted():
+    # Review blocker #1: the terminal closure of a measurement-promoted
+    # joint is a legitimate long-range detector; the support-weight
+    # suppression heuristic is removed (matches upstream main).  Paired-
+    # noise MWPM LER is ~30% better with the closure emitted (2026-08-09
+    # nine-config sweep; decompose_errors=True stays viable in all of them).
+    exp, c = _run([_spec("A", 0, 0, "X_horizontal"),
+                   _spec("B", 2, 0, "X_horizontal")],
+                  [("A", "Z"), ("B", "Z")], {"A": "Z", "B": "Z"},
+                  route=[(1, 0)])
+    longrange = [inst for inst in c.flattened() if inst.name == "DETECTOR"
+                 and len(inst.targets_copy()) > 2 * D + 2]
+    assert longrange, "joint-closure long-range detector was not emitted"
+    _verify(exp, c)
+
+
 def test_three_target_one_step_t_corridor():
     # one step measures 3 patches through a 3-cell T corridor: two
     # independent pairwise products (obs=2), full distance

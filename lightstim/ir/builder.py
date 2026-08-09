@@ -1408,9 +1408,6 @@ class CircuitBuilder:
                     idx_to_coord_map=self.system.qubit_coords,
                     syndrome_qubit_indices=self.system.syndrome_indices,
                     resolve_absorbed=resolve_absorbed,
-                    max_check_weight=max(
-                        (len(st['data_indices'])
-                         for st in self.system.stabilizers), default=4),
                 )
                 obs_insts = [
                     inst for inst in list(self.circuit)[n_before:]
@@ -1427,9 +1424,6 @@ class CircuitBuilder:
                     idx_to_coord_map=self.system.qubit_coords,
                     syndrome_qubit_indices=self.system.syndrome_indices,
                     resolve_absorbed=resolve_absorbed,
-                    max_check_weight=max(
-                        (len(st['data_indices'])
-                         for st in self.system.stabilizers), default=4),
                 )
 
         # Remove measured qubits from active set (ready for reuse)

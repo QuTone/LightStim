@@ -2055,8 +2055,7 @@ class SyndromeTracker:
                                   final_paulis: np.ndarray,
                                   idx_to_coord_map: Dict[int, Tuple[float, float]],
                                   syndrome_qubit_indices: set = None,
-                                  resolve_absorbed: bool = True,
-                                  max_check_weight: int = 4):
+                                  resolve_absorbed: bool = True):
         """
         Handles Final Data Qubit Measurements using Gaussian Elimination.
 
@@ -2267,22 +2266,10 @@ class SyndromeTracker:
 
             # 3. Output:
             if k < num_stabs and k not in self.stabilizer_with_logical_components:
-                row = full_matrix[k]
-                n = self.num_qubits
-                support = int(np.count_nonzero(row[:n] | row[n:2 * n]))
-                if support > max_check_weight:
-                    # A measurement-promoted logical's final closure: no
-                    # legitimate check record outweighs the architecture's
-                    # heaviest registered check (surface code incl. stretched
-                    # walls: 4 feet; color code faces: 6), while a joint
-                    # logical promoted by a merge measurement has weight
-                    # >= 2d > 4 in any representative.  Its close-out
-                    # is one parity bit over the whole post-merge window -
-                    # measured distance-neutral and the sole breaker of
-                    # strict graphlike decomposition (fig5 forensics,
-                    # 2026-07-30).  User ruling: emit nothing; the bank
-                    # still carries the row, p=0 determinism unaffected.
-                    continue
+                # Measurement-promoted joint closures (support > check weight)
+                # are emitted like every other row, matching upstream main:
+                # the long-range parity is real syndrome information (paired-
+                # noise MWPM LER is ~30% better with it; review blocker #1).
                 if -1 in full_records[k]:
                     # An UNWATCHED gauge direction's close-out (sentinel-
                     # tagged row = WriteBack's no-slot gauge branch).  Its
