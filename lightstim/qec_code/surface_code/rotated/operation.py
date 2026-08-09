@@ -382,6 +382,10 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
             circuit_chunk=dynamical_round,
             rounds=1,
             noiseless=noiseless,
+            # The mid-cycle fold layer needs the measurement-block engine's
+            # retained-data semantics; opt in explicitly (the legacy engine
+            # is the default for calls without measurement_blocks).
+            measurement_blocks=(dynamical_round,),
         )
 
     def fold_transversal_s(
