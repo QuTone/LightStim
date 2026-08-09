@@ -197,6 +197,7 @@ class QECSystem:
         # 2. Global Identity Registration
         local_to_global_map = {}
         self.local_to_global_map[name] = {}
+        reused_indices = []
 
         for global_coord, local_index in patch.index_map.items(): # the patch is already shifted to the global coordinate system
 
@@ -210,6 +211,7 @@ class QECSystem:
                     )
                 # Reuse dormant qubit index (measured, ready for reuse)
                 idx = existing_idx
+                reused_indices.append(idx)
             else:
                 # New qubit — assign fresh index
                 idx = self.next_index
@@ -235,6 +237,29 @@ class QECSystem:
             if hasattr(patch, 'syndrome_indices_z'):
                 if local_index in patch.syndrome_indices_z:
                     self.syndrome_indices_z.add(idx)
+
+        # A reused dormant index must stop counting as retired: the retire
+        # bookkeeping (Fix C absorbed resolution, retired-qubit masking)
+        # would otherwise treat the LIVE qubit as measured-out.  The tracker
+        # rows were eliminated from these columns at retirement, so any
+        # remaining support means the retirement was incomplete — fail loud
+        # rather than build on a stale tableau.
+        tracker = getattr(self, "_tracker", None)
+        if tracker is not None and reused_indices:
+            stale = sorted(q for q in reused_indices
+                           if q in tracker.retired_qubits)
+            if stale:
+                n_t = tracker.num_qubits
+                cols = [q for q in stale] + [n_t + q for q in stale]
+                for tab_label, tab in (("stabilizers", tracker.stabilizers),
+                                       ("logicals", tracker.logicals),
+                                       ("absorbed_ops", tracker.absorbed_ops)):
+                    if tab.count and tab.matrix[:, cols].any():
+                        raise RuntimeError(
+                            f"add_patch('{name}'): reusing retired qubits "
+                            f"{stale}, but tracker {tab_label} rows still "
+                            f"reference them — stale retirement state.")
+                tracker.retired_qubits.difference_update(stale)
 
         # 3. Stabilizer and Logical Operator Translation
         stabilizer_indices = []
