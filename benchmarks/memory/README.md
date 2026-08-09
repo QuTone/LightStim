@@ -32,6 +32,9 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | BB [[108,8,10]] | `bb_108_8_10` | no (d=10 fixed) |
 | BB [[144,12,12]] | `bb_144_12_12` | no (d=12 fixed) |
 | BB [[288,12,18]] | `bb_288_12_18` | no (d=18 fixed) |
+| HGP / unrotated SC [[13,1,3]] | `hgp_13_1_3` | no (d=3 fixed) |
+| HGP / toric [[18,2,3]] | `hgp_18_2_3` | no (d=3 fixed) |
+| HGP [[225,9,4]] | `hgp_225_9_4` | no (d=4 fixed) |
 
 > **Not yet supported**: 4D geometric codes (`FourDGeoCode`) use an L-matrix parameter
 > interface incompatible with the `--distances` flag. See `notebooks/Memory/memory_4D_hadamard.ipynb`
@@ -44,7 +47,7 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | `pymatching` (default) | CPU | Surface / toric codes |
 | `mwpf` | CPU | General QLDPC |
 | `cpu_bposd` | CPU | QLDPC codes, no GPU |
-| `gpu_bposd` | GPU (CUDA) | BB codes at scale |
+| `gpu_bposd` | GPU (CUDA) | BB/HGP codes at scale |
 
 ## Color Code SE Circuits
 
@@ -104,6 +107,31 @@ venv/bin/python benchmarks/memory/run_memory.py \
     --p-values 1e-3 2e-3 5e-3 1e-2 \
     --decoder gpu_bposd
 ```
+
+### HGP product-coloration memory (GPU)
+
+```bash
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes hgp_13_1_3 hgp_18_2_3 hgp_225_9_4 \
+    --p-values 1e-3 2e-3 3e-3 \
+    --basis Z X \
+    --decoder gpu_bposd
+```
+
+With `--rounds` omitted, the three instances use their declared distances
+`3`, `3`, and `4`. The first two are structural reference anchors: their HGP
+patches are exactly the distance-3 unrotated surface code and, up to a
+coordinate transpose, the distance-3 toric code. The third is the qLDPC
+memory benchmark instance.
+
+The bundled `[[225,9,4]]` seed is a fixed, independently generated
+`(3,4)`-biregular instance with the same parameters as the smallest code in
+arXiv:2308.08648. It is not the authors' unpublished random matrix. Result
+rows identify its SE circuit explicitly as `product_coloration`.
+
+The benchmark CLI intentionally selects complete, reproducible instances by
+name instead of parsing parity-check matrices inline. For an arbitrary pair
+`H1, H2`, construct `HGPCode(H1, H2, d=...)` programmatically.
 
 ### Both Z and X basis
 ```bash
