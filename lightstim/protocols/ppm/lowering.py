@@ -34,6 +34,11 @@ Scope and honesty notes:
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
 
+import numpy as np
+
+from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
+from lightstim.utils.linear_algebra import solve_linear_decomposition
+
 from .spec import PatchSpec, cell_index
 from .coupler import (route_and_build, RotatedRoutedMultiPatchCoupler,
                       SubsetRoute)
@@ -41,9 +46,9 @@ from .seam_rules import (RotatedSeamWallCoupler, SeamRuleError, classify_seam,
                          patch_view, wall_spec)
 
 __all__ = [
-    "PPMRequest", "LoweringPlan", "LoweringCertificate",
+    "PPMRequest", "LoweringPlan", "LoweringCertificate", "PPMOutcome",
     "UnsupportedPauliError", "lower_ppm", "apply_plan",
-    "is_cell_adjacent_pair",
+    "is_cell_adjacent_pair", "joint_pauli_vector", "record_parity",
 ]
 
 _CONJ = {'X': 'Z', 'Z': 'X'}
@@ -276,6 +281,108 @@ def _lower_corridor(specs, request, conj_names, by_name, schedule_policy,
         request=request, kind='corridor', schedule=schedule,
         specs=tuple(specs), conj_names=frozenset(conj_names),
         route_result=r, certificate=cert)
+
+
+@dataclass(frozen=True)
+class PPMOutcome:
+    """PROTOCOL OUTPUT of one applied PPM: the physical measurement-record
+    parity of the requested joint product (review §3).
+
+    ``records_*`` are sorted absolute measurement indices whose XOR equals
+    the joint's pinned parity at capture time, or ``None`` when the joint
+    is a free coin there — e.g. before the merge of a request that
+    anti-commutes with the tracked state.  A ``None`` is a legitimately
+    random outcome, NOT an error.
+
+    This is deliberately distinct from an EVALUATION observable: whether
+    and how a protocol output enters a deterministic, decodable quantity
+    (an OBSERVABLE_INCLUDE, a closure detector, a feed-forward dependency)
+    is the caller's evaluation choice, made from input states, these
+    record parities, and the final measurement bases.
+    """
+    step: int
+    targets: Tuple[Tuple[str, str], ...]
+    records_pre_merge: Optional[Tuple[int, ...]]
+    records_post_split: Optional[Tuple[int, ...]]
+
+
+def joint_pauli_vector(system, targets) -> np.ndarray:
+    """[X|Z] GF(2) vector of the joint logical named by ``targets``,
+    assembled from the system's registered logical representatives."""
+    n = system.num_qubits
+    v = np.zeros(2 * n, dtype=np.uint8)
+    for nm, letter in targets:
+        for rec in (x for x in system.logical_ops
+                    if x.get('patch_name') == nm and x.get('type') == letter):
+            for q, pp in rec['pauli'].items():
+                if pp in ('X', 'Y'):
+                    v[q] ^= 1
+                if pp in ('Z', 'Y'):
+                    v[n + q] ^= 1
+    return v
+
+
+def record_parity(tracker, vec) -> Optional[List[int]]:
+    """Read-only: if ``vec`` lies in the span of the tracker's
+    record-carrying rows, return the sorted XOR of the pinning rows'
+    banked records (the operator's deterministic reconstruction); else
+    ``None`` — a free outcome, not a parity check.
+
+    Rows carrying the UNMEASURED sentinel are excluded from the basis:
+    a closure through one XORs in an unbanked, per-shot-random gauge
+    (measured 2026-08-05 on a parallel batch window), so excluding them
+    only removes WRONG reconstructions.
+    """
+    stab, logs = tracker.stabilizers, tracker.logicals
+    # deferred allocation can grow the qubit count between refreshes;
+    # symplectic rows are [X | Z] halves, so widen by re-placing each half.
+    wide = max(stab.matrix.shape[1],
+               logs.matrix.shape[1] if logs.matrix.shape[0] > 0 else 0,
+               vec.shape[0]) // 2
+
+    def _widen(M):
+        n0 = M.shape[1] // 2
+        if n0 == wide:
+            return M
+        P = np.zeros((M.shape[0], 2 * wide), dtype=M.dtype)
+        P[:, :n0] = M[:, :n0]
+        P[:, wide:wide + n0] = M[:, n0:]
+        return P
+
+    if vec.shape[0] != 2 * wide:
+        v = np.zeros(2 * wide, dtype=vec.dtype)
+        n0 = vec.shape[0] // 2
+        v[:n0] = vec[:n0]
+        v[wide:wide + n0] = vec[n0:]
+        vec = v
+    if logs.matrix.shape[0] > 0:
+        M = np.vstack([_widen(stab.matrix), _widen(logs.matrix)])
+        recs_of = stab.records + logs.records
+    else:
+        M = _widen(stab.matrix)
+        recs_of = list(stab.records)
+    n_stab = stab.matrix.shape[0]
+    rows_ok = [k for k in range(M.shape[0])
+               if k >= n_stab
+               or (recs_of[k] and UNMEASURED_STAB_RECORD not in recs_of[k])]
+    if len(rows_ok) != M.shape[0]:
+        M = M[rows_ok]
+        recs_of = [recs_of[k] for k in rows_ok]
+    if M.shape[0] == 0:
+        return None
+    out = solve_linear_decomposition(basis=M, targets=vec.reshape(1, -1),
+                                     reduce_weight=True)
+    coeffs = out[0]
+    if coeffs is None:
+        return None
+    row = np.asarray(coeffs[0], dtype=np.uint8)
+    if not np.array_equal((row.astype(int) @ M.astype(int)) % 2,
+                          vec.astype(int)):
+        return None
+    recs = set()
+    for j in np.nonzero(row)[0]:
+        recs ^= set(recs_of[j])
+    return sorted(recs)
 
 
 def apply_plan(system, plan: LoweringPlan, name: str) -> None:
