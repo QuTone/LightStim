@@ -729,7 +729,7 @@ class CircuitBuilder:
             or tracker.expected_num_logicals != 1
             or tracker.stabilizer_with_logical_components
             or tracker._gauge_logical_vectors
-            or tracker._absorbed_logical_dofs
+            or tracker.absorbed_ops.count
             or tracker.post_select_row_indices
             or self.circuit.num_observables > 0
         ):
