@@ -79,14 +79,17 @@ class SyndromeTracker:
         # into the stabilizer group by a merge (e.g. a joint ZZ over two |0>) and STILL
         # hold a trapped logical DOF. Persisted across rounds/PPMs, so an absorb that an
         # intervening round does not re-measure is not lost (this is what the old per-round
-        # gauge tally missed — pitfall B). The count of still-trapped DOFs is `rank(absorbed_ops)`
-        # (see num_absorbed_dof). Self-correcting: once an absorbed relation is read out
+        # gauge tally missed — pitfall B). THE census ledger: every path that absorbs a
+        # logical DOF records the operator here, and the count is always DERIVED via
+        # num_absorbed_dof() (rank mod the stabilizer group) — there is deliberately no
+        # separately maintained integer, because a bare counter demands perfect
+        # increment/decrement pairing from every path and drifts silently when one
+        # forgets. Self-correcting: once an absorbed relation is read out
         # (process_data_measurement) or its qubits retired (retire_qubits), its row is
         # dropped and stops being counted.
         self.absorbed_ops = PauliTableau(num_qubits)
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
-        self._absorbed_logical_dofs = 0
         self.post_select_detector_coords = post_select_detector_coords or set()
         self.post_select_row_indices = set()  # Stabilizer row indices to post-select in process_data_measurement
         self.retired_qubits = set()
@@ -100,8 +103,18 @@ class SyndromeTracker:
 
     def num_absorbed_dof(self) -> int:
         """Number of live logical DOFs currently folded into the stabilizer group
-        (cross-round persistent). Independent of the standing (free) logicals."""
-        return _gf2_rank(self.absorbed_ops.matrix)
+        (cross-round persistent), counted UP TO logical equivalence: two
+        representatives that differ by a stabilizer are ONE relation, and a
+        relation that has itself become an element of the stabilizer group
+        holds no DOF and contributes zero.  Computed as
+        rank([stabilizers; absorbed]) - rank(stabilizers) over GF(2)."""
+        A = self.absorbed_ops.matrix
+        if A.shape[0] == 0:
+            return 0
+        S = self.stabilizers.matrix
+        if S.shape[0] == 0:
+            return _gf2_rank(A)
+        return _gf2_rank(np.vstack([S, A])) - _gf2_rank(S)
 
     def allocate_observable(self) -> int:
         """Reserve and return the next OBSERVABLE_INCLUDE index.
@@ -795,8 +808,17 @@ class SyndromeTracker:
     def _record_measurement_logical_effects(
         self,
         surviving_logical_indices: Set[int],
+        old_logicals_current_frame: Optional[np.ndarray] = None,
     ) -> None:
-        """Account for logical DOFs consumed by the current measurement block."""
+        """Account for logical DOFs consumed by the current measurement block.
+
+        The consumed combinations are RECORDED as operator rows in
+        absorbed_ops (the single census ledger); the census count is always
+        derived from that ledger via num_absorbed_dof().  Callers pass the
+        pre-block logical rows already pushed into the current frame
+        (i.e. after the block's forward symplectic), so the recorded
+        operators live in the same frame as every other tableau row.
+        """
         if self._gauge_logical_vectors:
             gauge_matrix = np.array(
                 self._gauge_logical_vectors,
@@ -805,9 +827,23 @@ class SyndromeTracker:
             for logical_idx in surviving_logical_indices:
                 if logical_idx < gauge_matrix.shape[1]:
                     gauge_matrix[:, logical_idx] = 0
-            self._absorbed_logical_dofs += int(
-                np.linalg.matrix_rank(gauge_matrix.astype(float))
-            )
+            if gauge_matrix.any():
+                if old_logicals_current_frame is None:
+                    raise ValueError(
+                        "_record_measurement_logical_effects: gauge "
+                        "measurements consumed logical DOFs but the caller "
+                        "did not supply the pre-block logical rows — the "
+                        "absorbed operators cannot be recorded.")
+                n_logs = old_logicals_current_frame.shape[0]
+                ops = (gauge_matrix[:, :n_logs]
+                       @ old_logicals_current_frame) % 2
+                ops = ops[ops.any(axis=1)].astype(np.uint8)
+                if ops.shape[0]:
+                    A = self.absorbed_ops
+                    A.matrix = (np.vstack([A.matrix, ops]).astype(np.uint8)
+                                if A.count else ops)
+                    A.records = list(A.records) + [
+                        [] for _ in range(ops.shape[0])]
 
         if surviving_logical_indices and self._gauge_logical_vectors:
             rows_to_remove = set()
@@ -1151,7 +1187,9 @@ class SyndromeTracker:
                 if idx >= num_stabs
             }
             self._record_measurement_logical_effects(
-                surviving_logical_indices
+                surviving_logical_indices,
+                old_logicals_current_frame=(
+                    full_matrix[num_stabs:] @ forward_symplectic_matrix) % 2,
             )
             return set()
 
@@ -1302,7 +1340,11 @@ class SyndromeTracker:
             i - num_stabs for i in new_log_basis_indices
             if i >= num_stabs
         ) if new_log_basis_indices else set()
-        self._record_measurement_logical_effects(surviving_log_indices)
+        self._record_measurement_logical_effects(
+            surviving_log_indices,
+            old_logicals_current_frame=(
+                full_matrix[num_stabs:] @ forward_symplectic_matrix) % 2,
+        )
         return {
             num_output_stabilizers + position
             for position in promotable_old_positions
@@ -1390,11 +1432,12 @@ class SyndromeTracker:
 
     def validate_logical_count(self, *, context: str = "tracker state") -> None:
         """Check that explicit and measurement-absorbed logical DOFs add up."""
-        actual = self.logicals.count + self._absorbed_logical_dofs
+        absorbed = self.num_absorbed_dof()
+        actual = self.logicals.count + absorbed
         if actual != self.expected_num_logicals:
             raise RuntimeError(
                 f"After {context}: logical count {self.logicals.count} plus "
-                f"absorbed logical DOFs {self._absorbed_logical_dofs} != "
+                f"absorbed logical DOFs {absorbed} != "
                 f"expected {self.expected_num_logicals}."
             )
 
