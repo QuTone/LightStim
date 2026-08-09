@@ -79,7 +79,7 @@ pair is a per-shot coin while every certified correlation stays silent).
 | Y | **rejected explicitly** (`UnsupportedPauliError`): needs a twist/Y-wall construction this stack does not implement | `test_y_letter_rejected_explicitly` |
 | target weight | 2 (adjacent + routed), 3 (T corridor) | row tests, `test_three_target_one_step_t_corridor` |
 | weight ≥ 4 | **rejected explicitly** (`BentLayoutError`): needs the snake / kf-wall attach machinery not carried by this variant | `test_weight4_straight_chain_is_an_explicit_gap` |
-| route shapes | zero-cell (adjacent), straight, branched/T; bends force the diagonal schedule (machinery present, no dedicated matrix test yet) | corridor tests |
+| route shapes | zero-cell (adjacent), straight (incl. 3-cell longer route), bent/L (forces the diagonal schedule), branched/T | corridor tests, `test_longer_straight_route_full_distance`, `test_bent_route_forces_diagonal_and_full_distance` |
 | sequential composition | commuting and anti-commuting consecutive PPMs; corridor reuse between steps | `test_ppm_outcomes`, driver tests |
 | engine composition | measurement-block engine round over post-PPM tracker state (shared census) | `test_kernel_api_composes_with_measurement_block_engine` |
 | deformed / non-rectangular patches | not supported: the corridor path reconstructs standard rectangles from specs; adjacent classification would reject a mismatched live view | — |

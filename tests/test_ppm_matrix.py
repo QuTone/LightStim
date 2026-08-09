@@ -60,6 +60,59 @@ def test_weight4_straight_chain_is_an_explicit_gap():
         _build(exp)
 
 
+def test_longer_straight_route_full_distance():
+    # a 3-cell corridor between distant targets stays on the bent schedule
+    from lightstim.noise.config import NoiseConfig
+    px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 4, 0, "X_horizontal")]
+    st = {"A": "Z", "B": "Z"}
+    exp = SequentialPPMExperiment(
+        px, [PPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0), (2, 0), (3, 0)])],
+        initial_states=st, final_measure_states=st, rounds=D, rounds_init=1,
+        noise_params=NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3,
+                                 p_reset=1e-3, p_idle=1e-3))
+    c = _build(exp)
+    assert exp._sched[0] == 'bent'
+    assert exp._plans[0].certificate.measures_exactly_the_product
+    c.detector_error_model(decompose_errors=True)
+    assert len(c.shortest_graphlike_error()) == D
+
+
+def test_bent_route_forces_diagonal_and_full_distance():
+    # any bend in the corridor puts the whole merged block on the diagonal
+    # schedule; the certificate still pins the exact-product guarantee
+    from lightstim.noise.config import NoiseConfig
+    px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 2, 1, "X_vertical")]
+    st = {"A": "Z", "B": "Z"}
+    exp = SequentialPPMExperiment(
+        px, [PPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0), (2, 0)])],
+        initial_states=st, final_measure_states=st, rounds=D, rounds_init=1,
+        noise_params=NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3,
+                                 p_reset=1e-3, p_idle=1e-3))
+    c = _build(exp)
+    assert exp._sched[0] == 'diagonal'
+    assert exp._plans[0].certificate.measures_exactly_the_product
+    c.detector_error_model(decompose_errors=True)
+    assert len(c.shortest_graphlike_error()) == D
+
+
+def test_three_target_certificate_pins_true_multibody_instrument():
+    # the multi-body matrix item: the weight-3 T-corridor joint measures
+    # the triple product and NOTHING finer (no pairwise parity leaks)
+    px = [_spec("q1", 0, 0, "X_horizontal"), _spec("q2", 4, 0, "X_horizontal"),
+          _spec("q3", 2, 1, "X_vertical")]
+    st = {"q1": "Z", "q2": "Z", "q3": "Z"}
+    exp = SequentialPPMExperiment(
+        px, [PPMStep([("q1", "Z"), ("q2", "Z"), ("q3", "Z")],
+                     route=[(1, 0), (2, 0), (3, 0)])],
+        initial_states=st, final_measure_states=st, rounds=D, rounds_init=1)
+    _build(exp)
+    cert = exp._plans[0].certificate
+    assert cert.ok
+    assert cert.items['no_subjoint'] is True
+    assert cert.items['no_single'] is True
+    assert cert.measures_exactly_the_product
+
+
 @pytest.mark.slow
 def test_zz_pair_full_distance_d5():
     d = 5
