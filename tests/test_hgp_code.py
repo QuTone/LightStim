@@ -44,19 +44,171 @@ def _classical_distance(matrix: np.ndarray) -> int:
 
 def _stabilizer_signatures(
     patch,
+    coords_by_index: dict[int, tuple[float, float]] | None = None,
     transform: Callable[[tuple[float, float]], tuple[float, float]] = lambda coord: coord,
 ) -> set[tuple[str, tuple[float, float], frozenset[tuple[float, float]]]]:
+    coords = patch.qubit_coords if coords_by_index is None else coords_by_index
     return {
         (
             stabilizer["type"],
-            transform(stabilizer["syn_coord"]),
+            transform(coords[stabilizer["syn_idx"]]),
             frozenset(
-                transform(patch.qubit_coords[index])
+                transform(coords[index])
                 for index in stabilizer["data_indices"]
             ),
         )
         for stabilizer in patch.stabilizers
     }
+
+
+def _checkerboard_tanner_embedding(code: HGPCode) -> dict[int, tuple[float, float]]:
+    """Embed semantic product indices in the conventional surface-code grid."""
+    coords: dict[int, tuple[float, float]] = {}
+    coords.update(
+        {
+            index: (2 * bit_2, 2 * bit_1)
+            for (bit_1, bit_2), index in code.vv_qubits.items()
+        }
+    )
+    coords.update(
+        {
+            index: (2 * check_2 + 1, 2 * check_1 + 1)
+            for (check_1, check_2), index in code.cc_qubits.items()
+        }
+    )
+    coords.update(
+        {
+            index: (2 * check_2 + 1, 2 * bit_1)
+            for (bit_1, check_2), index in code.x_check_qubits.items()
+        }
+    )
+    coords.update(
+        {
+            index: (2 * bit_2, 2 * check_1 + 1)
+            for (check_1, bit_2), index in code.z_check_qubits.items()
+        }
+    )
+    return coords
+
+
+def _assert_hgp_parity_check_formula(code: HGPCode) -> None:
+    h1 = code.h1.to_dense()
+    h2 = code.h2.to_dense()
+    n1, n2 = code.h1.num_bits, code.h2.num_bits
+    m1, m2 = code.h1.num_checks, code.h2.num_checks
+    expected_hx = np.concatenate(
+        [np.kron(np.eye(n1, dtype=np.uint8), h2), np.kron(h1.T, np.eye(m2, dtype=np.uint8))],
+        axis=1,
+    )
+    expected_hz = np.concatenate(
+        [np.kron(h1, np.eye(n2, dtype=np.uint8)), np.kron(np.eye(m1, dtype=np.uint8), h2.T)],
+        axis=1,
+    )
+    hx, hz = code.get_data_parity_check_matrices()
+    assert np.array_equal(hx, expected_hx)
+    assert np.array_equal(hz, expected_hz)
+
+
+def _assert_product_block_layout(code: HGPCode) -> None:
+    """Check all four sectors, including the single-coordinate gutter."""
+    right_start = code.h1.num_bits + 1
+    lower_start = code.h2.num_bits + 1
+
+    assert {
+        key: code.qubit_coords[index] for key, index in code.vv_qubits.items()
+    } == {
+        (bit_1, bit_2): (bit_1, bit_2)
+        for bit_1 in range(code.h1.num_bits)
+        for bit_2 in range(code.h2.num_bits)
+    }
+    assert {
+        key: code.qubit_coords[index] for key, index in code.z_check_qubits.items()
+    } == {
+        (check_1, bit_2): (right_start + check_1, bit_2)
+        for check_1 in range(code.h1.num_checks)
+        for bit_2 in range(code.h2.num_bits)
+    }
+    assert {
+        key: code.qubit_coords[index] for key, index in code.x_check_qubits.items()
+    } == {
+        (bit_1, check_2): (bit_1, lower_start + check_2)
+        for bit_1 in range(code.h1.num_bits)
+        for check_2 in range(code.h2.num_checks)
+    }
+    assert {
+        key: code.qubit_coords[index] for key, index in code.cc_qubits.items()
+    } == {
+        (check_1, check_2): (right_start + check_1, lower_start + check_2)
+        for check_1 in range(code.h1.num_checks)
+        for check_2 in range(code.h2.num_checks)
+    }
+
+    all_coords = list(code.qubit_coords.values())
+    assert len(all_coords) == len(set(all_coords)) == code.num_qubits
+
+    # Coordinates changed, but stable semantic registration order did not.
+    offset = 0
+    for mapping in (
+        code.vv_qubits,
+        code.cc_qubits,
+        code.x_check_qubits,
+        code.z_check_qubits,
+    ):
+        indices = [mapping[key] for key in sorted(mapping)]
+        assert indices == list(range(offset, offset + len(mapping)))
+        offset += len(mapping)
+
+
+def _assert_product_layer_semantics(
+    block: HGPProductColorationExtractionBlock,
+) -> None:
+    """Verify that direction relabeling does not alter any scheduled target."""
+    code = block.patch
+    global_index = block.local_to_global
+
+    for layer in block.layers:
+        expected_seed = "H1" if layer.direction == "horizontal" else "H2"
+        assert layer.seed == expected_seed
+        expected_pairs: list[tuple[int, int]] = []
+
+        if layer.basis == "X" and layer.direction == "vertical":
+            for check_2, bit_2 in layer.seed_edges:
+                for bit_1 in range(code.h1.num_bits):
+                    expected_pairs.append(
+                        (
+                            global_index[code.x_check_qubits[(bit_1, check_2)]],
+                            global_index[code.vv_qubits[(bit_1, bit_2)]],
+                        )
+                    )
+        elif layer.basis == "X" and layer.direction == "horizontal":
+            for check_1, bit_1 in layer.seed_edges:
+                for check_2 in range(code.h2.num_checks):
+                    expected_pairs.append(
+                        (
+                            global_index[code.x_check_qubits[(bit_1, check_2)]],
+                            global_index[code.cc_qubits[(check_1, check_2)]],
+                        )
+                    )
+        elif layer.basis == "Z" and layer.direction == "vertical":
+            for check_2, bit_2 in layer.seed_edges:
+                for check_1 in range(code.h1.num_checks):
+                    expected_pairs.append(
+                        (
+                            global_index[code.cc_qubits[(check_1, check_2)]],
+                            global_index[code.z_check_qubits[(check_1, bit_2)]],
+                        )
+                    )
+        else:
+            for check_1, bit_1 in layer.seed_edges:
+                for bit_2 in range(code.h2.num_bits):
+                    expected_pairs.append(
+                        (
+                            global_index[code.vv_qubits[(bit_1, bit_2)]],
+                            global_index[code.z_check_qubits[(check_1, bit_2)]],
+                        )
+                    )
+
+        assert layer.cnot_pairs == tuple(sorted(expected_pairs))
 
 
 def _logical_vectors(code: HGPCode) -> tuple[np.ndarray, np.ndarray]:
@@ -171,10 +323,15 @@ def test_repetition_product_is_the_13_1_3_unrotated_surface_patch():
     assert hgp.num_logicals == 1
     assert [pair["sector"] for pair in hgp.logical_pairs] == ["bit_bit"]
 
-    assert set(hgp.data_coords) == set(surface.data_coords)
-    assert set(hgp.syndrome_coords_x) == set(surface.syndrome_coords_x)
-    assert set(hgp.syndrome_coords_z) == set(surface.syndrome_coords_z)
-    assert _stabilizer_signatures(hgp) == _stabilizer_signatures(surface)
+    # The default HGP display separates the four product sectors.  Its Tanner
+    # graph is nevertheless exactly the standard unrotated surface-code graph
+    # under this independent semantic-index embedding.
+    assert _stabilizer_signatures(
+        hgp,
+        _checkerboard_tanner_embedding(hgp),
+    ) == _stabilizer_signatures(surface)
+    _assert_hgp_parity_check_formula(hgp)
+    _assert_product_block_layout(hgp)
     assert {len(op["data_indices"]) for op in hgp.logical_ops} == {3}
     _assert_css_and_logical_invariants(hgp)
 
@@ -199,17 +356,14 @@ def test_cycle_product_is_the_18_2_3_toric_patch():
         "check_check",
     ]
 
-    # ToricCode uses the transposed checkerboard orientation compared with the
-    # unrotated patch.  After that coordinate relabeling, the Tanner graphs are
-    # exactly identical, including X/Z check types.
-    assert set(hgp.data_coords) == {transpose_coords(coord) for coord in toric.data_coords}
-    assert set(hgp.syndrome_coords_x) == {
-        transpose_coords(coord) for coord in toric.syndrome_coords_x
-    }
-    assert set(hgp.syndrome_coords_z) == {
-        transpose_coords(coord) for coord in toric.syndrome_coords_z
-    }
-    assert _stabilizer_signatures(hgp) == _stabilizer_signatures(toric, transpose_coords)
+    # ToricCode uses the transposed checkerboard orientation.  Compare Tanner
+    # graphs through semantic indices instead of constraining the HGP display.
+    assert _stabilizer_signatures(
+        hgp,
+        _checkerboard_tanner_embedding(hgp),
+    ) == _stabilizer_signatures(toric, transform=transpose_coords)
+    _assert_hgp_parity_check_formula(hgp)
+    _assert_product_block_layout(hgp)
     assert {len(op["data_indices"]) for op in hgp.logical_ops} == {3}
     _assert_css_and_logical_invariants(hgp)
 
@@ -250,6 +404,8 @@ def test_distinct_rectangular_rank_deficient_seeds_are_preserved():
     assert code.num_logicals == 5
     assert [pair["sector"] for pair in code.logical_pairs].count("bit_bit") == 4
     assert [pair["sector"] for pair in code.logical_pairs].count("check_check") == 1
+    _assert_hgp_parity_check_formula(code)
+    _assert_product_block_layout(code)
     _assert_css_and_logical_invariants(code)
 
     system = QECSystem()
@@ -317,16 +473,23 @@ def test_hgp_product_coloration_has_stable_four_phase_16_layer_schedule():
     assert block.cnot_depth == 16
     assert len(block.measurement_blocks) == 2
     assert [(layer.basis, layer.direction, layer.color) for layer in block.layers] == [
-        *(('X', 'horizontal', color) for color in range(4)),
         *(('X', 'vertical', color) for color in range(4)),
-        *(('Z', 'horizontal', color) for color in range(4)),
+        *(('X', 'horizontal', color) for color in range(4)),
         *(('Z', 'vertical', color) for color in range(4)),
+        *(('Z', 'horizontal', color) for color in range(4)),
+    ]
+    assert [layer.seed for layer in block.layers] == [
+        *("H2" for _ in range(4)),
+        *("H1" for _ in range(4)),
+        *("H2" for _ in range(4)),
+        *("H1" for _ in range(4)),
     ]
 
     for layer in block.layers:
         qubits = [qubit for pair in layer.cnot_pairs for qubit in pair]
         assert len(qubits) == len(set(qubits))
 
+    _assert_product_layer_semantics(block)
     assert sum(len(layer.cnot_pairs) for layer in block.x_layers) == 108 * 7
     assert sum(len(layer.cnot_pairs) for layer in block.z_layers) == 108 * 7
     assert block.measurement_blocks[0].num_measurements == 108

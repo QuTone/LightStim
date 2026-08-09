@@ -37,8 +37,8 @@ class HGPProductColorLayer:
 class HGPProductColorationExtractionBlock:
     """Algorithm-2 product coloration, expressed with CNOT gates.
 
-    The first seed ``H1`` is vertical and the second seed ``H2`` is
-    horizontal, matching :class:`HGPCode`.  Each seed Tanner graph is colored
+    The first seed ``H1`` is horizontal and the second seed ``H2`` is
+    vertical, matching :class:`HGPCode`.  Each seed Tanner graph is colored
     once and its colors are lifted across every independent product row or
     column.  Consequently, labels such as ``X/horizontal/color=2`` are stable
     properties of the seed code instead of incidental colors of the flattened
@@ -54,16 +54,18 @@ class HGPProductColorationExtractionBlock:
         self.patch_name, self.patch = self._find_patch(patch_name)
         self.local_to_global = self.system.local_to_global_map[self.patch_name]
 
-        self.vertical_seed_colors = self._color_seed(self.patch.h1)
-        self.horizontal_seed_colors = self._color_seed(self.patch.h2)
+        self.horizontal_seed_colors = self._color_seed(self.patch.h1)
+        self.vertical_seed_colors = self._color_seed(self.patch.h2)
 
+        # Preserve the established H2-then-H1 gate order while giving each
+        # layer the direction label of the product-block display.
         self.x_layers = tuple(
-            self._lift_layers("X", "horizontal")
-            + self._lift_layers("X", "vertical")
+            self._lift_layers("X", "vertical")
+            + self._lift_layers("X", "horizontal")
         )
         self.z_layers = tuple(
-            self._lift_layers("Z", "horizontal")
-            + self._lift_layers("Z", "vertical")
+            self._lift_layers("Z", "vertical")
+            + self._lift_layers("Z", "horizontal")
         )
         self.layers = self.x_layers + self.z_layers
         self.depth_x = len(self.x_layers)
@@ -119,7 +121,7 @@ class HGPProductColorationExtractionBlock:
             if basis == "X"
             else set(self.system.active_syndrome_indices_z)
         )
-        seed = "H2" if direction == "horizontal" else "H1"
+        seed = "H1" if direction == "horizontal" else "H2"
         colors = (
             self.horizontal_seed_colors
             if direction == "horizontal"
@@ -129,7 +131,7 @@ class HGPProductColorationExtractionBlock:
 
         for color_index, seed_edges in enumerate(colors):
             pairs: list[QubitPair] = []
-            if basis == "X" and direction == "horizontal":
+            if basis == "X" and direction == "vertical":
                 # H2[check_2, bit_2]: X(bit_1, check_2) -> VV(bit_1, bit_2)
                 for check_2, bit_2 in seed_edges:
                     for bit_1 in range(self.patch.h1.num_bits):
@@ -137,7 +139,7 @@ class HGPProductColorationExtractionBlock:
                         if syndrome in active_syndromes:
                             data = self._g(self.patch.vv_qubits[(bit_1, bit_2)])
                             pairs.append((syndrome, data))
-            elif basis == "X" and direction == "vertical":
+            elif basis == "X" and direction == "horizontal":
                 # H1[check_1, bit_1]: X(bit_1, check_2) -> CC(check_1, check_2)
                 for check_1, bit_1 in seed_edges:
                     for check_2 in range(self.patch.h2.num_checks):
@@ -145,7 +147,7 @@ class HGPProductColorationExtractionBlock:
                         if syndrome in active_syndromes:
                             data = self._g(self.patch.cc_qubits[(check_1, check_2)])
                             pairs.append((syndrome, data))
-            elif basis == "Z" and direction == "horizontal":
+            elif basis == "Z" and direction == "vertical":
                 # H2[check_2, bit_2]: CC(check_1, check_2) -> Z(check_1, bit_2)
                 for check_2, bit_2 in seed_edges:
                     for check_1 in range(self.patch.h1.num_checks):
