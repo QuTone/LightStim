@@ -1947,12 +1947,26 @@ class SyndromeTracker:
             # account it exactly like a Case-A kill: expected -= 1, and bank
             # the restore credit for a possible same-block resurface.
             _indep = set(new_basis_indices)
+            # Logical POSITIONS whose consumption is already charged to
+            # expected this call: Case-A pivots (the slot now holds the
+            # measured row, not the original direction) plus the
+            # stab-shadowed dependent rows collected below.  A logical-
+            # carrying gauge measurement can still decompose through
+            # these slots, so the absorb accounting (preview here, Fix C
+            # banking later) must zero them exactly like surviving rows,
+            # or the same consumption is priced twice (teleport_8
+            # optimized without liveness: two relay readouts Case-A
+            # killed rows 1,2, the chain joint's log_vec={0,1,2} routed
+            # through both dead slots, banking absorbed on top of the
+            # Case-A charges — standing 1 + absorbed 1 > expected 1).
+            _charged_dead = {int(_p) - num_stabs for _p in _case_a_log_pivots}
             for _ri in range(num_logs):
                 _oi = num_stabs + _ri
                 if (_ri not in _indep and _oi not in _case_a_log_pivots
                         and _oi in _log_rows_anti):
                     self.expected_num_logicals -= 1
                     _restore_credit += 1
+                    _charged_dead.add(_ri)
                     if _dbg:
                         print(f"[pmm#{self._pmm_call}] dependent LOG row "
                               f"{_ri} measured via stab-shadowed pivots: "
@@ -1979,6 +1993,9 @@ class SyndromeTracker:
             for _mp, _lv in _round_cands:
                 _lv2 = _lv.copy()
                 for _j in _surv_pre:
+                    if _j < _lv2.shape[0]:
+                        _lv2[_j] = 0
+                for _j in _charged_dead:
                     if _j < _lv2.shape[0]:
                         _lv2[_j] = 0
                 if not _lv2.any():
@@ -2095,6 +2112,7 @@ class SyndromeTracker:
             new_log_basis_indices = []
             old_stab_basis_indices = []
             self.logicals = PauliTableau(self.num_qubits)  # empty logicals
+            _charged_dead = {int(_p) - num_stabs for _p in _case_a_log_pivots}
 
         # 2. Update Stabilizers
         # Reset stabilizer tableau to the canonical measurement basis.
@@ -2174,6 +2192,12 @@ class SyndromeTracker:
         for _mp, _lv in _round_cands:
             _lv2 = _lv.copy()
             for _j in surviving_log_indices:
+                if _j < _lv2.shape[0]:
+                    _lv2[_j] = 0
+            # positions consumed AND charged by Case A / stab-shadowed
+            # kills this call: their slot content is the measured row,
+            # not a standing direction — never a second absorb
+            for _j in _charged_dead:
                 if _j < _lv2.shape[0]:
                     _lv2[_j] = 0
             if not _lv2.any():
