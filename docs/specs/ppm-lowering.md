@@ -84,6 +84,29 @@ pair is a per-shot coin while every certified correlation stays silent).
 | engine composition | measurement-block engine round over post-PPM tracker state (shared census) | `test_kernel_api_composes_with_measurement_block_engine` |
 | deformed / non-rectangular patches | not supported: the corridor path reconstructs standard rectangles from specs; adjacent classification would reject a mismatched live view | — |
 
+## Known interface gaps against the review's spec
+
+Honestly listed, each a deliberate scope cut of this iteration:
+
+- **wall certificates**: wall (stretched-stabilizer) plans carry
+  `certificate=None`; their validation lives in the rule-table laws and
+  the end-to-end distance tests.
+- **paused/restored checks**: handled by coupler activation
+  (`QECSystem.activate_coupler` pauses, `deactivate` restores), not
+  exposed as a `LoweringPlan` field.
+- **no `post_state` field**: sequential composition reads the LIVE
+  system's state after apply/split; the plan does not carry a
+  self-contained state transition.
+- **logical representatives**: an explicit live-probe input on the
+  cell-adjacent path (`patch_view`); the corridor path derives standard
+  representatives from the registered logical operators — which is also
+  why deformed/non-rectangular patches are unsupported.
+- **evaluation specification is implicit**: the initial/final state
+  letters choose which correlations are deterministic; there is no
+  first-class evaluation-spec object.  The protocol-output vs evaluation
+  distinction is carried by `PPMOutcome` plus the emitted
+  observables/closure detectors.
+
 ## Known reproducibility note
 
 Circuit builds are process-nondeterministic without a pinned

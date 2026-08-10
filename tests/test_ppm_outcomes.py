@@ -87,3 +87,23 @@ def test_anticommuting_outcome_is_a_free_coin():
     det = c.compile_detector_sampler(seed=0).sample(1024)
     assert not det.any(), \
         "every certified (evaluation-layer) correlation must stay silent"
+
+
+def test_record_parity_excludes_sentinel_rows():
+    """A reconstruction through an UNMEASURED-sentinel row would XOR in an
+    unbanked, per-shot-random gauge — record_parity must refuse it and
+    report the operator as not record-deterministic (None), not fabricate
+    a wrong record set."""
+    import numpy as np
+    from lightstim.ir.tracker import (SyndromeTracker,
+                                      UNMEASURED_STAB_RECORD)
+    from lightstim.protocols.ppm.lowering import record_parity
+
+    n = 4
+    tracker = SyndromeTracker(n, 0)
+    row = np.zeros(2 * n, dtype=np.uint8)
+    row[[n + 0, n + 1]] = 1
+    tracker.stabilizers.matrix = row.reshape(1, -1)
+    tracker.stabilizers.records = [[UNMEASURED_STAB_RECORD]]
+
+    assert record_parity(tracker, row.copy()) is None
