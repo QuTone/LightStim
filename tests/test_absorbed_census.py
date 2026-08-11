@@ -149,3 +149,42 @@ def test_reset_annihilates_unfoldable_relation_and_alarm_fires():
     assert tracker.absorbed_ops.count == 0
     with pytest.raises(RuntimeError, match="absorbed logical DOFs"):
         tracker.validate_logical_count(context="after destructive reset")
+
+
+def test_reset_fold_carries_the_stabilizer_records():
+    # Re-expressing a banked relation off reset qubits multiplies it by a
+    # stabilizer row; the fold is only a valid re-representation if that
+    # row's RECORDS fold in alongside its Pauli (adversarial review: the
+    # old post-clean fold silently dropped them - a parity corruption
+    # invisible to the census and to p=0 sampling).
+    n = 4
+    tracker = SyndromeTracker(n, 1)
+    stab = _z_row(n, [0, 1])
+    tracker.stabilizers.matrix = stab.reshape(1, -1)
+    tracker.stabilizers.records = [[5]]
+    tracker.absorbed_ops.matrix = _z_row(n, [1]).reshape(1, -1)
+    tracker.absorbed_ops.records = [[7]]
+
+    tracker.reset_records_for_qubits([1])
+
+    assert tracker.absorbed_ops.count == 1
+    assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [0])).all()
+    assert tracker.absorbed_ops.records[0] == [5, 7], \
+        "the folded stabilizer's record must ride along"
+
+
+def test_reset_fold_rejects_sentinel_poisoned_stabilizer():
+    # If the only stabilizer that could carry the relation off the reset
+    # qubits has already lost its records to the UNMEASURED sentinel, the
+    # relation's parity is unreconstructable - fail loud, never fold
+    # silently.
+    from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
+    n = 4
+    tracker = SyndromeTracker(n, 1)
+    tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
+    tracker.stabilizers.records = [[UNMEASURED_STAB_RECORD]]
+    tracker.absorbed_ops.matrix = _z_row(n, [1]).reshape(1, -1)
+    tracker.absorbed_ops.records = [[7]]
+
+    with pytest.raises(RuntimeError, match="cannot be reconstructed"):
+        tracker.reset_records_for_qubits([1])

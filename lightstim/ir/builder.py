@@ -343,7 +343,7 @@ class CircuitBuilder:
                     )
                 })
                 promotable_stabilizer_rows.append(
-                    self.tracker.process_measurement_block(
+                    self.tracker.process_mid_measurement(
                         circuit=stim.Circuit(),
                         forward_symplectic_matrix=(
                             analysis.forward_symplectic_matrix
@@ -556,7 +556,7 @@ class CircuitBuilder:
                 )
 
             promotable_stabilizer_rows.append(
-                tracker.process_measurement_block(
+                tracker.process_mid_measurement(
                     circuit=output_circuit,
                     forward_symplectic_matrix=(
                         analysis.forward_symplectic_matrix

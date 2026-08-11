@@ -348,20 +348,23 @@ class SyndromeTracker:
             tableau.records = new_records
             return new_indices
 
-        n_stab_before = self.stabilizers.count
-        kept = set(_clean_rows(self.stabilizers))
-        _clean_rows(self.logicals)
-        self._remap_rows_after_removal(
-            [i for i in range(n_stab_before) if i not in kept])
-
         # Absorbed relations are Pauli strings too: a re-init destroys any
         # support they carry on the reset qubits.  A relation is only
         # defined modulo the stabilizer group, so first try to re-express
-        # each touched row off the reset columns using the (cleaned)
-        # surviving group; a relation that cannot be re-expressed is
-        # annihilated by the reset — drop it, and let the census alarm
-        # catch the loss unless the caller adjusted the budget for an
-        # intentional discard.
+        # each touched row off the reset columns; a relation that cannot be
+        # re-expressed is annihilated by the reset — drop it, and let the
+        # census alarm catch the loss unless the caller adjusted the budget
+        # for an intentional discard.
+        #
+        # ORDER MATTERS: the fold must run BEFORE _clean_rows, against the
+        # PRE-clean stabilizer rows, because (a) a fold is only a valid
+        # re-representation if the folded stabilizer's RECORDS are XORed
+        # into the relation's records alongside its Pauli, and (b)
+        # _clean_rows wipes mixed rows' records to the UNMEASURED sentinel,
+        # destroying exactly the information the fold needs (found by
+        # adversarial review: the old post-clean fold silently dropped the
+        # stabilizer's record from the banked relation — a parity
+        # corruption invisible to the census and to p=0 sampling).
         A = self.absorbed_ops
         if A.count:
             cols = ([q for q in qubit_set]
@@ -369,16 +372,33 @@ class SyndromeTracker:
             touched = [r for r in range(A.count) if A.matrix[r, cols].any()]
             if touched:
                 A.matrix = A.matrix.copy()
+                A.records = [list(r) for r in A.records]
                 if self.stabilizers.count:
                     coeffs, dep, _ = solve_linear_decomposition(
                         basis=self.stabilizers.matrix[:, cols],
                         targets=A.matrix[np.ix_(touched, cols)],
                         reduce_weight=False)
                     for k, r in enumerate(touched):
-                        if dep[k]:
-                            comb = (coeffs[k][None, :]
-                                    @ self.stabilizers.matrix) % 2
-                            A.matrix[r] = (A.matrix[r] + comb[0]) % 2
+                        if not dep[k]:
+                            continue
+                        used = np.flatnonzero(coeffs[k])
+                        folded_recs = set(A.records[r])
+                        for s in used:
+                            s_recs = self.stabilizers.records[int(s)]
+                            if UNMEASURED_STAB_RECORD in s_recs:
+                                raise RuntimeError(
+                                    f"reset_records_for_qubits: re-"
+                                    f"expressing absorbed relation {r} off "
+                                    f"qubits {sorted(qubit_set)} needs "
+                                    f"stabilizer row {int(s)}, whose records "
+                                    f"already carry the UNMEASURED sentinel "
+                                    f"— the relation's parity cannot be "
+                                    f"reconstructed.")
+                            folded_recs.symmetric_difference_update(s_recs)
+                        comb = (coeffs[k][None, :]
+                                @ self.stabilizers.matrix) % 2
+                        A.matrix[r] = (A.matrix[r] + comb[0]) % 2
+                        A.records[r] = sorted(folded_recs)
                 A.matrix = A.matrix.astype(np.uint8)
                 keep_rows = [r for r in range(A.count)
                              if not A.matrix[r, cols].any()]
@@ -387,6 +407,12 @@ class SyndromeTracker:
                                 else np.zeros((0, 2 * n), dtype=np.uint8))
                     A.records = ([A.records[r] for r in keep_rows]
                                  if A.records else [])
+
+        n_stab_before = self.stabilizers.count
+        kept = set(_clean_rows(self.stabilizers))
+        _clean_rows(self.logicals)
+        self._remap_rows_after_removal(
+            [i for i in range(n_stab_before) if i not in kept])
 
     def _reject_pending_row_metadata(self, context: str) -> None:
         """Basis recombination replaces rows by linear combinations, so old
@@ -942,7 +968,7 @@ class SyndromeTracker:
                     rows_to_remove.add(row_idx)
             self.stabilizer_with_logical_components -= rows_to_remove
 
-    def process_measurement_block(
+    def process_mid_measurement(
         self,
         circuit: stim.Circuit,
         forward_symplectic_matrix: np.ndarray,
@@ -1604,706 +1630,6 @@ class SyndromeTracker:
 
         self.validate_logical_count(context="code-basis rebase")
 
-    def process_mid_measurement(self,
-                                circuit: stim.Circuit,
-                                back_propagated_paulis: np.ndarray,
-                                syn_coords: list,
-                                no_detector_mask: Optional[np.ndarray] = None):
-        """
-        Handles Mid-circuit measurements (assumed to be on syndrome qubits).
-
-        Args:
-            no_detector_mask: Optional boolean array of length num_meas. When
-                no_detector_mask[i] is True the measurement still updates the
-                stabilizer tableau (Step 3) but no DETECTOR instruction is
-                emitted for it (Step 2). Useful for Z-only / X-only memory
-                experiments where one ancilla type is measured without detectors.
-        """
-        num_meas = back_propagated_paulis.shape[0]
-        current_base_idx = self.total_measurements
-        self.total_measurements += num_meas
-
-        # Reset per-round tracking (these are only meaningful within a single PMM call)
-        self.stabilizer_with_logical_components = set()
-        self._gauge_logical_vectors = []
-
-        # Reorder stabilizer rows: empty-record rows first.
-        # Fresh init rows (rec=[]) represent newly introduced qubits whose DOF should
-        # be consumed first by measurements, before established stabilizers with SE records.
-        # This produces cleaner detectors and correct logical observable construction.
-        num_stabs_pre = self.stabilizers.count
-        if num_stabs_pre > 0:
-            empty_indices = [i for i in range(num_stabs_pre) if self.stabilizers.records[i] == []]
-            other_indices = [i for i in range(num_stabs_pre) if self.stabilizers.records[i] != []]
-            if empty_indices and other_indices:  # only reorder if there's a mix
-                reorder = empty_indices + other_indices
-                self.stabilizers.matrix = self.stabilizers.matrix[reorder]
-                self.stabilizers.records = [self.stabilizers.records[i] for i in reorder]
-                # Remap post_select_row_indices
-                if self.post_select_row_indices:
-                    idx_map = {old: new for new, old in enumerate(reorder)}
-                    self.post_select_row_indices = {
-                        idx_map.get(k, k) for k in self.post_select_row_indices
-                    }
-
-        # ======================================================================
-        # Step 1: Combine Stabilizers and Logicals into Full Tableau
-        # ======================================================================
-        num_stabs = self.stabilizers.count
-        num_logs = self.logicals.count
-
-        # If logicals is empty, full_tableau is just stabilizers
-        if num_logs > 0:
-            full_matrix = np.vstack([self.stabilizers.matrix, self.logicals.matrix])
-            # Flatten records list
-            full_records = self.stabilizers.records + self.logicals.records
-        else:
-            full_matrix = self.stabilizers.matrix.copy() # Copy to avoid reference issues during loop
-            full_records = list(self.stabilizers.records) # Deep copy of list structure
-
-        import os as _os
-        import sys as _sys
-        _dbg = _os.environ.get('LIGHTSTIM_DEBUG_PMM')
-        self._pmm_call = getattr(self, '_pmm_call', 0) + 1
-        if _dbg:
-            print(f"[pmm#{self._pmm_call}] entry: num_stabs={num_stabs} "
-                  f"num_logs={num_logs} expected={self.expected_num_logicals} "
-                  f"absorbed_rank={_gf2_rank(self.absorbed_ops.matrix)}", file=_sys.stderr)
-        if _os.environ.get('LIGHTSTIM_DEBUG_ROW'):
-            _n = self.num_qubits
-            for _k in range(num_logs):
-                _r = self.logicals.matrix[_k]
-                _terms = []
-                for _q in range(_n):
-                    _x, _z = _r[_q], _r[_n + _q]
-                    if _x or _z:
-                        _terms.append(f"{'Y' if _x and _z else ('X' if _x else 'Z')}{_q}")
-                print(f"[row] pmm#{self._pmm_call} log{_k}: {' '.join(_terms)}",
-                      file=_sys.stderr)
-
-        # ======================================================================
-        # Step 2: Process Back-propagated Pauli measurements (Update / Detector)
-        # ======================================================================
-        # Use a temporary tableau view so we can call update_row / replace_row.
-        temp_full = PauliTableau(self.num_qubits)
-        temp_full.matrix = full_matrix
-        temp_full.records = full_records
-
-        _round_cands = []  # Fix C: (meas_row, log_vec) of logical-carrying measurements
-        _restore_credit = 0  # logical rows eaten by Case A this call (see below)
-        _case_a_log_pivots = set()  # logical-position pivots Case A accounted
-        _log_rows_anti = set()      # logical rows update_row'd for anticommuting
-
-        for i in range(num_meas):
-            meas_pauli = back_propagated_paulis[i]
-            meas_row = meas_pauli.reshape(1, -1)
-            meas_abs_idx = current_base_idx + i
-
-            # Check commutativity against existing stabilizers and logicals
-            comm_check = check_commutativity(meas_row, full_matrix)
-            anti_comm_indices = np.where(comm_check[0])[0]
-            if _os.environ.get('LIGHTSTIM_DEBUG_ROW'):
-                _anti_log = [int(j) - num_stabs for j in anti_comm_indices
-                             if j >= num_stabs]
-                if _anti_log:
-                    _anti_stab = [int(j) for j in anti_comm_indices
-                                  if j < num_stabs]
-                    print(f"[row] pmm#{self._pmm_call} meas{i}: anti with "
-                          f"LOG rows {_anti_log}, stab rows {_anti_stab[:6]}"
-                          f"{'...' if len(_anti_stab) > 6 else ''} "
-                          f"-> pivot={'LOG' if anti_comm_indices[0] >= num_stabs else 'STAB'}",
-                          file=_sys.stderr)
-
-            if len(anti_comm_indices) > 0:
-                # --- Case A: Anti-commutes (State Update) ---
-                pivot = anti_comm_indices[0]
-                # Update other anti-commuting rows
-                for other in anti_comm_indices[1:]:
-                    temp_full.update_row(other, pivot) # (target, source)
-                    if other >= num_stabs:
-                        _log_rows_anti.add(int(other))
-
-                # Replace the pivot with the back_propagated_paulis
-                temp_full.replace_row(pivot, meas_pauli, [meas_abs_idx])
-
-                if pivot >= num_stabs and _dbg:
-                    print(f"[pmm#{self._pmm_call}] CaseA meas{i}: LOGICAL pivot="
-                          f"{pivot} (log_row {pivot - num_stabs}) "
-                          f"anti={anti_comm_indices.tolist()}", file=_sys.stderr)
-                # NOTE: the replaced pivot row now equals the measured Pauli,
-                # so it is linearly dependent on the measurement basis and
-                # never re-enters the WriteBack independent basis — no
-                # explicit demotion bookkeeping is needed.
-                if pivot >= num_stabs:
-                    _case_a_log_pivots.add(int(pivot))
-                    # A logical row was eaten by the measurement: one tracked
-                    # observable slot gone.  Also bank a RESTORE CREDIT: if
-                    # the same block kicks a previously promoted joint out of
-                    # the stabilizer group, the freed direction resurfaces in
-                    # WriteBack as an independent records-less row with no
-                    # budget slot left (kill-then-restore exchange, fig5
-                    # all-X PPM4) — the credit lets WriteBack re-promote it
-                    # and put the slot back.
-                    self.expected_num_logicals -= 1
-                    _restore_credit += 1
-
-            else:
-                # --- Case B: Commutes (Detector) ---
-                # Detector is formed by decomposing Back-propagated Pauli Measurements into existing STABILIZERS only (rows in the stabilizer tableau).
-                # (Logicals do not contribute to the decomposition)
-
-                if not meas_row.any():
-                    # Identity back-propagation: the measured operator
-                    # terminates entirely on same-chunk resets (K&F-style
-                    # flag / relay ancilla).  Deterministic every round ->
-                    # single-measurement detector, K&F's flag semantics.
-                    if no_detector_mask is None or not no_detector_mask[i]:
-                        coords = list(syn_coords[i]) + [0]
-                        _append_detector(
-                            circuit,
-                            [stim.target_rec(meas_abs_idx - self.total_measurements)],
-                            coords,
-                            post_select=tuple(coords) in self.post_select_detector_coords,
-                        )
-                    continue
-
-                if num_stabs > 0:
-                    # First check if meas_row is exactly one row in curr_stab_matrix
-                    # Directly compare meas_row against current stabilizer rows
-                    curr_stab_matrix = full_matrix[:num_stabs]
-                    matching_rows = np.where(np.all(curr_stab_matrix == meas_row, axis=1))[0]
-                    if len(matching_rows) > 0:
-                        # Raise warning if there are multiple identical stabilizer rows matching this measurement
-                        if len(matching_rows) > 1:
-                            warnings.warn(
-                                f"Found {len(matching_rows)} identical stabilizer rows matching this measurement. "
-                                "Check that the stabilizer tableau has no duplicate rows.",
-                                UserWarning,
-                                stacklevel=2,
-                            )
-                        # Directly construct the detector
-                        row_idx = matching_rows[0]  # Take the first matching row
-                        args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
-                        for r in full_records[row_idx]:
-                            if r >= 0:
-                                args.append(stim.target_rec(r - self.total_measurements))
-                        if no_detector_mask is None or not no_detector_mask[i]:
-                            coords = list(syn_coords[i]) + [0]
-                            _append_detector(
-                                circuit, args, coords,
-                                post_select=tuple(coords) in self.post_select_detector_coords,
-                            )
-                    else: # meas_row is not exactly one row in curr_stab_matrix, but a linear combination of rows in the full matrix
-                        # decompose meas_row into existing stabilizers
-                        coeffs, is_dependent, _ = solve_linear_decomposition(
-                            basis=full_matrix,
-                            targets=meas_row
-                        )
-                        # Note: Here we use the full matrix as the basis, not just the stabilizer tableau.
-                        # The back-propagated Pauli may contain present logical operator components. e.g., Logical ZZ over two |0> states, then
-                        # the last Z gauge operator consisting ZZ measurements can be written as the linear combination of previous Z gauges and two logical Z operators of two patches.
-                        # If we don't use the full matrix as the basis, these measurements will be identified as independent basis and treated as logicals, which is incorrect.
-                        # However, these measurements, although they can be decomposed, cannot be detectors, because their logical operator components cannot be measured in the middle of the circuit
-                        # and cannot give syndrome information. This will be identified when we construct detectors.
-
-                        # Construct a detector
-                        if is_dependent[0]:
-                            args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
-                            comp_indices = np.where(coeffs[0])[0]
-                            if max(comp_indices) >= num_stabs:
-                                # The measurement contains a logical component, and cannot be a detector
-                                # Flag this row for further logical observable construction
-                                self.stabilizer_with_logical_components.add(i)
-                                # Track which logical indices this measurement involves (for rank computation)
-                                log_vec = np.zeros(num_logs, dtype=np.uint8)
-                                for c in comp_indices:
-                                    if c >= num_stabs:
-                                        log_vec[c - num_stabs] = 1
-                                self._gauge_logical_vectors.append(log_vec)
-                                # Fix C: defer the add — decide AFTER the rebuild whether
-                                # this measurement GENUINELY absorbed (its logical content
-                                # still contains a NON-surviving logical = it trapped a DOF),
-                                # not merely carries a logical component (banked/redundant).
-                                _round_cands.append((meas_row.copy(), log_vec.copy()))
-                                import os as _os
-                                if _os.environ.get('LIGHTSTIM_DEBUG_ABSORB'):
-                                    _parts = []
-                                    for c in comp_indices:
-                                        recs = full_records[c]
-                                        kind = ('LOG' if c >= num_stabs else
-                                                'STAB-norec' if recs == [] else
-                                                'STAB-unmeas' if any(r < 0 for r in recs) else
-                                                'STAB')
-                                        _parts.append(f"{kind}@{c}(rec={recs if len(recs) < 4 else recs[:3]+['…']})")
-                                    print(f"[cand-debug] meas#{i} decomposes -> {_parts}")
-                                    _fr = _gf2_rank(full_matrix)
-                                    print(f"[rank-debug] full_matrix rows={full_matrix.shape[0]} "
-                                          f"rank={_fr} deficiency={full_matrix.shape[0] - _fr}")
-                                    _nq = full_matrix.shape[1] // 2
-                                    for c in comp_indices:
-                                        if c < num_stabs and len(full_records[c]) > 2:
-                                            _r = full_matrix[c]
-                                            _sup = sorted(set(np.where(_r[:_nq])[0].tolist())
-                                                          | set(np.where(_r[_nq:])[0].tolist()))
-                                            print(f"[rank-debug] carrier STAB@{c} w={len(_sup)} "
-                                                  f"sup={_sup}")
-                                continue
-                            # Otherwise, purely depends on stabilizers, construct a detector
-                            # Use set-based XOR for O(1) toggle instead of O(n) list scan
-                            args_set = set(args)
-                            for c_idx in comp_indices:
-                                # Map back to full records (skip UNMEASURED_STAB_RECORD)
-                                for r in full_records[c_idx]:
-                                    if r < 0:
-                                        continue
-                                    rec_to_append = stim.target_rec(r - self.total_measurements)
-                                    if rec_to_append in args_set:
-                                        args_set.remove(rec_to_append)
-                                    else:
-                                        args_set.add(rec_to_append)  # addition modulo 2
-                            args = list(args_set)
-
-                            if no_detector_mask is None or not no_detector_mask[i]:
-                                coords = list(syn_coords[i]) + [0]
-                                _append_detector(
-                                    circuit, args, coords,
-                                    post_select=tuple(coords) in self.post_select_detector_coords,
-                                )
-                        else:
-                            # Measurement row commute but is independent of the current full tableau,
-                            # but this should never happen in a well-defined full tableau, unless there are degrees of freedom missing.
-                            raise RuntimeError(
-                                f"Measurement {i} commutes with all rows in the current full tableau (stabilizers + logicals) but is linearly independent.\n"
-                                f"This implies the Full (Stabilizer + Logicals) Tableau is incomplete (Rank < num_qubits).\n"
-                                f"Please ensure all qubits are initialized and added to the tracker before measurement."
-                            )
-
-        # ======================================================================
-        # Step 3: Write Back with "Clean" Basis
-        # ======================================================================
-        # After detector construction, we always decompose the system into the "Clean Basis" of the measurements we just performed.
-        # - Dependent rows in Full Tableau -> Replaced by Clean Measurements (Stabilizers).
-        # - Independent rows in Full Tableau -> Identified as Logicals.
-        # This automatically determines the right logicals, e.g. after first round of syndrome extraction
-
-        # Basis: The clean measurements (Back-propagated Paulis)
-        # Targets: The updated Full Tableau (System State)
-        # new_basis_indices: Indices in full_matrix that form the Logical Basis.
-        #
-        # IMPORTANT: Reorder targets so logical rows come BEFORE stabilizer rows.
-        # This gives logicals priority for RREF pivots, preventing stabilizer rows
-        # from "stealing" a logical's pivot when they share the same independent direction.
-        # Without this, logicals can be lost (e.g., PQRM logical Z in CrossLS Z-state).
-        if num_logs > 0:
-            reordered_targets = np.vstack([full_matrix[num_stabs:], full_matrix[:num_stabs]])
-            reordered_records = full_records[num_stabs:] + full_records[:num_stabs]
-        else:
-            reordered_targets = full_matrix
-            reordered_records = full_records
-
-        _, is_dependent, new_basis_indices = solve_linear_decomposition(
-            basis=back_propagated_paulis,
-            targets=reordered_targets
-        )
-
-        # Map reordered indices back to original full_matrix semantics:
-        # reordered[0..num_logs-1]       = original logicals  (full_matrix[num_stabs..end])
-        # reordered[num_logs..num_logs+num_stabs-1] = original stabs (full_matrix[0..num_stabs-1])
-        def _remap(idx):
-            if idx < num_logs:
-                return num_stabs + idx          # logical row
-            else:
-                return idx - num_logs            # stabilizer row
-
-        # 1. Update Logicals
-        # Independent rows fall into:
-        # (a) Logical rows: stay as logicals
-        # (b) Stab rows with records: stay as old stabilizers (not measured this round)
-        # (c) Stab rows without records: become logicals
-        if len(new_basis_indices) > 0:
-            new_log_basis_indices = []
-            old_stab_basis_indices = []
-
-            # Promotion budget: a records-less row may be promoted to a
-            # logical ONLY while there is an unfilled logical slot
-            # (deferred-init recognition).  A block whose group leaves an
-            # ancilla-region gauge direction unmeasured (e.g. the corridor
-            # ribbon between two walls) produces the SAME row signature with
-            # no slot left — it must stay a records-less stabilizer, not
-            # inflate the logical census.  solve_linear_decomposition does
-            # NOT return basis rows in target order (a promotion candidate
-            # can precede a surviving logical row — fig5 all-X PPM4), so
-            # the surviving logicals are counted UP FRONT; counting only
-            # the already-seen ones would hand their slots to earlier
-            # candidates and inflate the census.
-            _absorbed_pre = _gf2_rank(self.absorbed_ops.matrix)
-            # A logical row that went DEPENDENT without being a Case-A pivot
-            # was measured through stab-shadowed pivots: every anticommuting
-            # measurement found a lower-indexed stabilizer pivot, so the row
-            # was update_row'd into the (measurements + stabs) span instead
-            # of being replaced.  The DOF is consumed all the same (measured:
-            # the M(Z1Z2)-then-M(X1X2) pair — four lobes anticommute with
-            # the surviving Z-string row, all four pivots land on stabs) —
-            # account it exactly like a Case-A kill: expected -= 1, and bank
-            # the restore credit for a possible same-block resurface.
-            _indep = set(new_basis_indices)
-            # Logical POSITIONS whose consumption is already charged to
-            # expected this call: Case-A pivots (the slot now holds the
-            # measured row, not the original direction) plus the
-            # stab-shadowed dependent rows collected below.  A logical-
-            # carrying gauge measurement can still decompose through
-            # these slots, so the absorb accounting (preview here, Fix C
-            # banking later) must zero them exactly like surviving rows,
-            # or the same consumption is priced twice (teleport_8
-            # optimized without liveness: two relay readouts Case-A
-            # killed rows 1,2, the chain joint's log_vec={0,1,2} routed
-            # through both dead slots, banking absorbed on top of the
-            # Case-A charges — standing 1 + absorbed 1 > expected 1).
-            _charged_dead = {int(_p) - num_stabs for _p in _case_a_log_pivots}
-            for _ri in range(num_logs):
-                _oi = num_stabs + _ri
-                if (_ri not in _indep and _oi not in _case_a_log_pivots
-                        and _oi in _log_rows_anti):
-                    self.expected_num_logicals -= 1
-                    _restore_credit += 1
-                    _charged_dead.add(_ri)
-                    if _dbg:
-                        print(f"[pmm#{self._pmm_call}] dependent LOG row "
-                              f"{_ri} measured via stab-shadowed pivots: "
-                              f"expected->{self.expected_num_logicals}",
-                              file=_sys.stderr)
-            _n_surviving = sum(1 for ri in new_basis_indices
-                               if _remap(ri) >= num_stabs)
-            # Slots about to be CONSUMED by this round's GENUINE absorbs.
-            # Fix C appends them only AFTER the WriteBack, but the promotion
-            # budget must already see them: a live logical measured this
-            # round frees its basis slot for the absorb, NOT for a
-            # deferred-init promotion (measured: Z33Z34 right after the
-            # six-body X joint — the freed slot got a records-less stab
-            # promoted into it, the absorb then landed on top, census
-            # expected+1).  Mirrors Fix C's gates exactly: zero the
-            # surviving bits, dedup by logical content, count only physical
-            # rank growth over the persistent absorbed_ops.
-            _surv_pre = {_remap(ri) - num_stabs for ri in new_basis_indices
-                         if _remap(ri) >= num_stabs}
-            _pend_lvs = np.zeros((0, num_logs), dtype=np.uint8)
-            _pend_mat = self.absorbed_ops.matrix
-            _pend_n = self.absorbed_ops.count
-            _pending = 0
-            for _mp, _lv in _round_cands:
-                _lv2 = _lv.copy()
-                for _j in _surv_pre:
-                    if _j < _lv2.shape[0]:
-                        _lv2[_j] = 0
-                for _j in _charged_dead:
-                    if _j < _lv2.shape[0]:
-                        _lv2[_j] = 0
-                if not _lv2.any():
-                    continue
-                if _gf2_rank(np.vstack([_pend_lvs, _lv2])) == \
-                        _pend_lvs.shape[0]:
-                    continue
-                _pend_lvs = np.vstack([_pend_lvs, _lv2])
-                if _gf2_rank(np.vstack([_pend_mat, _mp])) > _pend_n:
-                    _pend_mat = (np.vstack([_pend_mat, _mp]) if _pend_n
-                                 else _mp.astype(np.uint8).reshape(1, -1))
-                    _pend_n += 1
-                    _pending += 1
-            _n_promoted = 0
-            _gauge_filed = []
-            for ri in new_basis_indices:
-                orig_idx = _remap(ri)
-                orig_record = reordered_records[ri]
-                if _dbg and (orig_idx >= num_stabs or orig_record == []):
-                    _r = full_matrix[orig_idx]
-                    _n = _r.shape[0] // 2
-                    _sup = sorted(set(np.where(_r[:_n])[0].tolist())
-                                  | set(np.where(_r[_n:])[0].tolist()))
-                    print(f"[pmm#{self._pmm_call}] WriteBack row orig_idx="
-                          f"{orig_idx} ({'LOG' if orig_idx >= num_stabs else 'STAB'}) "
-                          f"rec={orig_record} "
-                          f"w={len(_sup)} sup={_sup[:8]}{'...' if len(_sup) > 8 else ''}", file=_sys.stderr)
-                if orig_idx >= num_stabs:
-                    # Logical row → stays as logical
-                    new_log_basis_indices.append(orig_idx)
-                elif orig_record == []:
-                    if (_n_surviving + _n_promoted + _absorbed_pre + _pending
-                            < self.expected_num_logicals):
-                        # Stab row without records → becomes logical
-                        new_log_basis_indices.append(orig_idx)
-                        _n_promoted += 1
-                        if _os.environ.get('LIGHTSTIM_DEBUG_ABSORB'):
-                            _r = full_matrix[orig_idx]
-                            _n = _r.shape[0] // 2
-                            _sup = sorted(set(np.where(_r[:_n])[0].tolist())
-                                          | set(np.where(_r[_n:])[0].tolist()))
-                            print(f"[promote-debug] record-less row@{orig_idx} promoted "
-                                  f"to logical, support qubits={_sup}")
-                    elif _restore_credit > 0:
-                        # no free slot BUT a logical row was eaten by Case A
-                        # this block: the eaten slot's DOF resurfaced here (a
-                        # kill-then-restore exchange with a previously
-                        # promoted joint — the measurement kicked the joint
-                        # out of the stabilizer group and its direction is
-                        # independent again).  Re-promote and put the slot
-                        # back; net census change of the block is zero.
-                        new_log_basis_indices.append(orig_idx)
-                        _n_promoted += 1
-                        self.expected_num_logicals += 1
-                        _restore_credit -= 1
-                        if _dbg:
-                            print(f"[pmm#{self._pmm_call}] restore-credit "
-                                  f"promote row {orig_idx}, expected->"
-                                  f"{self.expected_num_logicals}",
-                                  file=_sys.stderr)
-                    else:
-                        # no free slot: ancilla-gauge direction — keep it as a
-                        # records-less stabilizer row (still needed as a basis
-                        # element for future decompositions).  Tagged: its
-                        # init-vs-readout parity involves the UNWATCHED gauge
-                        # direction, so relations through it must not become
-                        # detectors (each gauge-flipping error is already a
-                        # 2-symptom event on the neighbouring checks; the
-                        # global parity would attach an irreducible third
-                        # symptom to every one of them).
-                        old_stab_basis_indices.append(orig_idx)
-                        _gauge_filed.append(orig_idx)
-                        # sentinel record -1 marks the UNWATCHED gauge row
-                        # explicitly (readout must not infer gauge-ness from
-                        # an empty record list: legitimately records-less
-                        # rows exist in other flows, e.g. color-code
-                        # rebased closures) — negative records are skipped
-                        # by every record consumer.
-                        reordered_records[ri] = [-1]
-                        if _os.environ.get('LIGHTSTIM_DEBUG_ABSORB'):
-                            print(f"[promote-debug] record-less row@{orig_idx} budget full,"
-                                  f" kept as gauge stabilizer row (not promoted)")
-                else:
-                    # Stab row with records → stays as old stabilizer
-                    old_stab_basis_indices.append(orig_idx)
-
-            # Shadow-row purge: a gauge row filed above must carry NO
-            # standing-logical content.  The row is a free combination the
-            # rebuild happened to emit (e.g. logical x corridor-ribbon x
-            # checks); filed verbatim, a later measurement's UNIQUE
-            # decomposition over the full tableau routes that logical
-            # component through the stab section, so its log_vec misses
-            # the bit and the absorb census loses the DOF (measured:
-            # steane program-order M(Z3Z4Z5) decomposed as logicals {3,4}
-            # with q5 hidden in a gauge row — Logical Count Mismatch at
-            # block end).  XORing standing logicals into the row changes
-            # neither the span nor its independence, and gauge x free DOF
-            # is still value-undefined, so the records-less filing
-            # semantics are untouched.  After the purge no records-less
-            # stab row (nor any XOR of them) overlaps a logical pivot
-            # column: the logical part of every decomposition is forced
-            # through the logical section.
-            if _gauge_filed and new_log_basis_indices:
-                _log_rref, _log_pivots = _gf2_rref(
-                    full_matrix[new_log_basis_indices])
-                for _gi in _gauge_filed:
-                    for _k, _c in enumerate(_log_pivots):
-                        if full_matrix[_gi, _c]:
-                            full_matrix[_gi] ^= _log_rref[_k]
-
-            self.logicals.matrix = full_matrix[new_log_basis_indices]
-            self.logicals.records = [full_records[i] for i in new_log_basis_indices]
-        else:
-            new_log_basis_indices = []
-            old_stab_basis_indices = []
-            self.logicals = PauliTableau(self.num_qubits)  # empty logicals
-            _charged_dead = {int(_p) - num_stabs for _p in _case_a_log_pivots}
-
-        # 2. Update Stabilizers
-        # Reset stabilizer tableau to the canonical measurement basis.
-        new_stab_records = [[self.total_measurements - num_meas + i] for i in range(num_meas)]
-
-        # Build old_stab part: rows with records that stayed as stabilizers
-        old_stab_matrix = full_matrix[old_stab_basis_indices]
-        old_stab_records = [full_records[i] for i in old_stab_basis_indices]
-
-        self.stabilizers.matrix = np.vstack([back_propagated_paulis, old_stab_matrix])
-        self.stabilizers.records = new_stab_records + old_stab_records
-
-        # Update post_select_row_indices: map old full_matrix indices to new stabilizer indices.
-        # - Old stab rows in old_stab_basis_indices → new indices num_meas, num_meas+1, ...
-        # - Dependent rows (absorbed into measurement basis) → find which measurement rows captured them
-        if self.post_select_row_indices:
-            new_ps = set()
-            # Map old stab rows that survived
-            for j, old_idx in enumerate(old_stab_basis_indices):
-                if old_idx in self.post_select_row_indices:
-                    new_ps.add(num_meas + j)
-            # Map dependent rows: decompose against measurement basis to find which rows captured them
-            # Map dependent rows: decompose against measurement basis to find which rows captured them
-            # Note: is_dependent uses reordered indices; map post_select old_idx to reordered idx
-            coeffs_ps, _, _ = solve_linear_decomposition(
-                basis=back_propagated_paulis,
-                targets=full_matrix,
-                reduce_weight=False,
-            )
-            for old_idx in self.post_select_row_indices:
-                if old_idx < full_matrix.shape[0]:
-                    # Decompose against original full_matrix (not reordered)
-                    row = full_matrix[old_idx:old_idx+1]
-                    c, dep, _ = solve_linear_decomposition(basis=back_propagated_paulis, targets=row, reduce_weight=False)
-                    if dep[0]:
-                        meas_indices = np.where(c[0])[0]
-                        new_ps.update(int(m) for m in meas_indices)
-            self.post_select_row_indices = new_ps
-
-        # 3. Final Sanity Check (The Guardrail)
-        # Determine which logical indices survived in the logicals tableau
-        surviving_log_indices = set(
-            i - num_stabs for i in new_log_basis_indices
-            if i >= num_stabs
-        ) if new_log_basis_indices else set()
-
-        # Fix C: add operators that GENUINELY absorbed this round — those whose logical
-        # content, after zeroing the SURVIVING (still-free) logicals, is non-zero (they
-        # trapped a DOF). A measurement that only involves surviving logicals is banked /
-        # redundant and is NOT added. Dedup by physical rank.
-        import os as _os
-        if _os.environ.get('LIGHTSTIM_DEBUG_ABSORB'):
-            print(f"[absorb-debug] round cands={len(_round_cands)} "
-                  f"surviving_log_indices={sorted(surviving_log_indices)} "
-                  f"num_stabs={num_stabs} num_logs={num_logs} "
-                  f"logicals.count(post)={len(new_log_basis_indices) if new_log_basis_indices else 0}")
-            for _k, (_mp, _lv) in enumerate(_round_cands):
-                print(f"[absorb-debug]   cand{_k}: log_vec={np.where(_lv)[0].tolist()} "
-                      f"weight={int(_mp.sum())}")
-            if len(_round_cands) > 1:
-                # sum of candidate rows (physical): is it decomposable against this
-                # round's measurement basis / the stabilizer basis?
-                _sum = _round_cands[0][0].copy()
-                for _mp, _ in _round_cands[1:]:
-                    _sum = _sum ^ _mp
-                _, _dep_m, _ = solve_linear_decomposition(
-                    basis=back_propagated_paulis, targets=_sum.reshape(1, -1))
-                _, _dep_s, _ = solve_linear_decomposition(
-                    basis=full_matrix[:num_stabs], targets=_sum.reshape(1, -1))
-                _lvsum = _round_cands[0][1].copy()
-                for _, _lv in _round_cands[1:]:
-                    _lvsum = _lvsum ^ _lv
-                print(f"[sum-debug] candidate sum: log_vec={np.where(_lvsum)[0].tolist()} "
-                      f"in_measurement_span={bool(_dep_m[0])} "
-                      f"in_stabilizer_span={bool(_dep_s[0])}")
-        _round_lvs = np.zeros((0, num_logs), dtype=np.uint8)
-        for _mp, _lv in _round_cands:
-            _lv2 = _lv.copy()
-            for _j in surviving_log_indices:
-                if _j < _lv2.shape[0]:
-                    _lv2[_j] = 0
-            # positions consumed AND charged by Case A / stab-shadowed
-            # kills this call: their slot content is the measured row,
-            # not a standing direction — never a second absorb
-            for _j in _charged_dead:
-                if _j < _lv2.shape[0]:
-                    _lv2[_j] = 0
-            if not _lv2.any():
-                continue
-            # dedup by LOGICAL content within the round: two measurement rows
-            # trapping the SAME logical relation (physical representatives that
-            # differ by stabilizers — e.g. an N-fold joint seen through several
-            # wall checks) are ONE absorbed DOF, not two
-            if _gf2_rank(np.vstack([_round_lvs, _lv2])) == _round_lvs.shape[0]:
-                continue
-            _round_lvs = np.vstack([_round_lvs, _lv2])
-            _A = self.absorbed_ops
-            if _gf2_rank(np.vstack([_A.matrix, _mp])) > _A.count:
-                _A.matrix = np.vstack([_A.matrix, _mp]) if _A.count else _mp.astype(np.uint8).copy()
-                _A.records = list(_A.records) + [[]]
-
-        # Combination absorption: a SUBSET of this round's logical-carrying
-        # measurements can trap a combined relation even though every single
-        # row's tail survives (e.g. an N-fold joint whose arms each carry one
-        # patch tail, reset-truncated at the corridor).  The combination is
-        # code-determined iff the pure logical part of its tail sum lies in
-        # the span of this round's measurements plus RECORD-BEARING stabilizer
-        # rows (records-less rows are init-only gauge directions — needing one
-        # means the combination is NOT measured by the code).  On success the
-        # sum row is absorbed and ONE participating logical row is folded out
-        # of the rebuilt tableau (the combination is no longer free).
-        if len(_round_cands) >= 2 and num_logs > 0 and len(_round_cands) <= 8:
-            import itertools as _it
-            _rec_rows = [k for k in range(num_stabs) if full_records[k]]
-            _det_basis = (np.vstack([back_propagated_paulis,
-                                     full_matrix[_rec_rows]])
-                          if _rec_rows else back_propagated_paulis)
-            for _size in range(2, len(_round_cands) + 1):
-                for _combo in _it.combinations(range(len(_round_cands)), _size):
-                    _lvsum = _round_cands[_combo[0]][1].copy()
-                    _mpsum = _round_cands[_combo[0]][0].copy()
-                    for _k in _combo[1:]:
-                        _lvsum = _lvsum ^ _round_cands[_k][1]
-                        _mpsum = _mpsum ^ _round_cands[_k][0]
-                    if not _lvsum.any():
-                        continue
-                    _bits = set(np.where(_lvsum)[0].tolist())
-                    if not _bits <= surviving_log_indices:
-                        continue        # partially consumed by the rebuild
-                    if _gf2_rank(np.vstack([_round_lvs, _lvsum])) == \
-                            _round_lvs.shape[0]:
-                        continue        # relation already accounted
-                    _t = np.zeros_like(_mpsum)
-                    for _j in _bits:
-                        _t = _t ^ full_matrix[num_stabs + _j]
-                    _, _dep, _ = solve_linear_decomposition(
-                        basis=_det_basis, targets=_t.reshape(1, -1))
-                    if not _dep[0]:
-                        continue        # not measured by the code
-                    _A = self.absorbed_ops
-                    if _gf2_rank(np.vstack([_A.matrix, _mpsum])) > _A.count:
-                        _A.matrix = (np.vstack([_A.matrix, _mpsum])
-                                     if _A.count
-                                     else _mpsum.astype(np.uint8).copy())
-                        _A.records = list(_A.records) + [[]]
-                        # fold one participating row out of the logicals
-                        for _j in sorted(_bits, reverse=True):
-                            if (num_stabs + _j) in new_log_basis_indices:
-                                _pos = new_log_basis_indices.index(
-                                    num_stabs + _j)
-                                self.logicals.matrix = np.delete(
-                                    self.logicals.matrix, _pos, axis=0)
-                                self.logicals.records.pop(_pos)
-                                new_log_basis_indices.pop(_pos)
-                                surviving_log_indices.discard(_j)
-                                break
-                        import os as _os
-                        if _os.environ.get('LIGHTSTIM_DEBUG_ABSORB'):
-                            print(f"[combo-debug] combo absorb log_vec="
-                                  f"{sorted(_bits)} (cands={list(_combo)})")
-                    _round_lvs = np.vstack([_round_lvs, _lvsum])
-
-        # Number of live logical DOFs currently folded into the stabilizer group. Counted
-        # from the PERSISTENT absorbed_ops (rank), which — unlike the old per-round gauge
-        # tally — survives across rounds/PPMs that do not re-measure an earlier absorb.
-        num_absorbed = _gf2_rank(self.absorbed_ops.matrix)
-
-        if _dbg:
-            print(f"[pmm#{self._pmm_call}] exit: logicals={self.logicals.count} "
-                  f"absorbed={num_absorbed} expected={self.expected_num_logicals}", file=_sys.stderr)
-
-        if (num_absorbed + self.logicals.count) != self.expected_num_logicals:
-            raise RuntimeError(
-                 f"[Error] Logical Count Mismatch!\n"
-                 f"Expected: {self.expected_num_logicals}, \n"
-                 f"Found: (1) Logicals {self.logicals.count}, \n"
-                 f"(2) Absorbed Logical DOF (rank) {num_absorbed}\n"
-                 f"(3) Measurements with Logical Components {len(self.stabilizer_with_logical_components)}\n"
-             )
-
-        # 4. Clear redundant swlc entries for surviving logicals.
-        # If a gauge measurement's logical components ALL survived as logicals,
-        # the logical itself will be the observable — the swlc row is redundant.
-        if surviving_log_indices and self._gauge_logical_vectors:
-            swlc_sorted = sorted(self.stabilizer_with_logical_components)
-            swlc_to_remove = set()
-            for meas_idx, log_vec in zip(swlc_sorted, self._gauge_logical_vectors):
-                log_indices = set(np.where(log_vec)[0])
-                if log_indices.issubset(surviving_log_indices):
-                    swlc_to_remove.add(meas_idx)
-            self.stabilizer_with_logical_components -= swlc_to_remove
 
     def process_data_measurement(self,
                                   circuit: stim.Circuit,

@@ -650,9 +650,7 @@ class TestColorCodeMemory:
             include_measurement_bases=True,
         )
 
-        builder.apply_syndrome_extraction(
-            block.circuit, rounds=1,
-            measurement_blocks=block.measurement_blocks)
+        builder.apply_syndrome_extraction(block.circuit, rounds=1)
 
         p9_rows = [
             i
@@ -672,11 +670,9 @@ class TestColorCodeMemory:
             {q: "X" for q in system.data_indices},
             n=code.num_qubits,
         )
-        block = ColorCodeBellMultiplexingBlock(system)
         builder.apply_syndrome_extraction(
-            block.circuit,
+            ColorCodeBellMultiplexingBlock(system).circuit,
             rounds=2,
-            measurement_blocks=block.measurement_blocks,
         )
 
         detectors = [
@@ -703,14 +699,10 @@ class TestColorCodeMemory:
             )
             block = ColorCodeBellMultiplexingBlock(system)
             if combined_rounds:
-                builder.apply_syndrome_extraction(
-                    block.circuit, rounds=3,
-                    measurement_blocks=block.measurement_blocks)
+                builder.apply_syndrome_extraction(block.circuit, rounds=3)
             else:
                 for _ in range(3):
-                    builder.apply_syndrome_extraction(
-                        block.circuit, rounds=1,
-                        measurement_blocks=block.measurement_blocks)
+                    builder.apply_syndrome_extraction(block.circuit, rounds=1)
             return builder.circuit
 
         repeated = build(combined_rounds=True)
