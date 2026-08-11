@@ -32,8 +32,11 @@ class HGPCode(QECPatch):
     X checks are indexed by ``V1 x C2`` and have parity-check matrix
     ``[I_n1 kron H2 | H1.T kron I_m2]``.
 
-    The first seed is drawn on the vertical axis and the second on the
-    horizontal axis.  Bits occupy even coordinates and checks odd coordinates.
+    The first seed is drawn on the horizontal axis and the second on the
+    vertical axis.  The four product sectors are displayed separately, with
+    ``V1 x V2`` data at upper left, Z checks at upper right, X checks at lower
+    left, and ``C1 x C2`` data at lower right.  One empty coordinate row and
+    column separate the sectors.
     """
 
     def __init__(self, H1: Any, H2: Any | None = None, **kwargs: Any):
@@ -91,30 +94,41 @@ class HGPCode(QECPatch):
             self.shift_coords(*self.shift)
 
     def _register_qubits(self) -> None:
-        # Data sector V1 x V2: first seed is vertical, second horizontal.
+        # H1 is the horizontal axis and H2 is the vertical axis.  Keep product
+        # sectors visually separate so the algebraic construction is explicit:
+        #
+        #       V1 x V2 data  |  C1 x V2 Z checks
+        #       --------------+------------------
+        #       V1 x C2 X     |  C1 x C2 data
+        #
+        # The +1 offsets leave one empty coordinate row and column as a gutter.
+        right_start = self.h1.num_bits + 1
+        lower_start = self.h2.num_bits + 1
+
+        # Data sector V1 x V2 (upper left).
         for bit_1 in range(self.h1.num_bits):
             for bit_2 in range(self.h2.num_bits):
-                coord = (2 * bit_2, 2 * bit_1)
+                coord = (bit_1, bit_2)
                 self.vv_qubits[(bit_1, bit_2)] = self.add_qubit(*coord, role="data")
 
-        # Data sector C1 x C2.
+        # Data sector C1 x C2 (lower right).
         for check_1 in range(self.h1.num_checks):
             for check_2 in range(self.h2.num_checks):
-                coord = (2 * check_2 + 1, 2 * check_1 + 1)
+                coord = (right_start + check_1, lower_start + check_2)
                 self.cc_qubits[(check_1, check_2)] = self.add_qubit(*coord, role="data")
 
-        # X checks V1 x C2.
+        # X checks V1 x C2 (lower left).
         for bit_1 in range(self.h1.num_bits):
             for check_2 in range(self.h2.num_checks):
-                coord = (2 * check_2 + 1, 2 * bit_1)
+                coord = (bit_1, lower_start + check_2)
                 self.x_check_qubits[(bit_1, check_2)] = self.add_qubit(
                     *coord, role="syndrome_x"
                 )
 
-        # Z checks C1 x V2.
+        # Z checks C1 x V2 (upper right).
         for check_1 in range(self.h1.num_checks):
             for bit_2 in range(self.h2.num_bits):
-                coord = (2 * bit_2, 2 * check_1 + 1)
+                coord = (right_start + check_1, bit_2)
                 self.z_check_qubits[(check_1, bit_2)] = self.add_qubit(
                     *coord, role="syndrome_z"
                 )
