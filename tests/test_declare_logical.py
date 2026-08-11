@@ -81,5 +81,5 @@ def test_census_guardrail_consistent_after_declare():
     n = 2
     t = _tracker(n, [_z(n, 0), _z(n, 1)], [[3], []])
     t.declare_logical(_z(n, 0, 1))
-    absorbed = getattr(t, 'absorbed_logical_rank', 0) or 0
-    assert absorbed + t.logicals.count == t.expected_num_logicals
+    assert t.num_absorbed_dof() + t.logicals.count == t.expected_num_logicals
+    t.validate_logical_count(context="after declare")
