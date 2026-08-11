@@ -1078,6 +1078,13 @@ class CircuitBuilder:
 
         The chunk may freely contain resets, unitaries (incl. XCY/SQRT_X),
         transversal H regions, and M/MX/MY measurements anywhere.
+
+        NOTE: this path transports rows but performs no logical
+        CLASSIFICATION (free directions are promoted to standing logical
+        rows only by the SE/readout paths), so the logical census cannot
+        be validated here - a cold-start relay round legitimately runs
+        before any standing row exists.  Census checkpoints live at the
+        classification boundaries.
         """
         from .relay_flow import solve_relay_round
         from .tracker import _append_detector

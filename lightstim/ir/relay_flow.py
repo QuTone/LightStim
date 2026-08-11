@@ -427,10 +427,11 @@ def solve_relay_round(chunk: stim.Circuit,
         c, d, _ = solve_linear_decomposition(
             basis=basis, targets=log_matrix, reduce_weight=True)
         for i in range(log_matrix.shape[0]):
+            kind = "logical" if i < n_log_real else "absorbed"
             if not d[i]:
                 raise NotImplementedError(
-                    "relay chunk destroys a tracked logical row (no "
-                    "transport or measurement flow exists for it)")
+                    f"relay chunk destroys a tracked {kind} row (no "
+                    f"transport or measurement flow exists for it)")
             yg = np.flatnonzero(c[i][:g])
             img = (np.bitwise_xor.reduce(Q[yg], axis=0)
                    if yg.size else np.zeros(2 * n, dtype=np.uint8))
@@ -444,10 +445,16 @@ def solve_relay_round(chunk: stim.Circuit,
                 stripped = _strip_measured(img, rec)
                 if stripped is None:
                     raise NotImplementedError(
-                        "logical transport image anticommutes with a chunk "
-                        "measurement")
+                        f"{kind} transport image anticommutes with a "
+                        f"chunk measurement")
                 img, rec = stripped
             if not img.any():
+                if any(r < 0 for r in rec):
+                    raise NotImplementedError(
+                        f"relay chunk measures out a {kind} row whose "
+                        f"records carry the UNMEASURED sentinel - its "
+                        f"parity is not banked and cannot become an "
+                        f"observable")
                 # The chunk MEASURED this row: its value is the parity of
                 # the banked seed records XOR the chunk's measuring records —
                 # a logical observable / a resolved absorbed relation.
@@ -506,6 +513,14 @@ def solve_relay_round(chunk: stim.Circuit,
                 if key not in seen_detectors:
                     seen_detectors.add(key)
                     detectors.append(recs)
+
+    # Rows whose records carry the UNMEASURED sentinel (-1) have no banked
+    # parity: any candidate detector built through them would compare an
+    # unbanked, per-shot-random value.  The SE engine skips exactly these
+    # by provenance; the relay path must match (spec anchor:
+    # observationally identical to apply_syndrome_extraction on a
+    # standard round).
+    detectors = [d for d in detectors if all(r >= 0 for r in d)]
 
     # --- 6. detector coordinate hints -------------------------------------
     dets_out: List[Tuple[Set[int], int]] = []

@@ -205,3 +205,95 @@ def test_relay_transports_the_absorbed_ledger():
         "the banked relation stayed in the old Pauli frame"
     assert sorted(tracker.absorbed_ops.records[0]) == sorted(zrecs)
     tracker.validate_logical_count(context="after relay")
+
+
+def test_relay_drops_sentinel_parity_detectors():
+    """A row whose records carry the UNMEASURED sentinel has no banked
+    parity; a candidate detector built through it would compare a
+    per-shot-random value and stim only explodes far away, at DEM time.
+    The SE engine skips these by provenance; the relay path must match."""
+    from lightstim.ir.relay_flow import solve_relay_round
+    from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
+    n = 2
+    row = np.zeros(2 * n, dtype=np.uint8)
+    row[[n + 0, n + 1]] = 1
+    res = solve_relay_round(stim.Circuit("M 0 1"), n, row.reshape(1, -1),
+                            [[UNMEASURED_STAB_RECORD]],
+                            np.zeros((0, 2 * n), dtype=np.uint8), [],
+                            base_record=100)
+    assert all(r >= 0 for recs, _ in res.detectors for r in recs), \
+        f"sentinel leaked into detector records: {res.detectors}"
+
+
+def test_relay_refuses_sentinel_observable():
+    from lightstim.ir.relay_flow import solve_relay_round
+    from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
+    n = 1
+    zrow = np.zeros(2 * n, dtype=np.uint8)
+    zrow[n + 0] = 1
+    with pytest.raises(NotImplementedError, match="sentinel"):
+        solve_relay_round(stim.Circuit("M 0"), n,
+                          np.zeros((0, 2 * n), dtype=np.uint8), [],
+                          np.zeros((0, 2 * n), dtype=np.uint8), [],
+                          base_record=10,
+                          absorbed_matrix=zrow.reshape(1, -1),
+                          absorbed_records=[[UNMEASURED_STAB_RECORD]])
+
+
+def test_relay_error_names_the_absorbed_kind():
+    """Destroying a banked (absorbed) relation must say so - not call it a
+    logical row (review round-2 wording precision)."""
+    from lightstim.ir.relay_flow import solve_relay_round
+    n = 1
+    zrow = np.zeros(2 * n, dtype=np.uint8)
+    zrow[n + 0] = 1
+    with pytest.raises(NotImplementedError, match="absorbed"):
+        solve_relay_round(stim.Circuit("MX 0"), n,
+                          np.zeros((0, 2 * n), dtype=np.uint8), [],
+                          np.zeros((0, 2 * n), dtype=np.uint8), [],
+                          base_record=10,
+                          absorbed_matrix=zrow.reshape(1, -1),
+                          absorbed_records=[[3]])
+
+
+def test_relay_transports_absorbed_through_s_gate():
+    """Frame transport is not H-specific: S sends a banked X relation to
+    the Y relation (both symplectic halves set), records untouched."""
+    from lightstim.ir.relay_flow import solve_relay_round
+    n = 1
+    xrow = np.zeros(2 * n, dtype=np.uint8)
+    xrow[0] = 1
+    res = solve_relay_round(stim.Circuit("S 0"), n,
+                            np.zeros((0, 2 * n), dtype=np.uint8), [],
+                            np.zeros((0, 2 * n), dtype=np.uint8), [],
+                            base_record=0,
+                            absorbed_matrix=xrow.reshape(1, -1),
+                            absorbed_records=[[3]])
+    assert res.new_absorbed_matrix.shape[0] == 1
+    assert res.new_absorbed_matrix[0].tolist() == [1, 1]   # X -> Y
+    assert res.new_absorbed_records == [[3]]
+
+
+def test_relay_double_h_round_trips_the_ledger():
+    """Two transversal-H relays must return the banked relation to its
+    original frame with records intact."""
+    system, tracker, builder = _fresh()
+    _init_z(system, builder)
+    builder.apply_syndrome_extraction(
+        circuit_chunk=RotatedSurfaceCodeExtractionBlock(system).circuit,
+        rounds=1)
+    n = tracker.num_qubits
+    zbar = tracker.logicals.matrix[0].copy()
+    zrecs = list(tracker.logicals.records[0])
+    tracker.logicals.matrix = np.zeros((0, 2 * n), dtype=np.uint8)
+    tracker.logicals.records = []
+    assert tracker.record_absorbed_op(zbar, zrecs)
+
+    relay = stim.Circuit()
+    relay.append("H", list(range(n)))
+    builder.apply_relay_chunk(relay)
+    builder.apply_relay_chunk(relay)
+
+    assert tracker.absorbed_ops.count == 1
+    assert (tracker.absorbed_ops.matrix[0] == zbar).all()
+    assert sorted(tracker.absorbed_ops.records[0]) == sorted(zrecs)
