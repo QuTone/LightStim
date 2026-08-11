@@ -274,6 +274,79 @@ def test_relay_transports_absorbed_through_s_gate():
     assert res.new_absorbed_records == [[3]]
 
 
+def test_relay_rejects_sentinel_fold_in_logical_transport():
+    """Transporting a logical row must not fold through a stabilizer row
+    whose records carry the UNMEASURED sentinel: that row's parity was
+    never banked, so the transported row's records would be fabricated."""
+    from lightstim.ir.relay_flow import solve_relay_round
+    from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
+    n = 2
+    stab = np.zeros(2 * n, dtype=np.uint8)
+    stab[[n + 0, n + 1]] = 1                      # Z0Z1, sentinel records
+    log = np.zeros(2 * n, dtype=np.uint8)
+    log[n + 0] = 1                                # Z0 = Z0Z1 * Z1
+    with pytest.raises(NotImplementedError, match="sentinel"):
+        solve_relay_round(stim.Circuit("R 0"), n, stab.reshape(1, -1),
+                          [[UNMEASURED_STAB_RECORD]],
+                          log.reshape(1, -1), [[]], base_record=0)
+
+
+def test_relay_rejects_cancelling_sentinel_folds():
+    """The killer variant: TWO sentinel rows folded into the same logical
+    transport cancel their -1s under symmetric difference, so a content
+    check on the final record set sees a clean (empty) parity and the
+    measured-out logical becomes a fabricated observable with LER
+    identically zero.  The guard must fire per folded row (provenance),
+    not on the surviving records."""
+    from lightstim.ir.relay_flow import solve_relay_round
+    from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
+    n = 3
+    s1 = np.zeros(2 * n, dtype=np.uint8)
+    s1[[n + 0, n + 1]] = 1                        # Z0Z1
+    s2 = np.zeros(2 * n, dtype=np.uint8)
+    s2[[n + 1, n + 2]] = 1                        # Z1Z2
+    log = np.zeros(2 * n, dtype=np.uint8)
+    log[[n + 0, n + 2]] = 1                       # Z0Z2 = Z0Z1 * Z1Z2
+    with pytest.raises(NotImplementedError, match="sentinel"):
+        solve_relay_round(stim.Circuit("R 0 2"), n, np.vstack([s1, s2]),
+                          [[UNMEASURED_STAB_RECORD],
+                           [UNMEASURED_STAB_RECORD]],
+                          log.reshape(1, -1), [[]], base_record=0)
+
+
+def test_relay_rejects_unsupported_measurement_gates():
+    """MR/MPP produce measurement records but sit outside the relay's
+    supported set; skipping them silently would desynchronise the
+    tracker's measurement count and shift every later rec target (stim
+    does NOT expand MR into M + R)."""
+    from lightstim.ir.relay_flow import measured_qubits_in_order
+    with pytest.raises(NotImplementedError, match="MR"):
+        measured_qubits_in_order(stim.Circuit("MR 0"))
+    with pytest.raises(NotImplementedError, match="MPP"):
+        measured_qubits_in_order(stim.Circuit("MPP X0*X1"))
+
+
+def test_relay_rejects_pending_row_metadata():
+    """apply_relay_chunk wholesale-replaces the stabilizer basis; pending
+    row-index metadata would silently point at DIFFERENT rows afterwards
+    (a stale swlc index reroutes a closure DETECTOR into an
+    OBSERVABLE_INCLUDE at the terminal readout).  Same fail-loud contract
+    as stabilizer_canonicalization."""
+    system, tracker, builder = _fresh()
+    _init_z(system, builder)
+    chunk = RotatedSurfaceCodeExtractionBlock(system).circuit
+    builder.apply_syndrome_extraction(circuit_chunk=chunk, rounds=1)
+
+    tracker.post_select_row_indices.add(0)
+    with pytest.raises(RuntimeError, match="post_select"):
+        builder.apply_relay_chunk(chunk)
+    tracker.post_select_row_indices.clear()
+
+    tracker.stabilizer_with_logical_components.add(0)
+    with pytest.raises(RuntimeError, match="logical_components|recombined"):
+        builder.apply_relay_chunk(chunk)
+
+
 def test_relay_double_h_round_trips_the_ledger():
     """Two transversal-H relays must return the banked relation to its
     original frame with records intact."""

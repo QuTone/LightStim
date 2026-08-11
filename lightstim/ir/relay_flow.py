@@ -33,16 +33,30 @@ import numpy as np
 import stim
 
 from ..utils.linear_algebra import solve_linear_decomposition
+from .tracker import UNMEASURED_STAB_RECORD
 
 _MEAS_NAMES = {"M", "MX", "MY"}
 
 
 def measured_qubits_in_order(chunk: stim.Circuit) -> List[int]:
-    """Global qubit index of every measurement in the chunk, in record order."""
+    """Global qubit index of every measurement in the chunk, in record order.
+
+    Fail-loud contract: any instruction that produces measurement records
+    outside the supported set (M/MX/MY) must raise.  A silently skipped
+    MR/MPP would desynchronise the tracker's measurement count and shift
+    every later detector's rec targets by the miss (stim does NOT expand
+    MR into M+R, so name matching alone would let it through).
+    """
     out: List[int] = []
     for inst in chunk.flattened():
         if inst.name in _MEAS_NAMES:
             out.extend(t.value for t in inst.targets_copy())
+        elif stim.gate_data(inst.name).produces_measurements:
+            raise NotImplementedError(
+                f"relay chunk contains measurement instruction "
+                f"'{inst.name}', outside the supported set "
+                f"{sorted(_MEAS_NAMES)}; its records would silently "
+                f"desynchronise the tracker's measurement count")
     return out
 
 
@@ -227,18 +241,30 @@ def solve_relay_round(chunk: stim.Circuit,
     if n_in:
         joint = np.vstack([joint, np.hstack([stab_matrix, zeros_in])])
 
-    def _combo_records(coeff: np.ndarray) -> Set[int]:
+    # Sentinel provenance: a row whose records carry the UNMEASURED
+    # sentinel has no banked parity.  The poison must be tracked as a FLAG
+    # per fold, never inferred from the surviving record set — two sentinel
+    # rows folded into the same combination cancel their -1s under
+    # symmetric difference and the fabricated (empty/partial) parity would
+    # pass every content-based filter downstream.
+    poisoned_stab = [any(r < 0 for r in rs) for rs in stab_records]
+
+    def _combo_records(coeff: np.ndarray) -> Tuple[Set[int], bool]:
         recs: Set[int] = set()
+        pois = False
         for j in np.flatnonzero(coeff[:g]):
             recs.symmetric_difference_update(
                 base_record + k for k in m_sets[int(j)])
         for k in np.flatnonzero(coeff[g:]):
+            if poisoned_stab[int(k)]:
+                pois = True
             recs.symmetric_difference_update(stab_records[int(k)])
-        return recs
+        return recs, pois
 
     # --- 1. canonical fresh rows: solve [0 | S'] for registered targets --
     fresh_rows: List[np.ndarray] = []
     fresh_recs: List[Set[int]] = []
+    fresh_pois: List[bool] = []
     if canonical_stabs is not None and canonical_stabs.shape[0]:
         targets = np.hstack([np.zeros_like(canonical_stabs), canonical_stabs])
         c, dep, _ = solve_linear_decomposition(
@@ -246,23 +272,28 @@ def solve_relay_round(chunk: stim.Circuit,
         for i in range(canonical_stabs.shape[0]):
             if not dep[i]:
                 continue                    # not established by this round
+            f_recs, f_pois = _combo_records(c[i])
             fresh_rows.append(canonical_stabs[i].copy())
-            fresh_recs.append(_combo_records(c[i]))
+            fresh_recs.append(f_recs)
+            fresh_pois.append(f_pois)
     F = (np.array(fresh_rows, dtype=np.uint8) if fresh_rows
          else np.zeros((0, 2 * n), dtype=np.uint8))
 
-    def _reduce_over_fresh(vec: np.ndarray) -> Tuple[bool, Set[int]]:
-        """Is vec in span(fresh rows)? If so return the pinning records."""
+    def _reduce_over_fresh(vec: np.ndarray) -> Tuple[bool, Set[int], bool]:
+        """Is vec in span(fresh rows)? If so return the pinning records
+        and whether any pinning row is sentinel-poisoned."""
         if F.shape[0] == 0:
-            return (not vec.any()), set()
+            return (not vec.any()), set(), False
         c, dep, _ = solve_linear_decomposition(
             basis=F, targets=vec.reshape(1, -1), reduce_weight=True)
         if not dep[0]:
-            return False, set()
+            return False, set(), False
         recs: Set[int] = set()
+        pois = False
         for i in np.flatnonzero(c[0]):
             recs.symmetric_difference_update(fresh_recs[int(i)])
-        return True, recs
+            pois = pois or fresh_pois[int(i)]
+        return True, recs, pois
 
     # --- 2. intersection accounting -----------------------------------------
     # W = span(input rows) ∩ span(flow inputs): exactly the pinned information
@@ -273,6 +304,7 @@ def solve_relay_round(chunk: stim.Circuit,
     seen_detectors: Set[frozenset] = set()
     transported_rows: List[np.ndarray] = []
     transported_recs: List[Set[int]] = []
+    transported_pois: List[bool] = []
     if n_in:
         W = _intersection_basis(stab_matrix, P, preferred=canonical_stabs)
         for w_vec in W:
@@ -280,7 +312,10 @@ def solve_relay_round(chunk: stim.Circuit,
                 basis=stab_matrix, targets=w_vec.reshape(1, -1),
                 reduce_weight=True)
             hist: Set[int] = set()
+            hist_pois = False
             for s in np.flatnonzero(ch[0]):
+                if poisoned_stab[int(s)]:
+                    hist_pois = True
                 hist.symmetric_difference_update(stab_records[int(s)])
             cy, dy, _ = solve_linear_decomposition(
                 basis=P, targets=w_vec.reshape(1, -1), reduce_weight=True)
@@ -291,8 +326,10 @@ def solve_relay_round(chunk: stim.Circuit,
             for j in yg:
                 recs.symmetric_difference_update(
                     base_record + m for m in m_sets[int(j)])
-            in_span, pin_recs = _reduce_over_fresh(img)
+            in_span, pin_recs, pin_pois = _reduce_over_fresh(img)
             if in_span:
+                if hist_pois or pin_pois:
+                    continue    # provenance skip: parity was never banked
                 det = recs ^ pin_recs
                 key = frozenset(det)
                 if det and key not in seen_detectors:
@@ -301,6 +338,7 @@ def solve_relay_round(chunk: stim.Circuit,
             else:
                 transported_rows.append(img)
                 transported_recs.append(recs)
+                transported_pois.append(hist_pois)
 
     # --- 3. completion: pure preparation flows (e.g. Y_L birth) -------------
     completion_rows: List[np.ndarray] = []
@@ -342,10 +380,17 @@ def solve_relay_round(chunk: stim.Circuit,
         """If the row's records are exactly a combination of fresh rows'
         records, XOR those fresh rows in: the surviving coset keeps a
         records-less (pristine) representative, which downstream promotion
-        machinery requires. Fresh rows themselves are never modified."""
+        machinery requires. Fresh rows themselves are never modified.
+        Sentinel-poisoned fresh rows are excluded from the cleaning basis:
+        their records are not banked parities and XORing them in would
+        launder the poison out of sight."""
         if not rec or F.shape[0] == 0:
             return row, rec
-        universe = sorted(set().union(rec, *fresh_recs))
+        clean_idx = [i for i in range(F.shape[0]) if not fresh_pois[i]]
+        if not clean_idx:
+            return row, rec
+        universe = sorted(set().union(
+            rec, *(fresh_recs[i] for i in clean_idx)))
         col = {r: i for i, r in enumerate(universe)}
 
         def _v(s: Set[int]) -> np.ndarray:
@@ -354,7 +399,8 @@ def solve_relay_round(chunk: stim.Circuit,
                 out[col[r]] = 1
             return out
 
-        basis = np.array([_v(fr) for fr in fresh_recs], dtype=np.uint8)
+        basis = np.array([_v(fresh_recs[i]) for i in clean_idx],
+                         dtype=np.uint8)
         c, dep, _ = solve_linear_decomposition(
             basis=basis, targets=_v(rec).reshape(1, -1), reduce_weight=True)
         if not dep[0]:
@@ -362,22 +408,28 @@ def solve_relay_round(chunk: stim.Circuit,
         new_row = row.copy()
         new_rec = set(rec)
         for i in np.flatnonzero(c[0]):
-            new_row ^= F[int(i)]
-            new_rec.symmetric_difference_update(fresh_recs[int(i)])
+            new_row ^= F[clean_idx[int(i)]]
+            new_rec.symmetric_difference_update(fresh_recs[clean_idx[int(i)]])
         if new_rec or not new_row.any():
             return row, rec
         return new_row, new_rec
 
     rows: List[np.ndarray] = list(F)
     recs_out: List[Set[int]] = [set(r) for r in fresh_recs]
-    for row, rec in list(zip(transported_rows, transported_recs)) + \
-            list(zip(completion_rows, completion_recs)):
+    pois_out: List[bool] = list(fresh_pois)
+    for row, rec, pois in (
+            list(zip(transported_rows, transported_recs, transported_pois))
+            + [(r, rc, False)
+               for r, rc in zip(completion_rows, completion_recs)]):
         stripped = _strip_measured(row, rec)
         if stripped is None:
             continue
         row, rec = stripped
-        row, rec = _clean_by_fresh(row, rec)
+        if not pois:
+            row, rec = _clean_by_fresh(row, rec)
         if not row.any():
+            if pois:
+                continue        # provenance skip: parity was never banked
             key = frozenset(rec)
             if rec and key not in seen_detectors:
                 seen_detectors.add(key)
@@ -388,8 +440,9 @@ def solve_relay_round(chunk: stim.Circuit,
         if _rank(np.vstack([cur, row.reshape(1, -1)])) > _rank(cur):
             rows.append(row)                # kept AS IS: no record blending
             recs_out.append(rec)
+            pois_out.append(pois)
         else:
-            ok, pin = _reduce_over_fresh(row)
+            ok, pin, pin_pois = _reduce_over_fresh(row)
             if not ok:
                 c2, d2, _ = solve_linear_decomposition(
                     basis=cur, targets=row.reshape(1, -1),
@@ -398,6 +451,9 @@ def solve_relay_round(chunk: stim.Circuit,
                 if d2[0]:
                     for i in np.flatnonzero(c2[0]):
                         pin.symmetric_difference_update(recs_out[int(i)])
+                        pin_pois = pin_pois or pois_out[int(i)]
+            if pois or pin_pois:
+                continue        # provenance skip: parity was never banked
             det = rec ^ pin
             key = frozenset(det)
             if det and key not in seen_detectors:
@@ -440,6 +496,18 @@ def solve_relay_round(chunk: stim.Circuit,
                 rec.symmetric_difference_update(
                     base_record + m for m in m_sets[int(j)])
             for s in np.flatnonzero(c[i][g:]):
+                if poisoned_stab[int(s)]:
+                    # The fold would rewrite this row's parity through a
+                    # stabilizer whose own parity was never banked.  Two
+                    # such folds can even cancel their sentinels and
+                    # fabricate a clean-looking (empty) parity, so the
+                    # guard must sit HERE, per folded row - a content
+                    # check on the final record set is blind to it.
+                    raise NotImplementedError(
+                        f"relay transport of a {kind} row folds through "
+                        f"stabilizer row {int(s)} whose records carry the "
+                        f"UNMEASURED sentinel - the row's parity is not "
+                        f"banked and cannot be reconstructed")
                 rec.symmetric_difference_update(stab_records[int(s)])
             if img.any():
                 stripped = _strip_measured(img, rec)
@@ -497,13 +565,16 @@ def solve_relay_round(chunk: stim.Circuit,
         chosen = [_rvec(det) for det in detectors]
         for y in null:
             recs: Set[int] = set()
+            pois = False
             for j in np.flatnonzero(y[:g]):
                 recs.symmetric_difference_update(
                     base_record + m for m in m_sets[int(j)])
             for k in np.flatnonzero(y[g:]):
+                if poisoned_stab[int(k)]:
+                    pois = True
                 recs.symmetric_difference_update(stab_records[int(k)])
-            if not recs:
-                continue
+            if pois or not recs:
+                continue    # provenance skip: parity was never banked
             cur = (np.array(chosen, dtype=np.uint8) if chosen
                    else np.zeros((0, len(universe)), dtype=np.uint8))
             v = _rvec(recs)
@@ -514,12 +585,11 @@ def solve_relay_round(chunk: stim.Circuit,
                     seen_detectors.add(key)
                     detectors.append(recs)
 
-    # Rows whose records carry the UNMEASURED sentinel (-1) have no banked
-    # parity: any candidate detector built through them would compare an
-    # unbanked, per-shot-random value.  The SE engine skips exactly these
-    # by provenance; the relay path must match (spec anchor:
-    # observationally identical to apply_syndrome_extraction on a
-    # standard round).
+    # Backstop only: candidates built through sentinel rows are skipped BY
+    # PROVENANCE at each fold above (the SE engine's rule) - a content
+    # filter alone is unsound because paired sentinels cancel under
+    # symmetric difference and leave a clean-looking record set.  This
+    # filter remains for rows whose OWN seed records carry the sentinel.
     detectors = [d for d in detectors if all(r >= 0 for r in d)]
 
     # --- 6. detector coordinate hints -------------------------------------
@@ -533,7 +603,14 @@ def solve_relay_round(chunk: stim.Circuit,
     res = RelayResult(measured_qubits=measured, detectors=dets_out)
     res.new_stab_matrix = (np.array(rows, dtype=np.uint8) if rows
                            else np.zeros((0, 2 * n), dtype=np.uint8))
-    res.new_stab_records = [sorted(r) for r in recs_out]
+    # A poisoned transported row keeps its Pauli but its records collapse
+    # to the bare sentinel (the _clean_rows convention): the parity is not
+    # reconstructable, and a cancelled-sentinel record set must not
+    # masquerade as pristine (records == [] would make the row eligible
+    # for implicit logical promotion downstream).
+    res.new_stab_records = [
+        [UNMEASURED_STAB_RECORD] if p else sorted(r)
+        for r, p in zip(recs_out, pois_out)]
     res.new_log_matrix = (np.array(new_log_rows, dtype=np.uint8)
                           if new_log_rows
                           else np.zeros((0, 2 * n), dtype=np.uint8))

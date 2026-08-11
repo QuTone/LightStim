@@ -1090,6 +1090,14 @@ class CircuitBuilder:
         from .tracker import _append_detector
         from ..utils.tableau_utils import stabilizers_to_symplectic
 
+        # The relay wholesale-replaces the stabilizer basis, so pending
+        # row-index metadata (post-selection marks, gauge/logical
+        # classification) would silently point at DIFFERENT rows afterwards
+        # — a stale swlc index reroutes a legitimate closure DETECTOR into
+        # an OBSERVABLE_INCLUDE at the terminal readout.  Same contract as
+        # stabilizer_canonicalization / rebase: fail loud.
+        self.tracker._reject_pending_row_metadata("apply_relay_chunk")
+
         base = self.tracker.total_measurements
         stab_dicts = [self.system.stabilizers[i]
                       for i in sorted(self.system.active_stabilizer_indices)]
@@ -1150,6 +1158,9 @@ class CircuitBuilder:
         self.tracker.logicals.matrix = result.new_log_matrix
         self.tracker.logicals.records = [list(r)
                                          for r in result.new_log_records]
+        # any leftover per-row gauge pairing is meaningless on the new basis
+        # (its swlc partner set was verified empty at entry)
+        self.tracker._gauge_logical_vectors = []
         # the absorbed ledger rides the same transport (review blocker:
         # a Clifford relay must move it to the new frame)
         self.tracker.absorbed_ops.matrix = result.new_absorbed_matrix
