@@ -301,32 +301,7 @@ class QECPatch(ABC):
 
         # 5. Update accumulated rotation angle and rebuild grid map
         self.rotation_angle = (self.rotation_angle + theta) % (2 * np.pi)
-
-    def rotate_90(self, clockwise: bool = True):
-        """Rotate the whole patch exactly 90° about its bounding-box centre.
-
-        Clockwise (default) sends the base ``X_vertical`` patch to
-        ``X_horizontal``: X̄ vertical→horizontal, Z̄ horizontal→vertical, the
-        checkerboard carried with it and every stabilizer/logical Pauli TYPE
-        preserved (``U_L = I`` — a pure geometric rotation, NOT a Hadamard).
-
-        Only coordinate metadata moves; the index-keyed stabilizer/logical
-        records are untouched (they follow the qubits).  Coordinates are snapped
-        back onto the integer lattice so no float drift accumulates — a rotated
-        patch is byte-identical to the shape the routed coupler builds for a
-        minority patch, so the existing native-lock / bus machinery hosts it.
-        """
-        self.rotate_coords(-np.pi / 2 if clockwise else np.pi / 2)
-        # kill the ~1e-16 float drift from cos/sin(π/2) so coords stay exact
-        self.qubit_coords = {i: self.snap_coord(c)
-                             for i, c in self.qubit_coords.items()}
-        self.index_map = {c: i for i, c in self.qubit_coords.items()}
-        self._rebuild_grid_map()
-        for stab in self.stabilizers:
-            idx = stab.get('syn_idx')
-            if idx is not None and idx in self.qubit_coords:
-                stab['syn_coord'] = self.qubit_coords[idx]
-
+    
     def _get_bounds(self) -> Tuple[float, float, float, float]:
         """Returns (min_x, max_x, min_y, max_y)"""
         xs = [c[0] for c in self.qubit_coords.values()]

@@ -46,13 +46,13 @@ class _MeasurementBlockAnalysis:
 
 class CircuitBuilder:
     """
-    Constructs the Stim circuit for QEC experiments. 
+    Constructs the Stim circuit for QEC experiments.
     SyndromeTracker automatically generates detectors and logical observables.
     NoiseInjector automatically injects noise to appropriate places according to the given noise model.
     """
 
-    def __init__(self, 
-                 tracker: SyndromeTracker, 
+    def __init__(self,
+                 tracker: SyndromeTracker,
                  system_config: Any,
                  if_detector: bool = True):
         """
@@ -140,7 +140,7 @@ class CircuitBuilder:
             self.circuit.append("R", qubit_indices_z, tag=tag)
         if qubit_indices_y:
             self.circuit.append("RY", qubit_indices_y, tag=tag)
-        
+
         init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
 
         self.tracker.process_initialization(init_tableau)
@@ -190,118 +190,14 @@ class CircuitBuilder:
                 X-ancilla are still measured (so the tableau update is correct) but
                 suppressed from the DEM. State is stored for apply_data_readout(z_only=True).
         """
-        if measurement_blocks is not None:
-            # multi-block round: route to the upstream measurement-block engine
-            # (explicit tracker boundaries within the round, e.g. middle-out
-            # color-code circuits).  The legacy single-block path below stays
-            # byte-identical for every existing protocol.
-            return self._apply_syndrome_extraction_blocks(
-                circuit_chunk, rounds=rounds, noiseless=noiseless,
-                z_only=z_only, measurement_blocks=measurement_blocks)
-        if rounds < 1: return
-        if noiseless:
-            circuit_chunk = _make_noiseless(circuit_chunk)
-
-        # ======================================================================
-        # Phase 1: First Round (Tracker-Driven)
-        # ======================================================================
-        _log.debug("Applying first round of syndrome extraction...")
-        # Analyze Ideal Basis for the Tracker
-        back_propagated_paulis, syn_qubit_indices = self._get_back_propagated_pauli(circuit_chunk, self.tracker.num_qubits)
-        syn_coords = [self.system.qubit_coords[i] for i in syn_qubit_indices] # extract from circuit_chunk, more robust
-
-        # Build Z-only mask: True for X-ancilla (suppress their DETECTORs)
-        no_detector_mask = None
-        if z_only:
-            x_anc_set = set(self.system.active_syndrome_indices_x)
-            no_detector_mask = np.array([q in x_anc_set for q in syn_qubit_indices], dtype=bool)
-            self._z_only_syn_qubit_indices = syn_qubit_indices
-            self._z_only_no_detector_mask  = no_detector_mask
-            self._z_only_n_meas_per_round  = len(syn_qubit_indices)
-
-        # Append chunk to actual circuit (optionally tagging all instructions as noiseless)
-        if noiseless:
-            for inst in circuit_chunk:
-                if isinstance(inst, stim.CircuitInstruction):
-                    self.circuit.append(inst.name, inst.targets_copy(), inst.gate_args_copy(), tag="noiseless")
-                else:
-                    self.circuit.append(inst)
-        else:
-            self.circuit += circuit_chunk
-
-        total_measurements = self.tracker.total_measurements
-        meas_rec_to_idx_map_update = {total_measurements + i: syn_idx for i, syn_idx in enumerate(syn_qubit_indices)}
-        self.tracker.meas_rec_to_idx_map.update(meas_rec_to_idx_map_update)
-        # Ask Tracker to process it (Update Tableau + Generate Detectors)
-        if self.if_detector:
-            # Time shift before first-round detectors so that each call to
-            # apply_syndrome_extraction occupies its own time slice.  Without
-            # this, consecutive calls (e.g. surface-only SE then combined SE)
-            # place their detectors at the same t coordinate, confusing the
-            # decoder's matching graph.
-            self.circuit.append("SHIFT_COORDS", [], [0, 0, 1])
-
-            self.tracker.process_mid_measurement(
-                circuit=self.circuit,
-                back_propagated_paulis=back_propagated_paulis,
-                syn_coords=syn_coords,
-                no_detector_mask=no_detector_mask,
-            )
-
-        # ======================================================================
-        # Phase 2: Repeat Rounds (Stim Loop)
-        # ======================================================================
-        if rounds > 1:
-            _log.debug("Applying rest rounds of syndrome extraction...")
-
-            loop_body = stim.Circuit()
-            num_syn = len(syn_coords)
-
-            # Circuit operations for the repeated block
-            loop_body.append("TICK")
-            if noiseless:
-                for inst in circuit_chunk:
-                    if isinstance(inst, stim.CircuitInstruction):
-                        loop_body.append(inst.name, inst.targets_copy(), inst.gate_args_copy(), tag="noiseless")
-                    else:
-                        loop_body.append(inst)
-            else:
-                loop_body += circuit_chunk
-            
-            if self.if_detector:
-                # Time Shift for visualization
-                loop_body.append("SHIFT_COORDS", [], [0, 0, 1])
-
-                # Construct Repeated Detectors: rec[-k] ^ rec[-k-num_syn]
-                for i in range(num_syn):
-                    if no_detector_mask is not None and no_detector_mask[i]:
-                        continue  # z_only: skip X-ancilla detectors
-                    # Stim record indices are relative to the current moment in the loop
-                    rec_current = -num_syn + i
-                    rec_prev = -num_syn + i - num_syn
-
-                    coord = list(syn_coords[i]) + [0]
-                    _append_detector(
-                        loop_body,
-                        [stim.target_rec(rec_current), stim.target_rec(rec_prev)],
-                        coord,
-                        post_select=tuple(coord) in self.tracker.post_select_detector_coords,
-                    ) 
-            
-            self.circuit.append(stim.CircuitRepeatBlock(rounds - 1, loop_body))
-
-            # Update the meas_rec_to_idx_map for the repeated rounds
-            total_measurements = self.tracker.total_measurements
-            for r in range(rounds - 1):
-                self.tracker.meas_rec_to_idx_map.update({total_measurements + num_syn * r + i: syn_idx for i, syn_idx in enumerate(syn_qubit_indices)})
-            
-            # Update Tracker Counter, but the tableau does not need to be updated again
-            meas_record_offset = num_syn * (rounds - 1)
-            self.tracker.total_measurements += meas_record_offset
-            for i in range(len(syn_coords)):
-                records = self.tracker.stabilizers.records[i]
-                shift_records = [rec + meas_record_offset for rec in records]
-                self.tracker.stabilizers.records[i] = shift_records
+        # ONE engine: every round goes through the measurement-block path
+        # (the engine on main).  A call without explicit blocks treats the
+        # whole chunk as a single block; the legacy single-block engine is
+        # gone (review: do not maintain two syndrome-extraction engines).
+        return self._apply_syndrome_extraction_blocks(
+            circuit_chunk, rounds=rounds, noiseless=noiseless,
+            z_only=z_only,
+            measurement_blocks=tuple(measurement_blocks or (circuit_chunk,)))
 
     def _apply_syndrome_extraction_blocks(self,
                                   circuit_chunk: stim.Circuit,
@@ -1061,10 +957,10 @@ class CircuitBuilder:
         # We ignore measurement/reset to treat the circuit as a unitary operation for analysis.
         se_tableau = stim.Tableau.from_circuit(circuit_chunk, ignore_noise=True, ignore_measurement=True, ignore_reset=True)
         se_tableau_inverse = se_tableau.inverse()
-        
+
         # 6 outputs: x2x, x2z, z2x, z2z, x_signs, z_signs
         x2x, x2z, z2x, z2z, _, _ = se_tableau_inverse.to_numpy()
-        
+
         # Convert to int
         x2x_int = x2x.astype(int)
         x2z_int = x2z.astype(int)
@@ -1144,7 +1040,7 @@ class CircuitBuilder:
 
         # Padding the back-propagated Pauli string to the full size of the system
         current_size = back_pauli_x.shape[1]
-        
+
         if current_size < num_qubits:
             pad_width = num_qubits - current_size
             # Pad indices: ((top, bottom), (left, right))
@@ -1156,7 +1052,7 @@ class CircuitBuilder:
 
         # stack x_part and z_part to get the full 2n-bitstring
         back_pauli = np.hstack([back_pauli_x, back_pauli_z])
-        
+
         if include_measurement_bases:
             return (
                 back_pauli,
@@ -1432,13 +1328,13 @@ class CircuitBuilder:
     # F. Final Build & Noise Injection
     # --------------------------------------------------------------------------
     def build_noisy_circuit(
-        self, 
+        self,
         noise_params: NoiseConfig,
         noise_model: str = 'circuit_level'
     ) -> stim.Circuit:
         """
         Consumes the clean circuit and applies noise using the specified model strategy.
-        
+
         Args:
             noise_params: Noise parameters (NoiseConfig).
             noise_model: The name of the factory method in NoiseInjector to use.
@@ -1447,16 +1343,16 @@ class CircuitBuilder:
         """
         # 1. Construct the expected factory method name
         method_name = f"from_{noise_model}"
-        
+
         # 2. Dynamically retrieve the method from the NoiseInjector class
         if not hasattr(NoiseInjector, method_name):
             # Fallback or nice error message showing available options
             valid_methods = [m.replace("from_", "") for m in dir(NoiseInjector) if m.startswith("from_")]
             raise ValueError(f"Unknown noise model '{noise_model}'. "
                              f"Expected one of: {valid_methods}")
-        
+
         factory_method = getattr(NoiseInjector, method_name)
-        
+
         # 3. Inject noise
         # Assumptions: All factory methods must accept (config, data_qubits)
         data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
