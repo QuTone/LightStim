@@ -138,6 +138,8 @@ print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 | Color (6-6-6) | `ColorCode` | Fold-transversal H/S gates |
 | Hypergraph product | `HGPCode` | Binary seed matrices; product-coloration SE |
 | Bivariate bicycle | `BBCode` | [[144,12,12]] gross code etc. |
+| Kasai (affine-permutation) | `KasaiCode` | Rate-1/2 qLDPC; Chen transversal SE block |
+| GALA | `GalaCode` | Group-action lifts over `H_k x C_m`; [[132,30,12]] etc. |
 | PQRM | `PQRMPatch` | Transversal T gate; CrossLS protocol |
 | Repetition | `RepetitionCode` | Classical benchmark |
 
