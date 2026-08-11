@@ -175,6 +175,13 @@ class RelayResult:
     # logicals MEASURED OUT by this chunk (transport flow ends at identity):
     # (original logical row index, absolute record set of the observable —
     # the row's banked seed records XOR the chunk's measuring records)
+    # absorbed-relation ledger, transported exactly like logical rows:
+    new_absorbed_matrix: np.ndarray = None
+    new_absorbed_records: List[List[int]] = field(default_factory=list)
+    # absorbed relations MEASURED OUT by this chunk (resolved: their value
+    # is the parity of banked seed records XOR the measuring records):
+    measured_absorbed: List[Tuple[int, List[int]]] = field(
+        default_factory=list)
     measured_logicals: List[Tuple[int, List[int]]] = field(
         default_factory=list)
 
@@ -186,7 +193,9 @@ def solve_relay_round(chunk: stim.Circuit,
                       log_matrix: np.ndarray,
                       log_records: List[List[int]],
                       base_record: int,
-                      canonical_stabs: Optional[np.ndarray] = None
+                      canonical_stabs: Optional[np.ndarray] = None,
+                      absorbed_matrix: Optional[np.ndarray] = None,
+                      absorbed_records: Optional[List[List[int]]] = None
                       ) -> RelayResult:
     n = num_qubits
     measured = measured_qubits_in_order(chunk)
@@ -395,10 +404,24 @@ def solve_relay_round(chunk: stim.Circuit,
                 seen_detectors.add(key)
                 detectors.append(det)
 
-    # --- 5. transport logical rows; measured-out logicals -> observables --
+    # --- 5. transport logical AND absorbed rows; measured-out -> resolved --
+    # The absorbed ledger rows are Pauli operators with banked records,
+    # exactly like logical rows - transport them through the same flows
+    # (review blocker: a Clifford relay must move the ledger to the new
+    # frame; the census cannot catch the corruption, rank is frame-
+    # invariant).
+    n_log_real = log_matrix.shape[0] if log_matrix is not None else 0
+    if absorbed_matrix is not None and absorbed_matrix.shape[0]:
+        log_matrix = (np.vstack([log_matrix, absorbed_matrix])
+                      if n_log_real else absorbed_matrix)
+        log_records = (list(log_records) if log_records else []) + [
+            list(r) for r in absorbed_records]
     new_log_rows: List[np.ndarray] = []
     new_log_recs: List[List[int]] = []
     measured_logicals: List[Tuple[int, List[int]]] = []
+    new_absorbed_rows: List[np.ndarray] = []
+    new_absorbed_recs: List[List[int]] = []
+    measured_absorbed: List[Tuple[int, List[int]]] = []
     if log_matrix is not None and log_matrix.shape[0] > 0:
         basis = np.vstack([P, stab_matrix]) if n_in else P
         c, d, _ = solve_linear_decomposition(
@@ -425,13 +448,20 @@ def solve_relay_round(chunk: stim.Circuit,
                         "measurement")
                 img, rec = stripped
             if not img.any():
-                # The chunk MEASURED this logical: its value is the parity of
+                # The chunk MEASURED this row: its value is the parity of
                 # the banked seed records XOR the chunk's measuring records —
-                # a logical observable, not a detector.
-                measured_logicals.append((i, sorted(rec)))
+                # a logical observable / a resolved absorbed relation.
+                if i < n_log_real:
+                    measured_logicals.append((i, sorted(rec)))
+                else:
+                    measured_absorbed.append((i - n_log_real, sorted(rec)))
                 continue
-            new_log_rows.append(img)
-            new_log_recs.append(sorted(rec))
+            if i < n_log_real:
+                new_log_rows.append(img)
+                new_log_recs.append(sorted(rec))
+            else:
+                new_absorbed_rows.append(img)
+                new_absorbed_recs.append(sorted(rec))
 
     # --- 5b. completeness: the FULL deterministic-parity space ------------
     # Combos (y over gens, c over input rows) with Σy·p ⊕ Σc·S = 0 AND
@@ -494,4 +524,9 @@ def solve_relay_round(chunk: stim.Circuit,
                           else np.zeros((0, 2 * n), dtype=np.uint8))
     res.new_log_records = new_log_recs
     res.measured_logicals = measured_logicals
+    res.new_absorbed_matrix = (np.array(new_absorbed_rows, dtype=np.uint8)
+                               if new_absorbed_rows
+                               else np.zeros((0, 2 * n), dtype=np.uint8))
+    res.new_absorbed_records = new_absorbed_recs
+    res.measured_absorbed = measured_absorbed
     return res

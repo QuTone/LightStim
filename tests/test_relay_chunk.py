@@ -172,3 +172,36 @@ def test_readout_after_relay_round_emits_observable():
     assert _noiseless_clean(c)
     dem = c.detector_error_model(decompose_errors=True)
     assert dem.num_observables == 1
+
+
+def test_relay_transports_the_absorbed_ledger():
+    """Review blocker: a Clifford relay must move the absorbed-relation
+    ledger to the new Pauli frame.  Transversal H sends a banked Z
+    relation to the X relation; before the fix the ledger kept the stale
+    Z row while the census stayed silent (rank is frame-invariant)."""
+    system, tracker, builder = _fresh()
+    _init_z(system, builder)
+    builder.apply_syndrome_extraction(
+        circuit_chunk=RotatedSurfaceCodeExtractionBlock(system).circuit,
+        rounds=1)
+    n = tracker.num_qubits
+
+    # bank the standing logical as an absorbed relation (its standing row
+    # leaves the tableau; the budget still expects one DOF somewhere)
+    zbar = tracker.logicals.matrix[0].copy()
+    zrecs = list(tracker.logicals.records[0])
+    tracker.logicals.matrix = np.zeros((0, 2 * n), dtype=np.uint8)
+    tracker.logicals.records = []
+    assert tracker.record_absorbed_op(zbar, zrecs)
+    tracker.validate_logical_count(context="after banking")
+
+    relay = stim.Circuit()
+    relay.append("H", list(range(n)))
+    builder.apply_relay_chunk(relay)
+
+    expected = np.concatenate([zbar[n:], zbar[:n]])  # H: X- and Z-halves swap
+    assert tracker.absorbed_ops.count == 1
+    assert (tracker.absorbed_ops.matrix[0] == expected).all(), \
+        "the banked relation stayed in the old Pauli frame"
+    assert sorted(tracker.absorbed_ops.records[0]) == sorted(zrecs)
+    tracker.validate_logical_count(context="after relay")

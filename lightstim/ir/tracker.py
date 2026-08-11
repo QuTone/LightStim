@@ -101,8 +101,8 @@ class SyndromeTracker:
         self.total_measurements = 0
         self.total_observables = 0
         self.meas_rec_to_idx_map = {}
-        
-        # Track the current stabilizers and logicals of the system 
+
+        # Track the current stabilizers and logicals of the system
         # Note 1: Technically, logicals are also stabilizers of the system, define the logical states
         # Note 2: Stabilizer tableau allows linear dependencies between rows (e.g. toric code, BB code), but logicals do not in general..
         self.stabilizers = PauliTableau(num_qubits)
@@ -485,7 +485,7 @@ class SyndromeTracker:
         self.logicals.records = new_log_records
 
         self.validate_logical_count(context="stabilizer canonicalization")
-    
+
     def logical_canonicalization(
         self,
         canonical_logicals: Dict[int, np.ndarray],
@@ -1029,7 +1029,7 @@ class SyndromeTracker:
         # ======================================================================
         num_stabs = self.stabilizers.count
         num_logs = self.logicals.count
-        
+
         # If logicals is empty, full_tableau is just stabilizers
         if num_logs > 0:
             full_matrix = np.vstack([self.stabilizers.matrix, self.logicals.matrix])
@@ -1038,7 +1038,7 @@ class SyndromeTracker:
         else:
             full_matrix = self.stabilizers.matrix.copy() # Copy to avoid reference issues during loop
             full_records = list(self.stabilizers.records) # Deep copy of list structure
-        
+
         # ======================================================================
         # Step 2: Process Back-propagated Pauli measurements (Update / Detector)
         # ======================================================================
@@ -1651,7 +1651,7 @@ class SyndromeTracker:
         # ======================================================================
         num_stabs = self.stabilizers.count
         num_logs = self.logicals.count
-        
+
         # If logicals is empty, full_tableau is just stabilizers
         if num_logs > 0:
             full_matrix = np.vstack([self.stabilizers.matrix, self.logicals.matrix])
@@ -1680,7 +1680,7 @@ class SyndromeTracker:
                         _terms.append(f"{'Y' if _x and _z else ('X' if _x else 'Z')}{_q}")
                 print(f"[row] pmm#{self._pmm_call} log{_k}: {' '.join(_terms)}",
                       file=_sys.stderr)
-        
+
         # ======================================================================
         # Step 2: Process Back-propagated Pauli measurements (Update / Detector)
         # ======================================================================

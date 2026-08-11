@@ -1098,6 +1098,8 @@ class CircuitBuilder:
             log_records=self.tracker.logicals.records,
             base_record=base,
             canonical_stabs=canonical,
+            absorbed_matrix=self.tracker.absorbed_ops.matrix,
+            absorbed_records=self.tracker.absorbed_ops.records,
         )
 
         if self.circuit and self.circuit[-1].name != "TICK":
@@ -1141,6 +1143,11 @@ class CircuitBuilder:
         self.tracker.logicals.matrix = result.new_log_matrix
         self.tracker.logicals.records = [list(r)
                                          for r in result.new_log_records]
+        # the absorbed ledger rides the same transport (review blocker:
+        # a Clifford relay must move it to the new frame)
+        self.tracker.absorbed_ops.matrix = result.new_absorbed_matrix
+        self.tracker.absorbed_ops.records = [
+            list(r) for r in result.new_absorbed_records]
 
         # Logicals measured out by this chunk become logical observables: the
         # emitted parity is the row's banked seed records XOR the chunk's
@@ -1150,6 +1157,17 @@ class CircuitBuilder:
         if result.measured_logicals:
             total = self.tracker.total_measurements
             for _, recs in result.measured_logicals:
+                self.circuit.append(
+                    "OBSERVABLE_INCLUDE",
+                    [stim.target_rec(r - total) for r in recs],
+                    [self.tracker.allocate_observable()])
+                self.tracker.expected_num_logicals -= 1
+        # an absorbed relation the chunk measured out is RESOLVED: its
+        # value enters an observable and its DOF leaves the budget, the
+        # same account as a measured-out standing logical.
+        if result.measured_absorbed:
+            total = self.tracker.total_measurements
+            for _, recs in result.measured_absorbed:
                 self.circuit.append(
                     "OBSERVABLE_INCLUDE",
                     [stim.target_rec(r - total) for r in recs],
