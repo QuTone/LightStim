@@ -148,6 +148,8 @@ def test_solves_bb_code_dem():
     reach weight 13, versus a handful for the surface code. This is the regime
     where solver behaviour diverged in benchmarking, so it needs coverage.
     """
+    from scipy.optimize import Bounds, LinearConstraint, milp
+
     dem = _bb_dem()
     H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=True)
     assert np.asarray(H.sum(axis=1)).ravel().mean() > 50, "expected a dense DEM"
@@ -155,10 +157,27 @@ def test_solves_bb_code_dem():
     detectors, _, _ = dem.compile_sampler(seed=7).sample(shots=5)
     decoder = get_decoder("mle-ilp", backend="cpu")
     decoder.setup(H=H, priors=priors)
+
+    m, n = H.shape
+    rowsum = np.asarray(H.sum(axis=1)).ravel()
+    A = sp.hstack([H.astype(float), -2.0 * sp.eye(m, format="csr")],
+                  format="csr")
+    c = np.concatenate([decoder._w, np.zeros(m)])
+    bounds = Bounds(np.zeros(n + m),
+                    np.concatenate([np.ones(n), np.floor(rowsum / 2.0)]))
+
     for syndrome in detectors.astype(np.uint8):
         correction, ok = decoder.decode_single(syndrome)
         assert ok
         assert np.array_equal((H @ correction) % 2, syndrome)
+        # Optimality, not just feasibility: this is the regime where cut
+        # generation does the most work, so it is where it could go wrong.
+        reference = milp(c=c,
+                         constraints=LinearConstraint(A, syndrome.astype(float),
+                                                      syndrome.astype(float)),
+                         integrality=np.ones(n + m), bounds=bounds)
+        assert reference.success
+        assert decoder._w @ correction == pytest.approx(reference.fun, abs=1e-6)
 
 
 @pytest.mark.slow
