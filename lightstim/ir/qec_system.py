@@ -574,10 +574,17 @@ class QECSystem:
         self.active_stabilizer_indices.update(restored_uids)
 
     def retire_measured_patch(self, name):
-        """After a patch's data qubits have been destructively measured out, free
-        it: deactivate its stabilizers and retire its qubits from the tracker
-        (clean shrink), then re-sync the logical budget to the standing logical
-        count. Qubit indices stay allocated (masked) so global indexing is stable."""
+        """After a patch's data qubits have been destructively measured out,
+        retire it: deactivate its stabilizers and retire its DATA qubits from
+        the tracker (clean shrink), then mirror the system's static logical
+        count from the tracker's budget. Qubit indices stay allocated
+        (masked) so global indexing is stable.
+
+        Scope: only the patch's data qubits go dormant here. Its syndrome
+        ancillas remain in ``active_qubit_indices`` — releasing them (needed
+        only when a later patch or corridor overlaps the old ancilla
+        coordinates) is the corridor-reuse layer's responsibility; an
+        overlap with a still-active ancilla fails loud in add_patch."""
         # NOTE: unlike remove_coupler, we intentionally do NOT prune data_indices /
         # index_to_owner_map / qubit_coords here — the retired patch's coords linger
         # harmlessly (SE only measures ACTIVE stabilizers) and the end-readout + noise

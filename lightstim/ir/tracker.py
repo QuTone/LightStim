@@ -649,10 +649,16 @@ class SyndromeTracker:
         births records-less rows, so a record-pinned logical needs this
         explicit declaration. The row moves to ``self.logicals`` carrying the
         pinning records; ONE pinning stabilizer row is removed so the tracked
-        group's rank is unchanged; ``expected_num_logicals`` grows by 1 (the
-        budget change happens at declare time, NOT at patch registration —
+        group's rank is unchanged; ``expected_num_logicals`` grows by 1 —
         before the declaration the born observable is genuinely a stabilizer
-        of the state, not a free logical DOF).
+        of the state, not a free logical DOF.
+
+        Budget interplay: ``QECSystem.add_patch`` ALSO grows the budget by
+        the patch's nominal logical count at registration time.  A flow that
+        registers a patch and then births its logical here is therefore
+        counted twice; the caller must reconcile the budget via
+        ``set_expected_logicals`` (the census guardrail fails loud on the
+        double count otherwise).
 
         Args:
             pauli_vec: (2N,) GF(2) symplectic vector of the operator.

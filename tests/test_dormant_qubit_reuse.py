@@ -40,8 +40,10 @@ def _retired_system():
     builder.apply_data_readout(
         final_measurements={q: 'Z' for q in p_data})
     system.retire_measured_patch("P")
-    # retire_measured_patch leaves syndrome ancillas active; park them too so
-    # a same-footprint rebirth exercises pure dormant reuse.
+    # retire_measured_patch's documented scope: only DATA qubits go dormant;
+    # ancilla release is the corridor-reuse layer's responsibility.  Play
+    # that layer's role here so a same-footprint rebirth exercises pure
+    # dormant reuse.
     system.active_qubit_indices.difference_update(system.syndrome_indices)
     return system, tracker, set(p_data)
 
