@@ -1,18 +1,12 @@
 """Tests for the exact most-likely-error (mle-ilp) decoder."""
 
-import importlib.util
-
 import numpy as np
 import pytest
+import scipy.sparse as sp
 import stim
 
 from lightstim.simulation.decoder_backend.dem_matrices import dem_to_matrices
 from lightstim.simulation.decoder_backend.registry import get_decoder, list_decoders
-
-_HAS_HIGHSPY = importlib.util.find_spec("highspy") is not None
-
-# Both backends are HiGHS and must agree exactly; "scipy" needs no extra install.
-_SOLVERS = ["scipy"] + (["highs"] if _HAS_HIGHSPY else [])
 
 
 def _surface_code_dem(distance=3, rounds=3, p=1e-3):
@@ -44,14 +38,13 @@ def test_registered():
     assert "mle-ilp" in list_decoders()
 
 
-@pytest.mark.parametrize("solver", _SOLVERS)
-def test_solution_satisfies_syndrome(solver):
+def test_solution_satisfies_syndrome():
     """The returned error must actually explain the observed syndrome."""
     dem = _surface_code_dem()
     H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=True)
     detectors, _, _ = dem.compile_sampler(seed=5).sample(shots=25)
 
-    decoder = get_decoder("mle-ilp", backend="cpu", params={"solver": solver})
+    decoder = get_decoder("mle-ilp", backend="cpu")
     decoder.setup(H=H, priors=priors)
     for syndrome in detectors.astype(np.uint8):
         correction, ok = decoder.decode_single(syndrome)
@@ -59,52 +52,38 @@ def test_solution_satisfies_syndrome(solver):
         assert np.array_equal((H @ correction) % 2, syndrome)
 
 
-@pytest.mark.skipif(not _HAS_HIGHSPY, reason="highspy not installed")
-def test_backends_agree_on_optimal_cost():
-    """highspy and scipy are the same solver; they must find the same optimum.
+def test_finds_true_optimum_on_tiny_instance():
+    """The solution must be genuinely minimum-weight, not merely feasible.
 
-    Compares cost rather than the error vector itself: degenerate instances can
-    have several distinct minimisers of equal weight.
+    Checked against brute force over all 2^n errors on an instance small
+    enough to enumerate. Compares cost rather than the error vector, since a
+    degenerate instance can have several distinct minimisers of equal weight.
     """
-    dem = _surface_code_dem()
-    H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=True)
-    weights = np.log((1 - np.clip(priors, 1e-15, 0.5 - 1e-15))
-                     / np.clip(priors, 1e-15, 0.5 - 1e-15))
-    detectors, _, _ = dem.compile_sampler(seed=5).sample(shots=15)
+    import itertools
 
-    decoders = {}
-    for solver in ("scipy", "highs"):
-        d = get_decoder("mle-ilp", backend="cpu", params={"solver": solver})
-        d.setup(H=H, priors=priors)
-        decoders[solver] = d
+    rng = np.random.default_rng(0)
+    n_dets, n_errs = 6, 14
+    H = (rng.random((n_dets, n_errs)) < 0.35).astype(np.uint8)
+    H[:, H.sum(axis=0) == 0] = 0
+    H[0, 0] = 1                       # guarantee at least one non-empty column
+    priors = rng.uniform(1e-3, 0.2, size=n_errs)
+    weights = np.log((1 - priors) / priors)
 
-    for syndrome in detectors.astype(np.uint8):
-        costs = {}
-        for solver, d in decoders.items():
-            correction, ok = d.decode_single(syndrome)
-            assert ok
-            costs[solver] = weights @ correction
-        assert costs["scipy"] == pytest.approx(costs["highs"], abs=1e-6)
+    decoder = get_decoder("mle-ilp", backend="cpu")
+    decoder.setup(H=sp.csr_matrix(H), priors=priors)
 
+    all_errors = np.array(list(itertools.product([0, 1], repeat=n_errs)),
+                          dtype=np.uint8)
+    all_syndromes = (all_errors @ H.T) % 2
+    all_costs = all_errors @ weights
 
-def test_auto_resolves_to_scipy():
-    """'auto' must pick scipy even when highspy is installed.
-
-    scipy vendors its own (older, measurably faster) HiGHS build rather than
-    importing highspy, so presence of highspy is not a reason to prefer it.
-    """
-    from lightstim.simulation.decoder_backend.decoders import mle_ilp
-
-    assert mle_ilp._resolve_solver("auto") == "scipy"
-    assert mle_ilp._resolve_solver("scipy") == "scipy"
-    assert mle_ilp._resolve_solver("highs") == "highs"
-
-
-def test_rejects_unknown_solver():
-    from lightstim.simulation.decoder_backend.decoders import mle_ilp
-
-    with pytest.raises(ValueError, match="Unknown solver"):
-        mle_ilp._resolve_solver("gurobi")
+    for syndrome in np.unique(all_syndromes, axis=0):
+        matches = (all_syndromes == syndrome).all(axis=1)
+        best = all_costs[matches].min()
+        correction, ok = decoder.decode_single(syndrome)
+        assert ok
+        assert np.array_equal((H @ correction) % 2, syndrome)
+        assert weights @ correction == pytest.approx(best, abs=1e-9)
 
 
 def _bb_dem(rounds=2, p=1e-3):
@@ -131,7 +110,7 @@ def test_solves_bb_code_dem():
 
     A BB [[72,12,6]] detector row touches ~200 error mechanisms and columns
     reach weight 13, versus a handful for the surface code. This is the regime
-    where solver behaviour diverges, so it needs its own coverage.
+    where solver behaviour diverged in benchmarking, so it needs coverage.
     """
     dem = _bb_dem()
     H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=True)
@@ -147,7 +126,6 @@ def test_solves_bb_code_dem():
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(not _HAS_HIGHSPY, reason="highspy not installed")
 def test_beats_mwpm_at_high_noise():
     """Exact MLE should be at least as accurate as MWPM on the same circuit.
 
@@ -167,7 +145,7 @@ def test_beats_mwpm_at_high_noise():
     dem = circuit.detector_error_model(decompose_errors=False, flatten_loops=True)
     detectors, observables, _ = dem.compile_sampler(seed=3).sample(shots=shots)
 
-    predicted = _decode(dem, detectors, solver="highs")[:, :observables.shape[1]]
+    predicted = _decode(dem, detectors)[:, :observables.shape[1]]
     mle_ler = (predicted != observables).any(axis=1).mean()
 
     matcher = pymatching.Matching.from_detector_error_model(

@@ -47,11 +47,11 @@ decoders = [
     # build it from source if it fails to import.
     "tesseract-decoder",
     "ldpc",                     # Plain BP (ldpc-bp)
-    # NOTE: highspy is deliberately NOT listed. The mle-ilp decoder defaults to
-    # scipy.optimize.milp, whose vendored HiGHS 1.8 measured ~2x faster than the
-    # standalone highspy 1.15 wheel on QEC detector error models. highspy stays
-    # supported as solver="highs" but is not a dependency. Do NOT add ortools
-    # either — it and highspy both vendor HiGHS and clash on symbols at import.
+    # NOTE: the exact-MLE decoder (mle-ilp) needs nothing here. It uses
+    # scipy.optimize.milp, whose vendored HiGHS 1.8 measured ~2x faster than a
+    # standalone highspy 1.15 wheel on QEC detector error models, and faster
+    # still than SCIP and OR-Tools CP-SAT. Avoid adding highspy and ortools
+    # together — both vendor HiGHS and clash on symbols at import.
 ]
 gpu = [
     "cudaq-qec",
