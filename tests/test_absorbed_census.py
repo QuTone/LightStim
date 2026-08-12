@@ -121,61 +121,6 @@ def test_block_absorb_requires_the_frame():
         tracker._record_measurement_logical_effects(set())
 
 
-def test_reset_folds_relation_off_reset_qubits_mod_group():
-    # A relation is only defined mod the stabilizer group: when qubit 0 is
-    # re-initialized, Z0Z1 survives as Z1Z2 via the group element Z0Z2.
-    n = 4
-    tracker = SyndromeTracker(n, 1)
-    tracker.stabilizers.matrix = _z_row(n, [0, 2]).reshape(1, -1)
-    tracker.stabilizers.records = [[0]]
-    tracker.absorbed_ops.matrix = _z_row(n, [0, 1]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[]]
-
-    tracker.reset_records_for_qubits([0])
-
-    assert tracker.absorbed_ops.count == 1
-    assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [1, 2])).all()
-    assert tracker.num_absorbed_dof() == 1
-    tracker.validate_logical_count(context="after fold")  # still accounted
-
-
-def test_reset_annihilates_unfoldable_relation_and_alarm_fires():
-    # No group element can move Z0Z1 off qubit 0: the re-init destroys the
-    # relation.  The row is dropped and the census alarm reports the loss.
-    n = 4
-    tracker = SyndromeTracker(n, 1)
-    tracker.absorbed_ops.matrix = _z_row(n, [0, 1]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[]]
-
-    tracker.reset_records_for_qubits([0])
-
-    assert tracker.absorbed_ops.count == 0
-    with pytest.raises(RuntimeError, match="absorbed logical DOFs"):
-        tracker.validate_logical_count(context="after destructive reset")
-
-
-def test_reset_fold_carries_the_stabilizer_records():
-    # Re-expressing a banked relation off reset qubits multiplies it by a
-    # stabilizer row; the fold is only a valid re-representation if that
-    # row's RECORDS fold in alongside its Pauli (adversarial review: the
-    # old post-clean fold silently dropped them - a parity corruption
-    # invisible to the census and to p=0 sampling).
-    n = 4
-    tracker = SyndromeTracker(n, 1)
-    stab = _z_row(n, [0, 1])
-    tracker.stabilizers.matrix = stab.reshape(1, -1)
-    tracker.stabilizers.records = [[5]]
-    tracker.absorbed_ops.matrix = _z_row(n, [1]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[7]]
-
-    tracker.reset_records_for_qubits([1])
-
-    assert tracker.absorbed_ops.count == 1
-    assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [0])).all()
-    assert tracker.absorbed_ops.records[0] == [5, 7], \
-        "the folded stabilizer's record must ride along"
-
-
 def test_corridor_fold_carries_stabilizer_records():
     # Corridor readout re-expresses a banked relation off the bus via a
     # stabilizer row: the row's RECORDS must fold in alongside its Pauli
@@ -257,12 +202,10 @@ def test_corridor_refuses_undetermined_bus_support():
             resolve_absorbed=False)
 
 
-
-
 def test_gauge_absorb_carries_seed_records():
     # A record-pinned logical consumed by a gauge measurement keeps its
     # pin: the ledger row's records are the banked parity a later readout
-    # (relay measured_absorbed) XORs with the measuring records.  (The old
+    # XORs with the measuring records.  (The old
     # code recorded the operator with empty records - the pin vanished.)
     n = 3
     tracker = SyndromeTracker(n, 0)
@@ -280,7 +223,7 @@ def test_gauge_absorb_carries_seed_records():
 
 
 def test_terminal_observable_refuses_sentinel_records():
-    # The stab-row branch and the relay path both refuse sentinel parities;
+    # The stab-row branch refuses sentinel parities;
     # the logical-observable branch must too - silently skipping the -1
     # (the old behaviour) publishes an observable with a WRONG parity.
     import stim
@@ -295,23 +238,6 @@ def test_terminal_observable_refuses_sentinel_records():
         tracker.process_data_measurement(
             stim.Circuit(), fp, {i: (i, 0) for i in range(n)},
             resolve_absorbed=True)
-
-
-def test_reset_fold_rejects_sentinel_poisoned_stabilizer():
-    # If the only stabilizer that could carry the relation off the reset
-    # qubits has already lost its records to the UNMEASURED sentinel, the
-    # relation's parity is unreconstructable - fail loud, never fold
-    # silently.
-    from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
-    n = 4
-    tracker = SyndromeTracker(n, 1)
-    tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
-    tracker.stabilizers.records = [[UNMEASURED_STAB_RECORD]]
-    tracker.absorbed_ops.matrix = _z_row(n, [1]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[7]]
-
-    with pytest.raises(RuntimeError, match="cannot be reconstructed"):
-        tracker.reset_records_for_qubits([1])
 
 
 def test_real_reset_path_rejects_banked_support():

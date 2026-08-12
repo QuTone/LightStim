@@ -281,73 +281,9 @@ class SyndromeTracker:
             else:
                 tableau.matrix = np.zeros((0, 2 * n), dtype=np.uint8)
             tableau.records = new_records
-            return new_indices
 
-        # Absorbed relations are Pauli strings too: a re-init destroys any
-        # support they carry on the reset qubits.  A relation is only
-        # defined modulo the stabilizer group, so first try to re-express
-        # each touched row off the reset columns; a relation that cannot be
-        # re-expressed is annihilated by the reset — drop it, and let the
-        # census alarm catch the loss unless the caller adjusted the budget
-        # for an intentional discard.
-        #
-        # ORDER MATTERS: the fold must run BEFORE _clean_rows, against the
-        # PRE-clean stabilizer rows, because (a) a fold is only a valid
-        # re-representation if the folded stabilizer's RECORDS are XORed
-        # into the relation's records alongside its Pauli, and (b)
-        # _clean_rows wipes mixed rows' records to the UNMEASURED sentinel,
-        # destroying exactly the information the fold needs (found by
-        # adversarial review: the old post-clean fold silently dropped the
-        # stabilizer's record from the banked relation — a parity
-        # corruption invisible to the census and to p=0 sampling).
-        A = self.absorbed_ops
-        if A.count:
-            cols = ([q for q in qubit_set]
-                    + [n + q for q in qubit_set])
-            touched = [r for r in range(A.count) if A.matrix[r, cols].any()]
-            if touched:
-                A.matrix = A.matrix.copy()
-                A.records = [list(r) for r in A.records]
-                if self.stabilizers.count:
-                    coeffs, dep, _ = solve_linear_decomposition(
-                        basis=self.stabilizers.matrix[:, cols],
-                        targets=A.matrix[np.ix_(touched, cols)],
-                        reduce_weight=False)
-                    for k, r in enumerate(touched):
-                        if not dep[k]:
-                            continue
-                        used = np.flatnonzero(coeffs[k])
-                        folded_recs = set(A.records[r])
-                        for s in used:
-                            s_recs = self.stabilizers.records[int(s)]
-                            if UNMEASURED_STAB_RECORD in s_recs:
-                                raise RuntimeError(
-                                    f"reset_records_for_qubits: re-"
-                                    f"expressing absorbed relation {r} off "
-                                    f"qubits {sorted(qubit_set)} needs "
-                                    f"stabilizer row {int(s)}, whose records "
-                                    f"already carry the UNMEASURED sentinel "
-                                    f"— the relation's parity cannot be "
-                                    f"reconstructed.")
-                            folded_recs.symmetric_difference_update(s_recs)
-                        comb = (coeffs[k][None, :]
-                                @ self.stabilizers.matrix) % 2
-                        A.matrix[r] = (A.matrix[r] + comb[0]) % 2
-                        A.records[r] = sorted(folded_recs)
-                A.matrix = A.matrix.astype(np.uint8)
-                keep_rows = [r for r in range(A.count)
-                             if not A.matrix[r, cols].any()]
-                if len(keep_rows) != A.count:
-                    A.matrix = (A.matrix[keep_rows] if keep_rows
-                                else np.zeros((0, 2 * n), dtype=np.uint8))
-                    A.records = ([A.records[r] for r in keep_rows]
-                                 if A.records else [])
-
-        n_stab_before = self.stabilizers.count
-        kept = set(_clean_rows(self.stabilizers))
+        _clean_rows(self.stabilizers)
         _clean_rows(self.logicals)
-        self._remap_rows_after_removal(
-            [i for i in range(n_stab_before) if i not in kept])
 
     def _reject_pending_row_metadata(self, context: str) -> None:
         """Basis recombination replaces rows by linear combinations, so old
@@ -844,7 +780,7 @@ class SyndromeTracker:
         operators live in the same frame as every other tableau row —
         together with those rows' RECORDS: a consumed record-pinned
         logical's seed records are the banked parity of the absorbed
-        relation, and a later readout of the relation (relay
+        relation, and a later readout of the relation (terminal or
         measured_absorbed) emits seed XOR measuring records.  Dropping the
         seeds here would corrupt that parity invisibly to the census.
         """
@@ -1597,7 +1533,7 @@ class SyndromeTracker:
         #     patch-patch relation persists. But an absorbed op stored on the bus qubits would
         #     otherwise dangle on measured-out columns, so FOLD the bus support out (zero the
         #     measured columns), leaving the patch-part of the relation. A later patch readout
-        #     (or retire) then resolves that patch-part.
+        #     then resolves that patch-part.
         A = self.absorbed_ops
         if A.count and num_new_meas:
             n = self.num_qubits
@@ -1889,7 +1825,7 @@ class SyndromeTracker:
                 )
             else:
                 if any(r < 0 for r in full_records[k]):
-                    # Same guard as the stab-row branch above and the relay
+                    # Same guard as the stab-row branch above: an
                     # path's measured-out refusal: a sentinel record means
                     # this row's parity was never banked, so the observable
                     # cannot be constructed — emitting it with the sentinel
