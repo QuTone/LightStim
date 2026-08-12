@@ -1590,28 +1590,20 @@ class SyndromeTracker:
             n = self.num_qubits
             meas_q = set(int(c % n) for c in np.where(final_paulis.any(axis=0))[0])
             mcols = [q for q in meas_q] + [q + n for q in meas_q]
-            _half_read_rems = []
             if resolve_absorbed:
-                # A relation touched by a patch readout resolves only on the
-                # measured columns.  Fold the measured support out via the
-                # stabilizers PLUS this readout: a nonzero remainder is a
-                # direction the records now DETERMINE.  Dropping the row
-                # without re-pricing that remainder leaves any standing
-                # logical it overlaps dependent on the stabilizer span — a
-                # rank-deficient tableau whose decompositions are ambiguous
-                # (steane no_sched: the retired patch's half of Z3~Zp was
-                # read out, q3's row stayed standing, and the next window's
-                # M(Z3Z4Z5) decomposition hid the q3 component inside a
-                # record-bearing stab row; the banking census then lost the
-                # DOF — Logical Count Mismatch).  Remainders are re-priced
-                # after the pruning below: one standing representative is
-                # folded out and the remainder enters absorbed_ops, so
-                # standing + absorbed stays balanced and the tableau keeps
-                # full rank.
+                # A resolve readout must cover every banked relation it
+                # touches COMPLETELY.  A partial cover either loses the
+                # unmeasured remainder (dropping the row wholesale) or needs
+                # it re-banked against a standing logical — per-patch
+                # readout semantics that belong to the future liveness/reuse
+                # layer.  No production flow reads a strict subset of a
+                # banked relation's support (main and the PPM path read out
+                # full patch sets; corridor readouts take the
+                # resolve_absorbed=False branch), so this fails loud instead
+                # of inventing discard semantics here.
                 keep = []
                 _fold_basis = np.vstack([self.stabilizers.matrix,
                                          final_paulis])
-                _n_stab_fold = self.stabilizers.count
                 for r in range(A.count):
                     if not A.matrix[r, mcols].any():
                         keep.append(r)
@@ -1620,41 +1612,23 @@ class SyndromeTracker:
                         basis=_fold_basis[:, mcols],
                         targets=A.matrix[r:r + 1][:, mcols],
                         reduce_weight=False)
+                    _rem = None
                     if _depf[0]:
                         _comb = (_cf[0][None, :] @ _fold_basis) % 2
                         _rem = ((A.matrix[r] + _comb[0]) % 2).astype(np.uint8)
                         _rem[mcols] = 0
-                        if _rem.any():
-                            # The remainder is a REPRESENTATIVE CHANGE of the
-                            # banked relation: the fold's records (stabilizer
-                            # rows' records; the used readout rows' fresh
-                            # measurement indices) must ride along with the
-                            # Pauli, or the re-banked parity is silently
-                            # corrupted (same contract as
-                            # reset_records_for_qubits).
-                            _rem_recs = set(A.records[r])
-                            for _s in np.flatnonzero(_cf[0]):
-                                _s = int(_s)
-                                if _s < _n_stab_fold:
-                                    _s_recs = self.stabilizers.records[_s]
-                                    if UNMEASURED_STAB_RECORD in _s_recs:
-                                        raise RuntimeError(
-                                            f"patch readout: re-pricing "
-                                            f"absorbed relation {r} needs "
-                                            f"stabilizer row {_s}, whose "
-                                            f"records already carry the "
-                                            f"UNMEASURED sentinel — the "
-                                            f"relation's parity cannot be "
-                                            f"reconstructed.")
-                                    _rem_recs.symmetric_difference_update(
-                                        _s_recs)
-                                else:
-                                    _rem_recs.symmetric_difference_update(
-                                        {base_meas_idx
-                                         + (_s - _n_stab_fold)})
-                            _half_read_rems.append(
-                                (_rem, sorted(_rem_recs)))
-                    # no isolatable remainder: legacy drop (fully resolved)
+                    if not _depf[0] or _rem.any():
+                        raise RuntimeError(
+                            f"patch readout covers only part of banked "
+                            f"absorbed relation {r}: the unmeasured "
+                            f"remainder would be lost, and re-banking it "
+                            f"is per-patch readout semantics that live "
+                            f"with the future liveness layer.  Read out "
+                            f"the relation's full support, or fold it off "
+                            f"the measured qubits via a corridor readout "
+                            f"(resolve_absorbed=False) first.")
+                    # fully determined by this readout: resolved; the
+                    # budget delta below retires the slot
             else:
                 A.matrix = A.matrix.copy()
                 A.records = [list(rr) for rr in A.records]
@@ -1743,43 +1717,6 @@ class SyndromeTracker:
                 A.matrix = A.matrix[keep] if keep else np.zeros((0, 2 * n), dtype=np.uint8)
                 A.records = [A.records[r] for r in keep] if A.records else []
 
-            # Re-price the half-read remainders: each is a determined
-            # direction; if it overlaps the standing logicals, that DOF is
-            # now folded into the stabilizer group — fold ONE participating
-            # standing row out (any representative works: the others keep
-            # spanning the quotient) and hold the remainder in absorbed_ops.
-            # Books: standing -1, absorbed net 0 per remainder, so the
-            # budget delta at the end retires exactly the fully-read slot.
-            for _rem, _rem_recs in _half_read_rems:
-                if not self.logicals.count:
-                    break
-                _full = np.vstack([self.stabilizers.matrix,
-                                   self.logicals.matrix])
-                _c2, _dep2, _ = solve_linear_decomposition(
-                    basis=_full, targets=_rem.reshape(1, -1),
-                    reduce_weight=False)
-                if not _dep2[0]:
-                    continue
-                _ns = self.stabilizers.count
-                _lcomp = [int(j) - _ns for j in np.where(_c2[0])[0]
-                          if j >= _ns]
-                if not _lcomp:
-                    continue        # pure stab content: fully resolved
-                # The ledger's ONLY entrance: record_absorbed_op dedups
-                # against [stabilizers ∪ ledger] and carries the fold's
-                # records.  A remainder that reduces to an already-priced
-                # direction is skipped and the standing row is KEPT.
-                if not self.record_absorbed_op(_rem, records=_rem_recs):
-                    continue        # direction already priced
-                # prefer a records-less representative (record-pinned rows
-                # carry value information the ledger must not discard)
-                _kill = next((j for j in reversed(_lcomp)
-                              if not any(rr >= 0
-                                         for rr in self.logicals.records[j])),
-                             _lcomp[-1])
-                self.logicals.matrix = np.delete(
-                    self.logicals.matrix, _kill, axis=0)
-                self.logicals.records.pop(_kill)
 
         num_stabs = self.stabilizers.count
         num_logs = self.logicals.count

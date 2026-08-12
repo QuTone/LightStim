@@ -257,58 +257,6 @@ def test_corridor_refuses_undetermined_bus_support():
             resolve_absorbed=False)
 
 
-def test_half_read_remainder_carries_records():
-    # A patch readout that half-reads a banked relation re-banks the
-    # remainder; the remainder's records = seed records XOR the fold's
-    # stabilizer/measurement records.  (The old code banked [] - the
-    # relation's parity silently vanished; relay measured_absorbed would
-    # then emit a wrong observable.)
-    import stim
-    n = 2
-    tracker = SyndromeTracker(n, 2)     # standing Z1 + banked Z0Z1
-    tracker.logicals.matrix = _z_row(n, [1]).reshape(1, -1)
-    tracker.logicals.records = [[]]
-    tracker.absorbed_ops.matrix = _z_row(n, [0, 1]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[5]]
-    fp = _z_row(n, [0]).reshape(1, -1)  # read q0 only
-
-    tracker.process_data_measurement(
-        stim.Circuit(), fp, {i: (i, 0) for i in range(n)},
-        resolve_absorbed=True)
-
-    assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [1])).all()
-    assert tracker.absorbed_ops.records == [[0, 5]], \
-        "seed record and the fold's measurement record must both survive"
-    tracker.validate_logical_count(context="after half-read re-pricing")
-
-
-def test_half_read_remainder_dedups_through_the_single_entrance():
-    # The remainder enters the ledger through record_absorbed_op (the
-    # ledger's ONLY entrance): a remainder that differs from an existing
-    # banked relation by a stabilizer is the SAME relation - it must not
-    # be double-banked, and the standing representative must be KEPT.
-    import stim
-    n = 3
-    tracker = SyndromeTracker(n, 3)
-    tracker.stabilizers.matrix = _z_row(n, [1, 2]).reshape(1, -1)
-    tracker.stabilizers.records = [[4]]
-    tracker.logicals.matrix = _z_row(n, [1]).reshape(1, -1)
-    tracker.logicals.records = [[]]
-    tracker.absorbed_ops.matrix = np.vstack(
-        [_z_row(n, [0, 1]), _z_row(n, [2])])
-    tracker.absorbed_ops.records = [[5], [6]]
-    fp = _z_row(n, [0]).reshape(1, -1)  # read q0: remainder = Z1
-
-    tracker.process_data_measurement(
-        stim.Circuit(), fp, {i: (i, 0) for i in range(n)},
-        resolve_absorbed=True)
-
-    # Z1 reduces against [Z1Z2 (stab); Z2 (banked)] -> already priced:
-    # not re-banked, standing row kept, books balance.
-    assert tracker.logicals.count == 1
-    assert tracker.absorbed_ops.count == 1
-    assert tracker.absorbed_ops.records == [[6]]
-    tracker.validate_logical_count(context="after deduped re-pricing")
 
 
 def test_gauge_absorb_carries_seed_records():
@@ -394,3 +342,29 @@ def test_real_reset_path_ignores_disjoint_resets():
     reset[1, n + 1] = 1
     tracker.process_resets(reset)
     assert tracker.num_absorbed_dof() == 1
+
+
+def test_partial_resolve_readout_of_banked_relation_fails_loud():
+    """A resolve readout covering only part of a banked relation's support
+    must raise: the unmeasured remainder would be lost, and re-banking it
+    is per-patch readout semantics that live with the future liveness
+    layer (scope ruling 2026-08-12 - same philosophy as the reset guard)."""
+    import pytest as _pytest
+    import stim
+    n = 4
+    circuit = stim.Circuit("""
+        R 0 1 2 3
+        MPP Z0*Z1*Z2*Z3
+        M 0 1
+    """)
+    tracker = SyndromeTracker(n, 1)
+    tracker.total_measurements = 1
+    tracker.record_absorbed_op(_z_row(n, [0, 1, 2, 3]), records=[0])
+
+    final_paulis = np.zeros((2, 2 * n), dtype=np.uint8)
+    final_paulis[0, n + 0] = 1
+    final_paulis[1, n + 1] = 1
+    with _pytest.raises(RuntimeError, match="covers only part"):
+        tracker.process_data_measurement(
+            circuit, final_paulis,
+            idx_to_coord_map={q: (float(q), 0.0) for q in range(n)})
