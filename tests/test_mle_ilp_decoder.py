@@ -86,6 +86,42 @@ def test_finds_true_optimum_on_tiny_instance():
         assert weights @ correction == pytest.approx(best, abs=1e-9)
 
 
+def test_lp_shortcut_matches_pure_milp():
+    """The LP-first path must return exactly what the plain MILP returns.
+
+    Guards the one way this optimisation could go wrong: accepting a
+    relaxation solution that is not actually the integer optimum, which would
+    quietly turn the decoder into a heuristic.
+    """
+    from scipy.optimize import Bounds, LinearConstraint, milp
+
+    dem = _surface_code_dem(distance=5, rounds=5)
+    H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=True)
+    detectors, _, _ = dem.compile_sampler(seed=11).sample(shots=20)
+
+    decoder = get_decoder("mle-ilp", backend="cpu")
+    decoder.setup(H=H, priors=priors)
+
+    m, n = H.shape
+    rowsum = np.asarray(H.sum(axis=1)).ravel()
+    A = sp.hstack([H.astype(float), -2.0 * sp.eye(m, format="csr")],
+                  format="csr")
+    c = np.concatenate([decoder._w, np.zeros(m)])
+    bounds = Bounds(np.zeros(n + m),
+                    np.concatenate([np.ones(n), np.floor(rowsum / 2.0)]))
+
+    for syndrome in detectors.astype(np.uint8):
+        correction, ok = decoder.decode_single(syndrome)
+        assert ok
+        reference = milp(c=c,
+                         constraints=LinearConstraint(A, syndrome.astype(float),
+                                                      syndrome.astype(float)),
+                         integrality=np.ones(n + m), bounds=bounds)
+        assert reference.success
+        # Compare cost, not the vector: equal-weight minimisers may differ.
+        assert decoder._w @ correction == pytest.approx(reference.fun, abs=1e-6)
+
+
 def _bb_dem(rounds=2, p=1e-3):
     from lightstim.ir.qec_system import QECSystem
     from lightstim.noise.config import NoiseConfig
