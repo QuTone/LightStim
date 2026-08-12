@@ -60,6 +60,13 @@ try:
 except ImportError as exc:
     _log.debug("tesseract registration skipped: %s", exc)
 
+# mle_ilp — exact most-likely-error decoder over HiGHS. Imported unconditionally:
+# its scipy backend needs nothing beyond LightStim's own dependencies, and the
+# faster highspy backend is imported lazily at construction, so an absent (or
+# broken) highspy downgrades one decoder to the scipy path rather than breaking
+# the registry.
+from . import mle_ilp  # noqa: F401 — registers mle-ilp/cpu
+
 # chain — multi-level escalation over other registered decoders. No external
 # deps of its own; stage decoders are resolved lazily at construction, so a
 # chain only needs its *own* stages' backends installed.

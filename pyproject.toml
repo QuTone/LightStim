@@ -47,6 +47,10 @@ decoders = [
     # build it from source if it fails to import.
     "tesseract-decoder",
     "ldpc",                     # Plain BP (ldpc-bp)
+    # Exact MLE (mle-ilp). Optional: without it mle-ilp falls back to the same
+    # HiGHS solver via scipy.optimize.milp, just rebuilding the model per shot.
+    # Do NOT add ortools alongside it — both vendor HiGHS and clash on symbols.
+    "highspy",
 ]
 gpu = [
     "cudaq-qec",
