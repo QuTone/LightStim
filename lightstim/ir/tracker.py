@@ -661,6 +661,25 @@ class SyndromeTracker:
             return
 
 
+        # A banked absorbed relation must never ride silently through a
+        # physical reset: the reset destroys the relation's support while
+        # its recorded parity stays banked, so the census would go stale
+        # without any alarm.  The current production flows never reset a
+        # qubit that still carries a banked relation (readouts resolve or
+        # fold the ledger first), so this fails loud instead of inventing
+        # discard semantics here.
+        A = self.absorbed_ops
+        if A.count:
+            n = self.num_qubits
+            touched = {int(c) % n for c in np.flatnonzero(reset_paulis.any(axis=0))}
+            cols = [q for q in touched] + [n + q for q in touched]
+            if A.matrix[:, cols].any():
+                raise RuntimeError(
+                    "process_resets: reset touches qubits that still carry "
+                    "banked absorbed relations — resolve them via a "
+                    "corridor/patch readout before re-initialising, or "
+                    "account for the discarded DOF explicitly.")
+
         num_stabs = self.stabilizers.count
         num_logs = self.logicals.count
         if num_logs:

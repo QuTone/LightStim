@@ -364,3 +364,33 @@ def test_reset_fold_rejects_sentinel_poisoned_stabilizer():
 
     with pytest.raises(RuntimeError, match="cannot be reconstructed"):
         tracker.reset_records_for_qubits([1])
+
+
+def test_real_reset_path_rejects_banked_support():
+    """The production reset path (process_resets, reached from
+    CircuitBuilder.initialize and every SE round's ancilla resets) must
+    fail loud when a reset touches a banked relation — the reset would
+    destroy the relation's support while its parity stays banked."""
+    import pytest as _pytest
+    n = 4
+    tracker = SyndromeTracker(n, 1)
+    tracker.record_absorbed_op(_z_row(n, [0, 1]))
+
+    reset = np.zeros((1, 2 * n), dtype=np.uint8)
+    reset[0, n + 0] = 1          # reset qubit 0 in Z
+    with _pytest.raises(RuntimeError, match="banked absorbed relations"):
+        tracker.process_resets(reset)
+
+
+def test_real_reset_path_ignores_disjoint_resets():
+    # ancilla-style resets on qubits outside every banked relation pass
+    # through untouched (the per-round hot path stays cheap and silent)
+    n = 4
+    tracker = SyndromeTracker(n, 1)
+    tracker.record_absorbed_op(_z_row(n, [2, 3]))
+
+    reset = np.zeros((2, 2 * n), dtype=np.uint8)
+    reset[0, n + 0] = 1
+    reset[1, n + 1] = 1
+    tracker.process_resets(reset)
+    assert tracker.num_absorbed_dof() == 1

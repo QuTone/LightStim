@@ -108,3 +108,44 @@ def test_sentinel_tagged_gauge_row_emits_no_detector():
     assert recs == {0, 1, 2}, (
         f"the emitted closure must be the WATCHED row's (MPP rec 0 + finals "
         f"of qubits 0/1); got absolute records {sorted(recs)}")
+
+
+def test_terminal_observable_uses_the_central_allocator():
+    """Observable IDs come from tracker.allocate_observable() alone, never
+    from circuit.num_observables (the historical collision source): with
+    two IDs pre-reserved on the tracker and ZERO observables in the
+    circuit, the terminal readout's observable must land on index 2."""
+    import numpy as np
+    import stim
+    from lightstim.ir.tracker import SyndromeTracker
+
+    n = 4
+    circuit = stim.Circuit("""
+        R 0 1 2 3
+        MPP Z0*Z1
+        M 0 1 2 3
+    """)
+    tracker = SyndromeTracker(n, 1)
+    tracker.total_measurements = 1
+    assert tracker.allocate_observable() == 0
+    assert tracker.allocate_observable() == 1
+
+    logical = np.zeros(2 * n, dtype=np.uint8)
+    logical[[n + 0, n + 1]] = 1
+    tracker.logicals.matrix = logical.reshape(1, -1)
+    tracker.logicals.records = [[0]]
+
+    final_paulis = np.zeros((n, 2 * n), dtype=np.uint8)
+    for q in range(n):
+        final_paulis[q, n + q] = 1
+    tracker.process_data_measurement(
+        circuit, final_paulis,
+        idx_to_coord_map={q: (float(q), 0.0) for q in range(n)})
+
+    obs_ids = [int(i.gate_args_copy()[0]) for i in circuit.flattened()
+               if i.name == 'OBSERVABLE_INCLUDE']
+    assert obs_ids == [2], (
+        f"terminal readout must allocate from the tracker (expected id 2), "
+        f"got {obs_ids} - id 0 would mean circuit.num_observables leaked "
+        f"back in as an allocation source")
+    assert tracker.total_observables == 3
