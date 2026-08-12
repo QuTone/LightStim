@@ -87,18 +87,17 @@ def test_backends_agree_on_optimal_cost():
         assert costs["scipy"] == pytest.approx(costs["highs"], abs=1e-6)
 
 
-@pytest.mark.parametrize("solver", _SOLVERS)
-def test_auto_solver_resolves(solver, monkeypatch):
-    """'auto' picks highspy when present and degrades to scipy when not."""
+def test_auto_resolves_to_scipy():
+    """'auto' must pick scipy even when highspy is installed.
+
+    scipy vendors its own (older, measurably faster) HiGHS build rather than
+    importing highspy, so presence of highspy is not a reason to prefer it.
+    """
     from lightstim.simulation.decoder_backend.decoders import mle_ilp
 
-    monkeypatch.setattr(
-        mle_ilp.importlib.util, "find_spec",
-        lambda name: object() if name == "highspy" else None)
-    assert mle_ilp._resolve_solver("auto") == "highs"
-
-    monkeypatch.setattr(mle_ilp.importlib.util, "find_spec", lambda name: None)
     assert mle_ilp._resolve_solver("auto") == "scipy"
+    assert mle_ilp._resolve_solver("scipy") == "scipy"
+    assert mle_ilp._resolve_solver("highs") == "highs"
 
 
 def test_rejects_unknown_solver():
@@ -106,6 +105,45 @@ def test_rejects_unknown_solver():
 
     with pytest.raises(ValueError, match="Unknown solver"):
         mle_ilp._resolve_solver("gurobi")
+
+
+def _bb_dem(rounds=2, p=1e-3):
+    from lightstim.ir.qec_system import QECSystem
+    from lightstim.noise.config import NoiseConfig
+    from lightstim.protocols.memory import MemoryExperiment
+    from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
+
+    code = BBCode(l=6, m=6, A=[[3, 0], [0, 1], [0, 2]],
+                  B=[[0, 3], [1, 0], [2, 0]])
+    system = QECSystem()
+    system.add_patch(code, name="bb")
+    experiment = MemoryExperiment(
+        qec_system=system, extraction_block_class=BBCodeExtractionBlock,
+        rounds=rounds, noise_params=NoiseConfig(p_1q=p, p_2q=p, p_meas=p,
+                                                p_reset=p, p_idle=p),
+        noise_model="circuit_level", basis="Z")
+    return experiment.build().detector_error_model(decompose_errors=False,
+                                                   flatten_loops=True)
+
+
+def test_solves_bb_code_dem():
+    """QLDPC DEMs are far denser than surface-code ones — cover that shape.
+
+    A BB [[72,12,6]] detector row touches ~200 error mechanisms and columns
+    reach weight 13, versus a handful for the surface code. This is the regime
+    where solver behaviour diverges, so it needs its own coverage.
+    """
+    dem = _bb_dem()
+    H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=True)
+    assert np.asarray(H.sum(axis=1)).ravel().mean() > 50, "expected a dense DEM"
+
+    detectors, _, _ = dem.compile_sampler(seed=7).sample(shots=5)
+    decoder = get_decoder("mle-ilp", backend="cpu")
+    decoder.setup(H=H, priors=priors)
+    for syndrome in detectors.astype(np.uint8):
+        correction, ok = decoder.decode_single(syndrome)
+        assert ok
+        assert np.array_equal((H @ correction) % 2, syndrome)
 
 
 @pytest.mark.slow

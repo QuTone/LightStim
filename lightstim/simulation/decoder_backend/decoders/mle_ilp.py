@@ -15,29 +15,44 @@ highest-probability error, it does not sum over the logical coset). It is
 exponential in the worst case and is intended as a **ground-truth reference**
 for small instances, not for production sampling throughput.
 
-Both backends are HiGHS (MIT-licensed) and return identical optima; they differ
-only in how the model is handed to it (``DecoderConfig(params={"solver": ...})``):
+Both backends are HiGHS (MIT-licensed) and return identical optima
+(``DecoderConfig(params={"solver": ...})``):
 
-    "auto"  (default) -- ``highspy`` if importable, else ``scipy``.
-    "highs"           -- ``highspy``. Builds the model once and rewrites only the
-                         row bounds per shot; ~1.5x faster than ``scipy`` by d=7.
-    "scipy"           -- ``scipy.optimize.milp``. Rebuilds the model per shot,
-                         but needs no dependency beyond LightStim's own scipy.
+    "auto"  (default) -- currently always ``scipy``; see below.
+    "scipy"           -- ``scipy.optimize.milp``. No dependency beyond
+                         LightStim's own scipy.
+    "highs"            -- the standalone ``highspy`` package.
 
-Measured on rotated-surface-code circuit noise at p=1e-3, single-threaded,
-against the alternatives (all cross-checked to agree on the optimal cost):
-HiGHS 91 ms/shot at d=7 and 371 ms at d=9, versus SCIP 131 ms at d=7 and
-OR-Tools CP-SAT 616 ms at d=7 *using 8 threads*. HiGHS wins on a single core,
-which is what matters here — :class:`SimulationPipeline` already parallelises
-across shots, so intra-solve threads only oversubscribe.
+**Prefer "scipy".** These are not the same binary: scipy vendors its own HiGHS
+(1.8.0 in scipy 1.15) rather than importing ``highspy`` (1.15.1), and the older
+vendored build is consistently ~2x faster on these models. Median ms/shot,
+same syndromes, same formulation:
+
+    instance                    scipy   highspy
+    surface d=5                  11.8      21.5
+    surface d=7                  41.4      76.5
+    BB [[72,12,6]] r=2           56.7     132.6
+    BB [[72,12,6]] r=4          113.7     270.6
+
+That ordering held on every instance tried, and is not explained by threads,
+matrix format, presolve, ``mip_rel_gap``, incremental-vs-rebuild model
+updates, or ``passModel`` — all were tested and are a wash. So ``highspy``
+is kept only as an escape hatch if a future scipy vendors a slower HiGHS.
+
+Against other solver families, on BB [[72,12,6]] r=4 (10 shots, 60 s cap):
+SCIP via ``pyscipopt`` 271 ms median, and OR-Tools CP-SAT 5.5 s median with
+8 threads (2 of 10 shots hit the cap). CP-SAT degrades far worse than the MILP
+solvers as the DEM gets denser -- BB detector rows average ~214 error
+mechanisms against the surface code's handful -- so its native XOR handling
+does not pay off here. Single-threaded is the right comparison regardless:
+:class:`SimulationPipeline` already parallelises across shots, so intra-solve
+threads only oversubscribe.
 
 Do not install ``highspy`` and ``ortools`` into the same environment: both
 vendor HiGHS and clash on symbols at import time, in either order.
 """
 
 from __future__ import annotations
-
-import importlib.util
 
 import numpy as np
 import scipy.sparse as sp
@@ -55,10 +70,14 @@ _DEFAULTS = {
 
 
 def _resolve_solver(name: str) -> str:
-    """Map ``"auto"`` onto whichever HiGHS binding is actually installed."""
+    """Resolve the ``solver`` param to a concrete backend.
+
+    ``"auto"`` picks scipy unconditionally: it is both the faster HiGHS build
+    (see module docstring) and always present, so there is nothing to detect.
+    """
     name = str(name).lower()
     if name == "auto":
-        return "highs" if importlib.util.find_spec("highspy") else "scipy"
+        return "scipy"
     if name not in ("highs", "scipy"):
         raise ValueError(
             f"Unknown solver {name!r}; expected 'auto', 'highs' or 'scipy'.")
@@ -129,8 +148,9 @@ class MleIlpDecoder(ExternalDecoder):
 
     def _decode_highs(self, syndrome):
         s = syndrome.astype(float)
-        # Only the RHS changes between shots: the matrix, costs and
-        # integrality stay resident inside HiGHS across solves.
+        # Only the RHS changes between shots, so the model stays resident.
+        # Measured as a wash against rebuilding it per shot -- kept because it
+        # is no more code, not because it buys speed.
         self._h.changeRowsBounds(self._m, self._rows, s, s)
         self._h.run()
         optimal = (self._h.getModelStatus()
