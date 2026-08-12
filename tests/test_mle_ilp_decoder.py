@@ -122,6 +122,42 @@ def test_lp_shortcut_matches_pure_milp():
         assert decoder._w @ correction == pytest.approx(reference.fun, abs=1e-6)
 
 
+def test_rpc_cuts_never_exclude_a_valid_error():
+    """Redundant-parity-check cuts must be valid inequalities.
+
+    An RPC is a GF(2) combination of rows of H, so its syndrome bit is the XOR
+    of the combined bits. Get that bookkeeping wrong and the derived check is
+    simply false, cutting off real solutions and making the decoder silently
+    wrong. So: generate cuts from an arbitrary fractional point, then assert
+    every genuine error consistent with the syndrome still satisfies them.
+    """
+    dem = _surface_code_dem(distance=5, rounds=5)
+    # merge_duplicates=False keeps our columns in the DEM's own error order,
+    # so stim's return_errors indexes the same variables we do.
+    H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=False)
+    decoder = get_decoder("mle-ilp", backend="cpu")
+    decoder.setup(H=H, priors=priors)
+
+    rng = np.random.default_rng(3)
+    sampler = dem.compile_sampler(seed=4)
+    detectors, _, errors = sampler.sample(shots=8, return_errors=True)
+
+    checked = 0
+    for syndrome, true_error in zip(detectors.astype(np.uint8),
+                                    errors.astype(np.uint8)):
+        # Self-check: if this fails the column spaces disagree and the rest of
+        # the assertions would be meaningless.
+        assert np.array_equal((H @ true_error) % 2, syndrome)
+        # The point the cuts are generated from is arbitrary; validity of the
+        # resulting inequalities must not depend on it.
+        point = rng.uniform(0.0, 1.0, size=H.shape[1])
+        cuts = decoder._rpc_cuts(point, syndrome)
+        for cols, coeffs, rhs in cuts:
+            assert coeffs @ true_error[cols] <= rhs + 1e-9
+            checked += 1
+    assert checked > 0, "no RPC cuts generated; test proved nothing"
+
+
 def _bb_dem(rounds=2, p=1e-3):
     from lightstim.ir.qec_system import QECSystem
     from lightstim.noise.config import NoiseConfig

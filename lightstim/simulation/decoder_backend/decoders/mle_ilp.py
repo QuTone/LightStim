@@ -16,12 +16,18 @@ exponential in the worst case and is intended as a **ground-truth reference**
 for small instances, not for production sampling throughput.
 
 The MILP is the fallback, not the first move. Each shot is first attempted with
-adaptive-LP (ALP) decoding -- Feldman's fundamental-polytope relaxation with
-forbidden-set cuts generated on demand, in the manner of Taghavi & Siegel --
-and only escalated to the MILP when that leaves a fractional pseudocodeword.
-This stays exact; see :meth:`MleIlpDecoder._adaptive_lp`. ALP settles 85-100%
-of shots and is worth 2.0-11.0x over calling the MILP directly, with the
-largest gains on QLDPC codes.
+ACG-ALP: Feldman's fundamental-polytope relaxation with forbidden-set cuts
+generated on demand (Taghavi & Siegel), plus redundant-parity-check cuts when
+that stalls (Zhang & Siegel). Only a shot that survives both escalates to the
+MILP. This stays exact; see :meth:`MleIlpDecoder._adaptive_lp`.
+
+Plain ALP already settles 85-100% of shots and is worth 2.0-11.0x over calling
+the MILP directly, with the largest gains on QLDPC codes. RPC cuts then clear
+most of what is left -- on surface d=7 and d=9 at p=1e-3 they took the MILP
+fallback rate from 7/60 and 3/30 to zero -- for a further 1.4-3.2x on surface
+codes. They earn nothing on the BB codes tried (no stalled shot was rescued)
+and cost ~8% there, which is why ``max_rpc_rounds`` exists: set it to 0 for
+plain ALP.
 
 The solver is ``scipy.optimize.milp``, which needs no dependency beyond the
 scipy LightStim already requires. Alternatives were benchmarked and rejected;
@@ -72,6 +78,10 @@ _DEFAULTS = {
                            # the limit is reported as a decode failure, so
                            # DecoderConfig(on_decode_failure=...) can herald it.
     "max_cut_rounds": 200,  # give up on cut generation and fall back to MILP
+    "max_rpc_rounds": 8,    # redundant-parity-check rounds once ALP stalls;
+                            # 0 disables ACG and leaves plain ALP
+    "max_rpc_pivots": 64,   # Gaussian-elimination pivots per RPC round
+    "max_rpc_weight": 256,  # skip derived checks denser than this
 }
 
 
@@ -100,6 +110,10 @@ class MleIlpDecoder(ExternalDecoder):
         self._starts = H.indptr[:-1]
         self._nonempty = H.indptr[1:] > H.indptr[:-1]
         self._max_rounds = int(params["max_cut_rounds"])
+        self._max_rpc_rounds = int(params["max_rpc_rounds"])
+        self._max_rpc_pivots = int(params["max_rpc_pivots"])
+        self._max_rpc_weight = int(params["max_rpc_weight"])
+        self._packed = None            # built lazily on the first stalled shot
 
         rowsum = np.asarray(H.sum(axis=1)).ravel()
         lower = np.zeros(self._n + self._m)
@@ -158,27 +172,103 @@ class MleIlpDecoder(ExternalDecoder):
             in_s[np.argmin(np.abs(2.0 * v - 1.0))] ^= True
         return cols, np.where(in_s, 1.0, -1.0), float(in_s.sum()) - 1.0
 
+    def _packed_rows(self):
+        """Bit-pack H's rows (little bitorder), built once on first use.
+
+        Packed directly from the CSR indices -- an (m, n) dense intermediate
+        would be hundreds of MB on a large QLDPC detector error model.
+        """
+        if self._packed is None:
+            packed = np.zeros((self._m, (self._n + 7) // 8), dtype=np.uint8)
+            counts = np.diff(self._indptr)
+            row_of = np.repeat(np.arange(self._m), counts)
+            np.bitwise_or.at(
+                packed, (row_of, self._indices >> 3),
+                (np.uint8(1) << (self._indices & 7).astype(np.uint8)))
+            self._packed = packed
+        return self._packed
+
+    def _rpc_cuts(self, e, s):
+        """Derive redundant parity checks and return any violated cuts.
+
+        When ALP stalls, every original check already satisfies its cuts, so no
+        further cut exists from H's own rows. But any GF(2) combination of rows
+        is also a valid check -- with syndrome the XOR of the combined bits --
+        and one of those may still be violated. Following Zhang & Siegel, the
+        combinations come from Gaussian-eliminating the augmented [H | s] with
+        the most fractional columns as pivots, so the derived checks isolate
+        the fractional variables.
+        """
+        frac = np.abs(e - np.round(e))
+        order = np.flatnonzero(frac > _CUT_TOL)
+        if order.size == 0:
+            return []
+        order = order[np.argsort(-frac[order])]
+
+        a = self._packed_rows().copy()
+        sy = np.asarray(s, dtype=np.uint8).copy()
+        used = np.zeros(self._m, dtype=bool)
+        n_piv = 0
+        for col in order:
+            bits = (a[:, col >> 3] >> (col & 7)) & 1
+            ones = np.flatnonzero(bits)
+            if ones.size == 0:
+                continue
+            free = ones[~used[ones]]
+            if free.size == 0:
+                continue
+            p = free[0]
+            used[p] = True
+            others = ones[ones != p]
+            if others.size:
+                a[others] ^= a[p]
+                sy[others] ^= sy[p]
+            n_piv += 1
+            if n_piv >= self._max_rpc_pivots:
+                break
+
+        rows = np.unpackbits(a, axis=1, bitorder="little", count=self._n)
+        cuts = []
+        for i in range(self._m):
+            cols = np.flatnonzero(rows[i])
+            # Dense derived checks give weak cuts for a lot of work.
+            if cols.size == 0 or cols.size > self._max_rpc_weight:
+                continue
+            v = e[cols]
+            in_s = v > 0.5
+            if (int(in_s.sum()) & 1) == (int(sy[i]) & 1):
+                in_s = in_s.copy()
+                in_s[np.argmin(np.abs(2.0 * v - 1.0))] ^= True
+            g = (1.0 - v[in_s]).sum() + v[~in_s].sum()
+            if g < 1.0 - _CUT_TOL:
+                cuts.append((cols, np.where(in_s, 1.0, -1.0),
+                             float(in_s.sum()) - 1.0))
+        return cuts
+
     def _adaptive_lp(self, s):
-        """Adaptive-LP decode (Taghavi-Siegel). Returns the error or None.
+        """ACG-ALP decode. Returns the error, or None to escalate to the MILP.
 
         Solves over the fundamental polytope, generating forbidden-set cuts on
-        demand. Terminating with no violated cut and an integral solution means
-        every parity holds and the solution is optimal over a relaxation that
-        contains every valid error, so it is the exact MLE answer.
+        demand (Taghavi & Siegel). If that stalls on a fractional
+        pseudocodeword, redundant-parity-check cuts are added to break it
+        (Zhang & Siegel) and plain cut generation resumes.
+
+        Terminating with no violated cut and an integral solution means every
+        parity holds and the solution is optimal over a relaxation containing
+        every valid error, so it is the exact MLE answer.
         """
         rows, cols, vals, rhs = [], [], [], []
         e = np.zeros(self._n)
 
-        for _ in range(self._max_rounds):
-            violated = self._violated_checks(e, s)
-            if violated.size == 0:
-                break
-            for i in violated:
-                c_cols, c_vals, c_rhs = self._build_cut(e, s, i)
+        def add(cut_list):
+            for c_cols, c_vals, c_rhs in cut_list:
                 rows.append(np.full(c_cols.size, len(rhs), dtype=np.int64))
                 cols.append(c_cols.astype(np.int64))
                 vals.append(c_vals)
                 rhs.append(c_rhs)
+
+        def resolve():
+            nonlocal e
             a_ub = sp.csr_matrix(
                 (np.concatenate(vals),
                  (np.concatenate(rows), np.concatenate(cols))),
@@ -186,10 +276,33 @@ class MleIlpDecoder(ExternalDecoder):
             lp = linprog(c=self._w, A_ub=a_ub, b_ub=np.asarray(rhs),
                          bounds=(0, 1), method="highs")
             if not lp.success:
-                return None
+                return False
             e = lp.x
-        else:
-            return None                     # cut generation did not converge
+            return True
+
+        def separate_to_convergence():
+            for _ in range(self._max_rounds):
+                violated = self._violated_checks(e, s)
+                if violated.size == 0:
+                    return True
+                add([self._build_cut(e, s, i) for i in violated])
+                if not resolve():
+                    return False
+            return False                    # cut generation did not converge
+
+        if not separate_to_convergence():
+            return None
+
+        for _ in range(self._max_rpc_rounds):
+            if np.abs(e - np.round(e)).max() < _INT_TOL:
+                break
+            rpc = self._rpc_cuts(e, s)
+            if not rpc:
+                break                       # no derived check is violated
+            add(rpc)
+            # RPC cuts move the solution, which can re-violate original checks.
+            if not resolve() or not separate_to_convergence():
+                return None
 
         if np.abs(e - np.round(e)).max() >= _INT_TOL:
             return None                     # fractional: a pseudocodeword
@@ -198,7 +311,7 @@ class MleIlpDecoder(ExternalDecoder):
         return ei if np.array_equal((self._H @ ei) % 2, s) else None
 
     def decode_single(self, syndrome):
-        """Solve one shot: adaptive LP first, MILP only if it doesn't settle.
+        """Solve one shot: ACG-ALP first, MILP only if it doesn't settle.
 
         Both paths return the same answer -- see :meth:`_adaptive_lp` for why
         the LP result, when integral, is provably the MILP optimum. Only the
