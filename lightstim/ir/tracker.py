@@ -2031,14 +2031,13 @@ class SyndromeTracker:
                 if -1 in full_records[k]:
                     # An UNWATCHED gauge direction's close-out (sentinel-
                     # tagged row = WriteBack's no-slot gauge branch).  Its
-                    # only content is init-parity == readout-parity, nobody
-                    # re-measured it in between; per the gauge-branch rule
-                    # such relations must not become detectors - each error
-                    # along it is already a 2-symptom event on neighbouring
-                    # checks and this global parity attaches an irreducible
-                    # extra symptom (fig5 all-X D937: the diagonal 4-qubit
-                    # X-string sliver, 6th symptom of the non-decomposable
-                    # Y(x)Y mechanism).  Same user ruling as above.
+                    # only content is init-parity == readout-parity with
+                    # nothing re-measured in between; per the gauge-branch
+                    # rule such relations must not become detectors - each
+                    # error along the string is already a 2-symptom event
+                    # on neighbouring checks, and this global parity would
+                    # attach an extra, irreducible symptom to every one of
+                    # them.  Same user ruling as above.
                     continue
                 _used_final_coords.add(det_coord)
                 coords = list(det_coord) + [1]

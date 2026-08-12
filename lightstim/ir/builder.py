@@ -1,6 +1,6 @@
+import copy
 import logging
 import stim
-import copy
 import numpy as np
 from typing import List, Dict, Any, Optional, Union, Literal, Set, Tuple
 from dataclasses import dataclass
@@ -744,6 +744,9 @@ class CircuitBuilder:
             return None
 
         if first_logical_delta:
+            # Accumulation into ID 0 (the observable the terminal readout
+            # allocates for this same logical) — the legal exception spelled
+            # out in tracker.allocate_observable, not a second allocation.
             repeated_round_body.append(
                 "OBSERVABLE_INCLUDE",
                 [stim.target_rec(offset) for offset in first_logical_delta],

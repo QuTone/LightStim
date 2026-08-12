@@ -27,7 +27,7 @@ relative to the noiseless reference, matching the tracker's convention of
 storing parity relations without a sign column.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 import numpy as np
 import stim

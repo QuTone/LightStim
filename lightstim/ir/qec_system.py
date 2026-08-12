@@ -1,5 +1,4 @@
 import stim
-import numpy as np
 from typing import Dict, List, Tuple, Set, Any, Optional
 from dataclasses import dataclass
 from lightstim.ir.qec_patch import QECPatch
@@ -67,7 +66,6 @@ class QECSystem:
         # Define-by-run: optional tracker and builder to auto-sync when add_patch adds new qubits
         self._tracker: Optional[Any] = None
         self._builder: Optional[Any] = None
-
 
     def register_tracker(self, tracker: Any):
         """Register a SyndromeTracker for define-by-run. When add_patch adds qubits, tracker.expand() is called automatically."""
@@ -366,13 +364,6 @@ class QECSystem:
             self._builder.append_coordinates_for_new_qubits(n_old)
 
         return global_patch
-
-
-
-
-
-
-
 
     # ======================================================================
     # Helper Methods
