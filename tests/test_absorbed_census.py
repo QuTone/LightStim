@@ -368,3 +368,36 @@ def test_partial_resolve_readout_of_banked_relation_fails_loud():
         tracker.process_data_measurement(
             circuit, final_paulis,
             idx_to_coord_map={q: (float(q), 0.0) for q in range(n)})
+
+
+def test_builder_initialize_rejects_banked_support():
+    """Integration through the REAL builder path: CircuitBuilder.initialize
+    routes to process_initialization, which must fail loud when the
+    re-initialised qubits still carry a banked relation (the second real
+    reset path named in the review, alongside process_resets)."""
+    import pytest as _pytest
+    from lightstim.ir.builder import CircuitBuilder
+    from lightstim.ir.qec_system import QECSystem
+    from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
+
+    system = QECSystem()
+    system.add_patch(RotatedSurfaceCode(distance=3), name="P", offset=(0, 0))
+    tracker = SyndromeTracker(num_qubits=system.num_qubits,
+                              expected_num_logicals=system.num_logicals)
+    builder = CircuitBuilder(tracker=tracker, system_config=system,
+                             if_detector=True)
+    system.register_tracker(tracker)
+    system.register_builder(builder)
+
+    q = sorted(system.data_indices)[:2]
+    rel = np.zeros(2 * tracker.num_qubits, dtype=np.uint8)
+    rel[[tracker.num_qubits + q[0], tracker.num_qubits + q[1]]] = 1
+    tracker.record_absorbed_op(rel)
+
+    with _pytest.raises(RuntimeError, match="banked absorbed relations"):
+        builder.initialize(init_dict={q[0]: 'Z'}, n=system.num_qubits)
+
+    # disjoint re-initialisation passes untouched
+    other = sorted(set(system.data_indices) - set(q))[:1]
+    builder.initialize(init_dict={other[0]: 'Z'}, n=system.num_qubits)
+    assert tracker.num_absorbed_dof() == 1

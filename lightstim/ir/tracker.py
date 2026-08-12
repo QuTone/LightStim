@@ -579,6 +579,10 @@ class SyndromeTracker:
         Args:
             init_tableau: Shape (k, 2n).
         """
+        self._reject_reset_over_banked(
+            {int(c) % self.num_qubits
+             for c in np.flatnonzero(init_tableau.any(axis=0))},
+            context="process_initialization")
         self.stabilizers.add_stabilizers(init_tableau)
 
 
@@ -652,6 +656,29 @@ class SyndromeTracker:
             self.absorbed_ops.matrix = (self.absorbed_ops.matrix @ symplectic_matrix) % 2
             self.absorbed_ops.matrix = self.absorbed_ops.matrix.astype(np.uint8)
 
+
+    def _reject_reset_over_banked(self, touched_qubits, *, context):
+        """A banked absorbed relation must never ride silently through a
+        physical reset/re-initialisation: the reset destroys the relation's
+        support while its recorded parity stays banked, so the census would
+        go stale without any alarm.  Production flows never reset a qubit
+        that still carries a banked relation (readouts resolve or fold the
+        ledger first) — both real reset paths (process_resets, reached from
+        every SE round's ancilla resets, and process_initialization, reached
+        from CircuitBuilder.initialize) fail loud here instead of inventing
+        discard semantics."""
+        A = self.absorbed_ops
+        if not A.count or not touched_qubits:
+            return
+        n = self.num_qubits
+        cols = [q for q in touched_qubits] + [n + q for q in touched_qubits]
+        if A.matrix[:, cols].any():
+            raise RuntimeError(
+                f"{context}: reset touches qubits that still carry banked "
+                f"absorbed relations — resolve them via a corridor/patch "
+                f"readout before re-initialising, or account for the "
+                f"discarded DOF explicitly.")
+
     def process_resets(
         self,
         reset_paulis: np.ndarray,
@@ -661,24 +688,10 @@ class SyndromeTracker:
             return
 
 
-        # A banked absorbed relation must never ride silently through a
-        # physical reset: the reset destroys the relation's support while
-        # its recorded parity stays banked, so the census would go stale
-        # without any alarm.  The current production flows never reset a
-        # qubit that still carries a banked relation (readouts resolve or
-        # fold the ledger first), so this fails loud instead of inventing
-        # discard semantics here.
-        A = self.absorbed_ops
-        if A.count:
-            n = self.num_qubits
-            touched = {int(c) % n for c in np.flatnonzero(reset_paulis.any(axis=0))}
-            cols = [q for q in touched] + [n + q for q in touched]
-            if A.matrix[:, cols].any():
-                raise RuntimeError(
-                    "process_resets: reset touches qubits that still carry "
-                    "banked absorbed relations — resolve them via a "
-                    "corridor/patch readout before re-initialising, or "
-                    "account for the discarded DOF explicitly.")
+        self._reject_reset_over_banked(
+            {int(c) % self.num_qubits
+             for c in np.flatnonzero(reset_paulis.any(axis=0))},
+            context="process_resets")
 
         num_stabs = self.stabilizers.count
         num_logs = self.logicals.count
