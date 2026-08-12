@@ -29,10 +29,11 @@ codes. They earn nothing on the BB codes tried (no stalled shot was rescued)
 and cost ~8% there, which is why ``max_rpc_rounds`` exists: set it to 0 for
 plain ALP.
 
-The solver is ``scipy.optimize.milp``, which needs no dependency beyond the
-scipy LightStim already requires. Alternatives were benchmarked and rejected;
-median ms/shot on identical syndromes with an identical formulation, all
-cross-checked to return the same optimal cost:
+Both stages go through scipy -- ``linprog`` for the cuts, ``milp`` for the
+fallback -- which needs no dependency beyond the scipy LightStim already
+requires. Other solvers were benchmarked against the MILP formulation and
+rejected; median ms/shot on identical syndromes, all cross-checked to return
+the same optimal cost:
 
     instance              scipy   highspy    SCIP   CP-SAT (8 threads)
     surface d=5            11.8      21.5      26                  60
