@@ -119,14 +119,13 @@ class SyndromeTracker:
         # separately maintained integer, because a bare counter demands perfect
         # increment/decrement pairing from every path and drifts silently when one
         # forgets. Self-correcting: once an absorbed relation is read out
-        # (process_data_measurement) or its qubits retired (retire_qubits), its row is
-        # dropped and stops being counted.
+        # (process_data_measurement), its row is dropped and stops being
+        # counted.
         self.absorbed_ops = PauliTableau(num_qubits)
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
         self.post_select_detector_coords = post_select_detector_coords or set()
         self.post_select_row_indices = set()  # Stabilizer row indices to post-select in process_data_measurement
-        self.retired_qubits = set()
 
     def set_expected_logicals(self, k: int):
         """
@@ -202,72 +201,6 @@ class SyndromeTracker:
         self.absorbed_ops.expand(delta)
         self.num_qubits += delta
 
-    @property
-    def num_active_qubits(self):
-        return self.num_qubits - len(self.retired_qubits)
-
-    def retire_qubits(self, qubit_indices):
-        """Clean shrink (inverse of expand+init). Eliminate the destructively-
-        measured qubits' support from every surviving stabilizer/logical row —
-        folding each readout stabilizer's records into the row it clears — then
-        drop the pure-S readout stabilizer rows. Columns are masked (zeroed),
-        not removed, so global qubit indices stay stable.
-        """
-        n = self.num_qubits
-        S = set(int(q) for q in qubit_indices)
-        scol = [q for q in S] + [n + q for q in S]        # S's X and Z columns
-        other = [c for c in range(2 * n) if c not in set(scol)]
-        stab = self.stabilizers
-
-        # pivots = stabilizer rows supported ENTIRELY on S (the destructive-readout
-        # stabilizers). With X/Z-only Paulis each is a single S-column operator.
-        if stab.count:
-            on_other = stab.matrix[:, other].any(axis=1) if other else np.zeros(stab.count, bool)
-            on_s = stab.matrix[:, scol].any(axis=1)
-            pivot_rows = [r for r in range(stab.count) if on_s[r] and not on_other[r]]
-        else:
-            pivot_rows = []
-        pivot_set = set(pivot_rows)
-
-        # clear each S column from every non-pivot stabilizer row and every logical row,
-        # folding the pivot's records
-        for col in scol:
-            piv = next((p for p in pivot_rows if stab.matrix[p, col] == 1
-                        and stab.matrix[p].sum() == 1), None)
-            if piv is None:
-                continue
-            for r in range(stab.count):
-                if r not in pivot_set and stab.matrix[r, col] == 1:
-                    stab.update_row_from_external(r, stab.matrix[piv].copy(), stab.records[piv])
-            for r in range(self.logicals.count):
-                if self.logicals.matrix[r, col] == 1:
-                    self.logicals.update_row_from_external(r, stab.matrix[piv].copy(), stab.records[piv])
-
-        # residual: no surviving (non-pivot) row may still touch S's columns
-        survivors = [r for r in range(stab.count) if r not in pivot_set]
-        resid = False
-        if survivors:
-            resid = resid or stab.matrix[np.ix_(survivors, scol)].any()
-        if self.logicals.count:
-            resid = resid or self.logicals.matrix[:, scol].any()
-        if resid:
-            raise ValueError(
-                f"retire_qubits: residual support on qubits {sorted(S)} after "
-                f"elimination — under-determined or measured in an invalid basis.")
-
-        # drop the readout pivot rows; keep post_select_row_indices consistent
-        stab.remove_rows(pivot_rows)
-        self._remap_rows_after_removal(pivot_rows)
-        # Fix C: an absorbed relation supported on a retired qubit is RESOLVED by that
-        # qubit's destructive readout (its value enters an observable) — drop it from
-        # absorbed_ops so it stops being counted as still-trapped.
-        A = self.absorbed_ops
-        if A.count:
-            keep = [r for r in range(A.count) if not A.matrix[r, scol].any()]
-            if len(keep) != A.count:
-                A.matrix = A.matrix[keep] if keep else np.zeros((0, 2 * n), dtype=np.uint8)
-                A.records = [A.records[r] for r in keep] if A.records else []
-        self.retired_qubits |= S
 
     def _remap_rows_after_removal(self, removed_sorted):
         """Shift stabilizer-row metadata down past removed stabilizer rows.
@@ -636,74 +569,6 @@ class SyndromeTracker:
         self.logicals.matrix = full_matrix[num_stabs:]
         self.logicals.records = full_records[num_stabs:]
 
-    def declare_logical(self, pauli_vec: np.ndarray,
-                        records: Optional[List[int]] = None) -> List[int]:
-        """
-        Promote a DETERMINED operator to a logical observable row
-        (record-seeded logical birth, e.g. the in-place Y-basis
-        initialization of arXiv:2302.07395).
-
-        The operator must lie in span(self.stabilizers): a birth protocol has
-        pinned its value, generally to the XOR of measurement records carried
-        by the pinning rows. The implicit promotion path (WriteBack) only
-        births records-less rows, so a record-pinned logical needs this
-        explicit declaration. The row moves to ``self.logicals`` carrying the
-        pinning records; ONE pinning stabilizer row is removed so the tracked
-        group's rank is unchanged; ``expected_num_logicals`` grows by 1 —
-        before the declaration the born observable is genuinely a stabilizer
-        of the state, not a free logical DOF.
-
-        Budget interplay: ``QECSystem.add_patch`` ALSO grows the budget by
-        the patch's nominal logical count at registration time.  A flow that
-        registers a patch and then births its logical here is therefore
-        counted twice; the caller must reconcile the budget via
-        ``set_expected_logicals`` (the census guardrail fails loud on the
-        double count otherwise).
-
-        Args:
-            pauli_vec: (2N,) GF(2) symplectic vector of the operator.
-            records: explicit record list overriding the derived pinning
-                records (escape hatch for tests/interop).
-
-        Returns:
-            The record list attached to the new logical row.
-
-        Raises:
-            ValueError: if the operator is not determined by the current
-                stabilizer rows (birth incomplete, or wrong operator).
-        """
-        pauli_vec = np.asarray(pauli_vec, dtype=np.uint8).reshape(1, -1)
-        if pauli_vec.shape[1] != 2 * self.num_qubits:
-            raise ValueError(
-                f"pauli_vec has length {pauli_vec.shape[1]}, expected "
-                f"{2 * self.num_qubits}")
-        coeffs, is_dependent, _ = solve_linear_decomposition(
-            basis=self.stabilizers.matrix,
-            targets=pauli_vec,
-            reduce_weight=True,
-        )
-        if not is_dependent[0]:
-            raise ValueError(
-                "declare_logical: operator is not determined by the current "
-                "stabilizer rows (not in span) — the birth protocol is "
-                "incomplete or the operator is wrong.")
-        pinning = [int(i) for i in np.flatnonzero(coeffs[0])]
-        if records is None:
-            rec_set = set()
-            for i in pinning:
-                rec_set.symmetric_difference_update(self.stabilizers.records[i])
-            records = sorted(rec_set)
-        # Drop one pinning row: the operator leaves span(stabilizers) and the
-        # combined group rank stays constant. Any pinning row works; take the
-        # last for determinism.
-        drop = pinning[-1]
-        self.stabilizers.matrix = np.delete(self.stabilizers.matrix, drop, axis=0)
-        self.stabilizers.records.pop(drop)
-        self._remap_rows_after_removal([drop])
-        self.logicals.add_stabilizers(pauli_vec, [list(records)])
-        self.expected_num_logicals += 1
-        return list(records)
-
     def process_initialization(self, init_tableau: np.ndarray):
         """
         Registers new stabilizers from initialization into the tracker.
@@ -794,6 +659,7 @@ class SyndromeTracker:
         """Apply physical reset operations to the current tracked state."""
         if reset_paulis.shape[0] == 0:
             return
+
 
         num_stabs = self.stabilizers.count
         num_logs = self.logicals.count

@@ -193,7 +193,6 @@ class QECSystem:
         # 2. Global Identity Registration
         local_to_global_map = {}
         self.local_to_global_map[name] = {}
-        reused_indices = []
 
         for global_coord, local_index in patch.index_map.items(): # the patch is already shifted to the global coordinate system
 
@@ -207,7 +206,6 @@ class QECSystem:
                     )
                 # Reuse dormant qubit index (measured, ready for reuse)
                 idx = existing_idx
-                reused_indices.append(idx)
             else:
                 # New qubit — assign fresh index
                 idx = self.next_index
@@ -233,29 +231,6 @@ class QECSystem:
             if hasattr(patch, 'syndrome_indices_z'):
                 if local_index in patch.syndrome_indices_z:
                     self.syndrome_indices_z.add(idx)
-
-        # A reused dormant index must stop counting as retired: the retire
-        # bookkeeping (Fix C absorbed resolution, retired-qubit masking)
-        # would otherwise treat the LIVE qubit as measured-out.  The tracker
-        # rows were eliminated from these columns at retirement, so any
-        # remaining support means the retirement was incomplete — fail loud
-        # rather than build on a stale tableau.
-        tracker = getattr(self, "_tracker", None)
-        if tracker is not None and reused_indices:
-            stale = sorted(q for q in reused_indices
-                           if q in tracker.retired_qubits)
-            if stale:
-                n_t = tracker.num_qubits
-                cols = [q for q in stale] + [n_t + q for q in stale]
-                for tab_label, tab in (("stabilizers", tracker.stabilizers),
-                                       ("logicals", tracker.logicals),
-                                       ("absorbed_ops", tracker.absorbed_ops)):
-                    if tab.count and tab.matrix[:, cols].any():
-                        raise RuntimeError(
-                            f"add_patch('{name}'): reusing retired qubits "
-                            f"{stale}, but tracker {tab_label} rows still "
-                            f"reference them — stale retirement state.")
-                tracker.retired_qubits.difference_update(stale)
 
         # 3. Stabilizer and Logical Operator Translation
         stabilizer_indices = []
@@ -572,46 +547,6 @@ class QECSystem:
         
         # B. Restore Original Stabilizers
         self.active_stabilizer_indices.update(restored_uids)
-
-    def retire_measured_patch(self, name):
-        """After a patch's data qubits have been destructively measured out,
-        retire it: deactivate its stabilizers and retire its DATA qubits from
-        the tracker (clean shrink), then mirror the system's static logical
-        count from the tracker's budget. Qubit indices stay allocated
-        (masked) so global indexing is stable.
-
-        Scope: only the patch's data qubits go dormant here. Its syndrome
-        ancillas remain in ``active_qubit_indices`` — releasing them (needed
-        only when a later patch or corridor overlaps the old ancilla
-        coordinates) is the corridor-reuse layer's responsibility; an
-        overlap with a still-active ancilla fails loud in add_patch."""
-        # NOTE: unlike remove_coupler, we intentionally do NOT prune data_indices /
-        # index_to_owner_map / qubit_coords here — the retired patch's coords linger
-        # harmlessly (SE only measures ACTIVE stabilizers) and the end-readout + noise
-        # injection still resolve them. Masking (not deleting) keeps global indices stable.
-        dq = {q for q in self.data_indices if self.index_to_owner_map.get(q) == name}
-        if not dq:
-            return
-        dead = {uid for uid in list(self.active_stabilizer_indices)
-                if self.stabilizers[uid].get('patch_name') == name}
-        self.active_stabilizer_indices.difference_update(dead)
-        if self._tracker is not None:
-            self._tracker.retire_qubits(dq)
-            # NOTE: the budget (expected_num_logicals) is NOT touched here. The patch's
-            # destructive readout — apply_data_readout, run just before this call —
-            # already decremented `expected` by exactly the number of live logical DOFs
-            # it resolved (free ones consumed and/or absorbed relations read out). We
-            # deliberately do NOT re-sync expected := standing (+ absorbed): that would
-            # slave the independent budget to the tableau matrices and silently erase any
-            # prior discrepancy the guardrail is meant to catch.
-            # Keep the system's STATIC logical count mirroring the tracker's dynamic
-            # budget so a LATER define-by-run registration (add_patch) grows from the
-            # right base instead of a stale global count.
-            self.num_logicals = self._tracker.expected_num_logicals
-        # Make the retired data qubits DORMANT so their coarse cells can be reused as a
-        # later coupler's corridor: add_patch reuses an existing coord's index only when
-        # that index is NOT in active_qubit_indices (else it raises an ACTIVE collision).
-        self.active_qubit_indices.difference_update(dq)
 
     def remove_coupler(self, coupler_name: str):
         """

@@ -21,59 +21,6 @@ def _z_row(n, qubits):
     return row
 
 
-def test_declare_logical_remaps_row_metadata():
-    n = 6
-    tracker = SyndromeTracker(n, 0)
-    tracker.total_measurements = 3
-    tracker.stabilizers.matrix = np.vstack(
-        [_z_row(n, [0, 1]), _z_row(n, [2, 3]), _z_row(n, [4, 5])])
-    tracker.stabilizers.records = [[0], [1], [2]]
-    tracker.post_select_row_indices = {2}
-    tracker.stabilizer_with_logical_components = {2}
-    tracker._gauge_logical_vectors = [np.zeros(0, dtype=np.uint8)]
-
-    # Declaring Z2Z3 pins exactly row 1; row 1 is dropped, row 2 shifts to 1.
-    tracker.declare_logical(_z_row(n, [2, 3]))
-
-    assert tracker.post_select_row_indices == {1}
-    assert tracker.stabilizer_with_logical_components == {1}
-    assert len(tracker._gauge_logical_vectors) == 1
-
-
-def test_declare_logical_drops_metadata_of_consumed_row():
-    n = 4
-    tracker = SyndromeTracker(n, 0)
-    tracker.total_measurements = 2
-    tracker.stabilizers.matrix = np.vstack(
-        [_z_row(n, [0, 1]), _z_row(n, [2, 3])])
-    tracker.stabilizers.records = [[0], [1]]
-    tracker.post_select_row_indices = {1}
-
-    # Row 1 itself is the pinning row being dropped: its mark must vanish,
-    # not dangle at an out-of-range or recycled index.
-    tracker.declare_logical(_z_row(n, [2, 3]))
-
-    assert tracker.post_select_row_indices == set()
-
-
-def test_retire_qubits_remaps_swlc_and_post_select():
-    n = 3
-    tracker = SyndromeTracker(n, 0)
-    tracker.total_measurements = 2
-    tracker.stabilizers.matrix = np.vstack(
-        [_z_row(n, [0]), _z_row(n, [1, 2])])
-    tracker.stabilizers.records = [[0], [1]]
-    tracker.post_select_row_indices = {1}
-    tracker.stabilizer_with_logical_components = {1}
-    tracker._gauge_logical_vectors = [np.zeros(0, dtype=np.uint8)]
-
-    # q0's destructive readout drops the pure-q0 pivot row 0.
-    tracker.retire_qubits([0])
-
-    assert tracker.post_select_row_indices == {0}
-    assert tracker.stabilizer_with_logical_components == {0}
-
-
 def test_terminal_readout_shifts_surviving_post_select():
     n = 4
     circuit = stim.Circuit("""
