@@ -26,6 +26,7 @@ dependencies = [
     "sinter>=1.15.0",
     "PyMatching>=2.0.0",
     "pandas",
+    "scipy>=1.9.0",
 ]
 
 [project.optional-dependencies]
@@ -47,11 +48,7 @@ decoders = [
     # build it from source if it fails to import.
     "tesseract-decoder",
     "ldpc",                     # Plain BP (ldpc-bp)
-    # NOTE: the exact-MLE decoder (mle-ilp) needs nothing here. It uses
-    # scipy.optimize.milp, whose vendored HiGHS 1.8 measured ~2x faster than a
-    # standalone highspy 1.15 wheel on QEC detector error models, and faster
-    # still than SCIP and OR-Tools CP-SAT. Avoid adding highspy and ortools
-    # together — both vendor HiGHS and clash on symbols at import.
+    # The exact-MLE decoder (mle-ilp) uses the core scipy dependency.
 ]
 gpu = [
     "cudaq-qec",

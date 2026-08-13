@@ -20,8 +20,9 @@ CSV output
 
     distill_ls / distill_tg → results/{distill_ls|distill_tg}_results.csv
         experiment, d, rounds, p_injected, noise_mode, p, p_in,
+        decoder, decoder_time_limit, on_decode_failure,
         shots, post_selected_shots, post_selection_rate,
-        errors, logical_error_rate, decoder, seconds
+        errors, logical_error_rate, seconds
 
 All outputs use per-task checkpointing (append-on-complete).
 
@@ -104,23 +105,30 @@ from lightstim.protocols.tg_distillation import (
 
 _BELL_COLS = [
     "experiment", "protocol", "state", "routing_mult", "d", "rounds", "p",
-    "shots", "errors", "logical_error_rate", "decoder", "seconds",
+    "decoder", "decoder_time_limit", "on_decode_failure",
+    "shots", "errors", "logical_error_rate", "seconds",
 ]
 _S_GATE_COLS = [
     "experiment", "code", "method", "state_prep", "d", "rounds", "p",
-    "shots", "errors", "logical_error_rate", "decoder", "seconds",
+    "decoder", "decoder_time_limit", "on_decode_failure",
+    "shots", "errors", "logical_error_rate", "seconds",
 ]
 _DISTILL_COLS = [
     "experiment", "d", "rounds", "p_injected", "noise_mode", "p", "p_in",
+    "decoder", "decoder_time_limit", "on_decode_failure",
     "shots", "post_selected_shots", "post_selection_rate",
-    "errors", "logical_error_rate", "decoder", "seconds",
+    "errors", "logical_error_rate", "seconds",
 ]
-_BELL_RESULT_KEYS = frozenset({"shots", "errors", "logical_error_rate", "decoder", "seconds"})
+_BELL_RESULT_KEYS = frozenset({"shots", "errors", "logical_error_rate", "seconds"})
 _S_GATE_RESULT_KEYS = _BELL_RESULT_KEYS
 _DISTILL_RESULT_KEYS = frozenset({
-    "shots", "post_selected_shots", "post_selection_rate",
-    "errors", "logical_error_rate", "decoder", "seconds",
+    "p_in", "shots", "post_selected_shots", "post_selection_rate",
+    "errors", "logical_error_rate", "seconds",
 })
+_RESULT_METADATA_DEFAULTS = {
+    "decoder_time_limit": 0.0,
+    "on_decode_failure": "error",
+}
 
 
 # ── Checkpointing ─────────────────────────────────────────────────────────────
@@ -132,9 +140,31 @@ def _ck_key(row: dict, result_keys: frozenset) -> tuple:
     )
 
 
-def _load_done(path: Path, result_keys: frozenset) -> set:
+def _ensure_result_schema(path: Path, columns: list[str]) -> None:
+    """Upgrade pre-MLE benchmark CSVs before checkpointing or appending."""
+    if not path.exists():
+        return
+    import pandas as pd
+
+    df = pd.read_csv(path)
+    unknown = set(df.columns) - set(columns)
+    if unknown:
+        raise ValueError(
+            f"Cannot migrate {path}: unknown result columns {sorted(unknown)}"
+        )
+    changed = False
+    for column, default in _RESULT_METADATA_DEFAULTS.items():
+        if column not in df.columns:
+            df[column] = default
+            changed = True
+    if changed or list(df.columns) != columns:
+        df.reindex(columns=columns).to_csv(path, index=False)
+
+
+def _load_done(path: Path, result_keys: frozenset, columns: list[str]) -> set:
     if not path.exists():
         return set()
+    _ensure_result_schema(path, columns)
     import pandas as pd
     df = pd.read_csv(path)
     return {_ck_key(r, result_keys) for r in df.to_dict("records")}
@@ -149,8 +179,12 @@ def _append_row(path: Path, row: dict, cols: list) -> None:
         w.writerow(row)
 
 
-def _checked_decoder_config(name: str) -> DecoderConfig:
-    cfg = _decoder_config(name)
+def _checked_decoder_config(
+    name: str,
+    mle_time_limit: float = 0.0,
+    on_decode_failure: str = "error",
+) -> DecoderConfig:
+    cfg = _decoder_config(name, mle_time_limit, on_decode_failure)
     if cfg.backend != "gpu":
         return cfg
 
@@ -187,7 +221,7 @@ _BELL_DEFAULT_DECODER = {
 
 
 def _run_bell_tele(args, output_path: Path) -> None:
-    done = _load_done(output_path, _BELL_RESULT_KEYS)
+    done = _load_done(output_path, _BELL_RESULT_KEYS, _BELL_COLS)
     protocols = args.protocols if args.protocols else list(_BELL_DEFAULT_DECODER)
 
     pipeline_cache: dict = {}
@@ -204,6 +238,10 @@ def _run_bell_tele(args, output_path: Path) -> None:
             "rounds": f"pre={d} mid=1 post=1" if protocol == "tg" else f"pre={d} ls={d}",
             "p": p,
             "decoder": decoder_name,
+            "decoder_time_limit": (
+                args.mle_time_limit if decoder_name == "mle-ilp" else 0.0
+            ),
+            "on_decode_failure": args.on_decode_failure,
         }
         if _ck_key(row_proto, _BELL_RESULT_KEYS) in done:
             print(f"  SKIP {protocol} {state} d={d} p={p:.0e}")
@@ -216,7 +254,11 @@ def _run_bell_tele(args, output_path: Path) -> None:
 
         if decoder_name not in pipeline_cache:
             pipeline_cache[decoder_name] = SimulationPipeline(
-                decoder_config=_checked_decoder_config(decoder_name),
+                decoder_config=_checked_decoder_config(
+                    decoder_name,
+                    args.mle_time_limit,
+                    args.on_decode_failure,
+                ),
                 max_shots=args.max_shots,
                 max_errors=args.max_errors,
                 batch_size=args.batch_size,
@@ -276,7 +318,7 @@ def _s_gate_rounds(d: int, method: str) -> tuple[int, int]:
 
 
 def _run_s_gate_tele(args, output_path: Path) -> None:
-    done = _load_done(output_path, _S_GATE_RESULT_KEYS)
+    done = _load_done(output_path, _S_GATE_RESULT_KEYS, _S_GATE_COLS)
     pipeline_cache: dict = {}
 
     for code, method, state_prep in _valid_s_gate_combos(args):
@@ -292,6 +334,10 @@ def _run_s_gate_tele(args, output_path: Path) -> None:
                 "rounds": f"prep={rounds_prep} gate={rounds_gate}",
                 "p": p,
                 "decoder": decoder_name,
+                "decoder_time_limit": (
+                    args.mle_time_limit if decoder_name == "mle-ilp" else 0.0
+                ),
+                "on_decode_failure": args.on_decode_failure,
             }
             if _ck_key(row_proto, _S_GATE_RESULT_KEYS) in done:
                 print(f"  SKIP {code} {method} {state_prep} d={d} p={p:.0e}")
@@ -314,7 +360,11 @@ def _run_s_gate_tele(args, output_path: Path) -> None:
 
             if decoder_name not in pipeline_cache:
                 pipeline_cache[decoder_name] = SimulationPipeline(
-                    decoder_config=_checked_decoder_config(decoder_name),
+                    decoder_config=_checked_decoder_config(
+                        decoder_name,
+                        args.mle_time_limit,
+                        args.on_decode_failure,
+                    ),
                     max_shots=args.max_shots,
                     max_errors=args.max_errors,
                     batch_size=args.batch_size,
@@ -345,7 +395,7 @@ def _run_s_gate_tele(args, output_path: Path) -> None:
 # ── Distillation ──────────────────────────────────────────────────────────────
 
 def _run_distillation(args, which: str, output_path: Path) -> None:
-    done = _load_done(output_path, _DISTILL_RESULT_KEYS)
+    done = _load_done(output_path, _DISTILL_RESULT_KEYS, _DISTILL_COLS)
 
     if which == "ls":
         build_fn    = _build_ls_distill
@@ -364,7 +414,11 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
     p_injected_list = args.p_injected or [1e-3, 5e-3, 2e-2]
     p_list = args.p_values if args.p_values else [1e-3]
     decoder_name = args.decoder or "pymatching"
-    decoder_cfg = _checked_decoder_config(decoder_name)
+    decoder_cfg = _checked_decoder_config(
+        decoder_name,
+        args.mle_time_limit,
+        args.on_decode_failure,
+    )
 
     if which == "ls" and decoder_cfg.backend != "cpu":
         raise ValueError("LS distillation currently expects a CPU decoder; use `pymatching`.")
@@ -403,6 +457,10 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                     "noise_mode": mode,
                     "p": p,
                     "decoder": decoder_name,
+                    "decoder_time_limit": (
+                        args.mle_time_limit if decoder_name == "mle-ilp" else 0.0
+                    ),
+                    "on_decode_failure": args.on_decode_failure,
                 }
                 if _ck_key(row_proto, _DISTILL_RESULT_KEYS) in done:
                     print(f"  SKIP d={d} mode={mode} p={p:.0e} p_inj={p_inj:.0e}")
@@ -429,6 +487,8 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                         args.max_shots, args.max_errors,
                         batch_size=50_000, num_workers=args.num_workers,
                         data_indices=magic_data,
+                        decoder_params=decoder_cfg.params,
+                        on_decode_failure=decoder_cfg.on_decode_failure,
                     )
                 else:
                     stats = _run_tg_sim(
@@ -439,6 +499,7 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                         backend=decoder_cfg.backend,
                         batch_size=50_000,
                         decoder_params=decoder_cfg.params,
+                        on_decode_failure=decoder_cfg.on_decode_failure,
                     )
                 row = {
                     **row_proto,
@@ -458,15 +519,24 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
 
 # ── Decoder config ─────────────────────────────────────────────────────────────
 
-def _decoder_config(name: str) -> DecoderConfig:
+def _decoder_config(
+    name: str,
+    mle_time_limit: float = 0.0,
+    on_decode_failure: str = "error",
+) -> DecoderConfig:
     if name == "pymatching":
-        return DecoderConfig("pymatching", backend="cpu")
+        return DecoderConfig(
+            "pymatching", backend="cpu", on_decode_failure=on_decode_failure
+        )
     if name in ("bposd", "cpu_bposd"):
-        return DecoderConfig("bposd", backend="cpu", params={
-            "max_iterations": 1000, "osd_order": 10,
-            "bp_method": "min_sum", "ms_scaling_factor": 0,
-            "osd_method": "osd_cs",
-        })
+        return DecoderConfig(
+            "bposd", backend="cpu", params={
+                "max_iterations": 1000, "osd_order": 10,
+                "bp_method": "min_sum", "ms_scaling_factor": 0,
+                "osd_method": "osd_cs",
+            },
+            on_decode_failure=on_decode_failure,
+        )
     if name in ("gpu_bposd", "nv-qldpc-decoder"):
         return DecoderConfig(
             "nv-qldpc-decoder",
@@ -479,12 +549,21 @@ def _decoder_config(name: str) -> DecoderConfig:
                 "osd_method": "osd_cs",
                 "use_osd": True,
             },
+            on_decode_failure=on_decode_failure,
         )
     if name == "mwpf":
-        return DecoderConfig("mwpf", backend="cpu", params={"cluster_node_limit": 50})
+        return DecoderConfig(
+            "mwpf", backend="cpu", params={"cluster_node_limit": 50},
+            on_decode_failure=on_decode_failure,
+        )
+    if name == "mle-ilp":
+        return DecoderConfig(
+            "mle-ilp", backend="cpu", params={"time_limit": mle_time_limit},
+            on_decode_failure=on_decode_failure,
+        )
     raise ValueError(
         f"Unknown decoder: {name!r}. "
-        "Choose: pymatching, mwpf, cpu_bposd, gpu_bposd"
+        "Choose: pymatching, mwpf, cpu_bposd, gpu_bposd, mle-ilp"
     )
 
 
@@ -553,8 +632,17 @@ def main():
     )
     ap.add_argument(
         "--decoder", default=None,
-        choices=["pymatching", "mwpf", "bposd", "cpu_bposd", "gpu_bposd", "nv-qldpc-decoder"],
+        choices=["pymatching", "mwpf", "bposd", "cpu_bposd", "gpu_bposd", "nv-qldpc-decoder", "mle-ilp"],
         help="Override decoder for all experiments (default: per-experiment default)",
+    )
+    ap.add_argument(
+        "--mle-time-limit", type=float, default=0.0,
+        help="Soft seconds/shot limit for mle-ilp; 0 is exact/unlimited (default: 0)",
+    )
+    ap.add_argument(
+        "--on-decode-failure", choices=["error", "discard", "ignore"],
+        default="error",
+        help="Policy for decoder timeouts/failures (default: error)",
     )
     ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
     ap.add_argument("--max-errors",  type=int, default=100)
@@ -577,6 +665,11 @@ def main():
         help="Output directory for results CSVs (default: benchmarks/logical_circuits/results/)",
     )
     args = ap.parse_args()
+
+    if not np.isfinite(args.mle_time_limit) or args.mle_time_limit < 0:
+        ap.error("--mle-time-limit must be finite and non-negative")
+    if args.mle_time_limit > 0 and args.decoder != "mle-ilp":
+        ap.error("--mle-time-limit is only valid with --decoder mle-ilp")
 
     if args.quick:
         args.distances  = [3]

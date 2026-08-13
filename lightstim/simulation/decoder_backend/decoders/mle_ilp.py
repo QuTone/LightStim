@@ -24,44 +24,23 @@ of being discarded; they tighten the branch-and-bound relaxation without
 changing the integer feasible set. This stays exact; see
 :meth:`MleIlpDecoder._adaptive_lp`.
 
-Plain ALP already settles 85-100% of shots and is worth 2.0-11.0x over calling
-the MILP directly, with the largest gains on QLDPC codes. RPC cuts then clear
-most of what is left -- on surface d=7 and d=9 at p=1e-3 they took the MILP
-fallback rate from 7/60 and 3/30 to zero -- for a further 1.4-3.2x on surface
-codes. They earn nothing on the BB codes tried (no stalled shot was rescued)
-and cost ~8% there, which is why ``max_rpc_rounds`` exists: set it to 0 for
-plain ALP.
+ALP settles many shots without invoking mixed-integer branch-and-bound, while
+RPC cuts can settle additional fractional cases. ``max_rpc_rounds=0`` disables
+the RPC stage when its overhead is not useful for a particular code family.
 
 Both stages go through scipy -- ``linprog`` for the cuts, ``milp`` for the
-fallback -- which needs no dependency beyond the scipy LightStim already
-requires. Other solvers were benchmarked against the MILP formulation and
-rejected; median ms/shot on identical syndromes, all cross-checked to return
-the same optimal cost:
-
-    instance              scipy   highspy    SCIP   CP-SAT (8 threads)
-    surface d=5            11.8      21.5      26                  60
-    surface d=7            41.4      76.5     271                 616
-    BB [[72,12,6]] r=2     56.7     132.6      79                 119
-    BB [[72,12,6]] r=4    113.7     270.6     271                5488
-
-Two results there are worth not re-deriving. First, scipy and ``highspy`` are
-*not* the same binary — scipy vendors its own HiGHS (1.8.0 in scipy 1.15)
-rather than importing ``highspy`` (1.15.1), and the older vendored build wins
-everywhere. The gap is not explained by threads, matrix format, presolve,
-``mip_rel_gap``, incremental-vs-rebuild model updates, or ``passModel``; all
-were tested and are a wash. Second, CP-SAT degrades far worse than the MILP
-solvers as the DEM densifies (a BB detector row averages ~214 error mechanisms
-against a handful for the surface code), so its native ``AddBoolXOr`` handling
-of the parity constraints does not pay off. At BB r=4 it left 2 of 10 shots
-unproven at a 60 s cap.
+fallback. The deterministic benchmark in ``benchmarks/mle`` compares the
+optimised path with a direct SciPy MILP on identical surface-code and BB-code
+syndromes, checks objective agreement, and records the local environment.
 
 Single-threaded is the right comparison throughout: :class:`SimulationPipeline`
 already parallelises across shots, so intra-solve threads only oversubscribe.
 
-If a future scipy vendors a slower HiGHS, the alternatives are worth re-testing
--- ``git log`` for this file has a working ``highspy`` backend. Note that
-``highspy`` and ``ortools`` cannot share an environment: both vendor HiGHS and
-clash on symbols at import, in either order.
+Supplied priors are first validated to be in [0, 0.5]; values above 0.5 are
+rejected, not clamped. ``max_prior`` is a separate compatibility/model-tuning
+cap. Its default of 0.5 leaves every accepted prior unchanged. Setting
+``max_prior=c<0.5`` replaces each positive prior ``p`` with ``min(p, c)``, so
+accepted priors above ``c`` are intentionally decoded under an altered model.
 """
 
 from __future__ import annotations
@@ -84,17 +63,18 @@ _BIT_MASKS = np.left_shift(np.uint8(1), np.arange(8, dtype=np.uint8))
 _RPC_XOR_CHUNK_BYTES = 8 << 20
 
 _DEFAULTS = {
-    "max_prior": 0.5,      # optional stricter clamp; priors > 0.5 are rejected
+    "max_prior": 0.5,      # Applied only after priors are validated in
+                            # [0, 0.5]; values above 0.5 are rejected. The
+                            # default changes nothing. Setting c < 0.5 maps
+                            # each positive p to min(p, c), while p=0 stays
+                            # impossible/fixed off.
     "time_limit": 0.0,     # soft wall-clock budget per shot; 0 = unlimited.
                            # Cut generation and the MILP fallback share one
                            # deadline, and a shot that exhausts it is reported
                            # as a decode failure so
                            # DecoderConfig(on_decode_failure=...) can herald it
                            # instead of silently recording a wrong answer.
-                           # Worth setting: the tail is brutal without it. On
-                           # BB [[72,12,6]] r=4, 200 shots, the worst shot goes
-                           # 38.8 s -> 1.0 s at time_limit=0.5 (5 heralded) and
-                           # -> 2.6 s at 2.0 (2 heralded), mean 232 -> 37/57 ms.
+                           # Worth setting for large DEMs with long solve tails.
                            # Soft, not hard: HiGHS polices its own limit only
                            # at checkpoints, so expect overshoot up to ~2x.
     "max_cut_rounds": 200,  # give up on cut generation and fall back to MILP
@@ -111,14 +91,25 @@ _DEFAULTS = {
 
 
 def _weights(priors: np.ndarray, max_prior: float) -> np.ndarray:
-    """Negative-log-likelihood-ratio cost per error mechanism."""
+    """Return LLR costs after validation and the optional ``max_prior`` cap.
+
+    Priors above 0.5 are rejected. For an accepted prior p, a non-default cap
+    c replaces p with min(p, c); the default c=0.5 leaves p unchanged.
+    """
     q = np.asarray(priors, dtype=float)
     if not np.all(np.isfinite(q)) or np.any(q < 0.0) or np.any(q > 0.5):
         raise ValueError("priors must be finite probabilities in [0, 0.5]")
     if not 0.0 < max_prior <= 0.5:
         raise ValueError("max_prior must be in (0, 0.5]")
-    q = np.clip(q, 1e-15, max_prior - 1e-15)
-    return np.log((1.0 - q) / q)
+    q = np.minimum(q, max_prior)
+    weights = np.zeros_like(q)
+    positive = q > 0.0
+    weights[positive] = np.log1p(-q[positive]) - np.log(q[positive])
+    # Avoid leaving a platform-dependent rounding residue at the exactly
+    # uninformative prior. Zero-prior variables are fixed off in setup, so their
+    # placeholder weight is never part of a feasible solution.
+    weights[q == 0.5] = 0.0
+    return weights
 
 
 class MleIlpDecoder(ExternalDecoder):
@@ -129,10 +120,13 @@ class MleIlpDecoder(ExternalDecoder):
     def setup(self, *, H, priors, **_):
         params = {**_DEFAULTS, **self.params}
         self._time_limit = float(params["time_limit"])
+        if not np.isfinite(self._time_limit) or self._time_limit < 0:
+            raise ValueError("time_limit must be finite and non-negative")
 
         H = sp.csr_matrix(H, dtype=np.uint8)
         self._m, self._n = H.shape
         self._w = _weights(priors, float(params["max_prior"]))
+        possible = np.asarray(priors, dtype=float) > 0.0
 
         self._H = H
         self._indptr = H.indptr
@@ -167,8 +161,12 @@ class MleIlpDecoder(ExternalDecoder):
 
         rowsum = np.asarray(H.sum(axis=1)).ravel()
         lower = np.zeros(self._n + self._m)
-        upper = np.concatenate([np.ones(self._n), np.floor(rowsum / 2.0)])
+        error_upper = possible.astype(float)
+        upper = np.concatenate([error_upper, np.floor(rowsum / 2.0)])
         self._bounds = Bounds(lower, upper)
+        self._lp_bounds = np.column_stack(
+            [np.zeros(self._n, dtype=float), error_upper]
+        )
         self._c = np.concatenate([self._w, np.zeros(self._m)])
         self._integrality = np.ones(self._n + self._m)
         # [H | -2I] -- one slack column per detector row.
@@ -365,7 +363,7 @@ class MleIlpDecoder(ExternalDecoder):
                     return False
                 options["time_limit"] = remaining
             lp = linprog(c=self._w, A_ub=a_ub, b_ub=np.asarray(rhs),
-                         bounds=(0, 1), method="highs", options=options)
+                         bounds=self._lp_bounds, method="highs", options=options)
             if not lp.success:
                 return False
             e = lp.x
@@ -422,18 +420,9 @@ class MleIlpDecoder(ExternalDecoder):
         the LP result, when integral, is provably the MILP optimum. Only the
         cost of getting there differs.
 
-        The relaxation is tight enough on these models that HiGHS reports a
-        branch-and-bound node count of 1 on essentially every shot, so the win
-        is skipping MIP machinery that changes nothing. Measured against
-        calling the MILP directly: 3.9x on surface d=5, 2.0x on d=7, 11.0x on
-        BB [[72,12,6]] r=2 and 7.9x on r=4, with the LP settling 34/40 to 40/40
-        of shots. Totals gain least where a few hard shots dominate, and those
-        shots reuse the generated cuts to tighten the MILP fallback.
-
-        Against the plain (slack-formulation) relaxation this replaced, the
-        end-to-end gain is larger still -- a 100-shot BB r=4 run went from 727
-        to 38 ms/shot -- because ALP settles hard shots that the slack
-        relaxation left fractional, so they never reach the MILP at all.
+        The LP shortcut skips mixed-integer machinery when the relaxation is
+        already integral. Fractional shots reuse all generated cuts in the
+        exact MILP fallback. See ``benchmarks/mle`` for reproducible timings.
         """
         s = np.asarray(syndrome, dtype=np.uint8).ravel()
         deadline = (time.monotonic() + self._time_limit

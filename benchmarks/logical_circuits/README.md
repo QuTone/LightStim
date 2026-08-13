@@ -77,7 +77,9 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py
 | `--state-preps` | `logical_gate` | S-gate resource-state preparation modes (`logical_gate` or `inject`) |
 | `--noise-mode` | `circuit_level` | `circuit_level` or `injection` |
 | `--p-injected` | — | Injection noise p (injection mode only) |
-| `--decoder` | auto | `pymatching`, `mwpf`, `cpu_bposd`, `gpu_bposd` (`bposd` and `nv-qldpc-decoder` are accepted aliases) |
+| `--decoder` | auto | `pymatching`, `mwpf`, `cpu_bposd`, `gpu_bposd`, `mle-ilp` (`bposd` and `nv-qldpc-decoder` are accepted aliases) |
+| `--mle-time-limit` | `0` | Soft seconds-per-shot limit for `mle-ilp`; zero is unlimited |
+| `--on-decode-failure` | `error` | Count, discard, or ignore decoder timeout/failure shots |
 | `--num-workers` | `8` | Parallel CPU workers (use 1 for GPU) |
 | `--max-shots` | `1e9` | Max shots per task |
 | `--max-errors` | `100` | Stop after N logical errors |
@@ -91,10 +93,21 @@ kept as protocol/notebook smoke demos until rotated logical S/S† provides a
 fault-tolerant verification path.
 
 > **Decoder guidance**: Bell teleportation (TG protocol) and TG distillation produce
-> hyperedge DEMs. Use `mwpf` (CPU), `cpu_bposd` (CPU BP+OSD), or `gpu_bposd`
+> hyperedge DEMs. Use `mle-ilp` for an exact small-instance reference, `mwpf`
+> (CPU), `cpu_bposd` (CPU BP+OSD), or `gpu_bposd`
 > (CUDA BP+OSD via `cudaq_qec`) for these.
 > LS-based experiments (ZZ-LS, XX-LS, LS distillation) use `pymatching`.
 > `gpu_bposd` requires a visible NVIDIA GPU (`nvidia-smi -L`).
+
+Exact MLE is unlimited by default. Large DEMs can have long solve tails, so a
+bounded benchmark should set both `--mle-time-limit` and an explicit
+`--on-decode-failure` policy, for example:
+
+```bash
+PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py \
+    --experiment distill_tg --distances 3 --p-values 1e-3 \
+    --decoder mle-ilp --mle-time-limit 2 --on-decode-failure discard
+```
 
 ## Output format
 
@@ -102,22 +115,25 @@ fault-tolerant verification path.
 
 ```
 gate, protocol, state, routing_mult, d, rounds, p,
-shots, errors, logical_error_rate, decoder, seconds
+decoder, decoder_time_limit, on_decode_failure,
+shots, errors, logical_error_rate, seconds
 ```
 
 ### s_gate_tele
 
 ```
 experiment, code, method, state_prep, d, rounds, p,
-shots, errors, logical_error_rate, decoder, seconds
+decoder, decoder_time_limit, on_decode_failure,
+shots, errors, logical_error_rate, seconds
 ```
 
 ### distill_ls / distill_tg
 
 ```
 experiment, d, rounds, p_injected, noise_mode, p, p_in,
+decoder, decoder_time_limit, on_decode_failure,
 shots, post_selected_shots, post_selection_rate,
-errors, logical_error_rate, decoder, seconds
+errors, logical_error_rate, seconds
 ```
 
 ## How to plot

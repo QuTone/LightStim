@@ -49,6 +49,51 @@ def test_rejects_prior_above_half():
                       priors=np.array([0.500001]))
 
 
+def test_zero_prior_mechanism_is_fixed_off():
+    """An impossible mechanism must never beat a positive-probability path."""
+    H = sp.csr_matrix([
+        [1, 1, 0],
+        [1, 0, 1],
+    ], dtype=np.uint8)
+    priors = np.array([0.0, 1e-9, 1e-9])
+    syndrome = np.array([1, 1], dtype=np.uint8)
+
+    decoder = get_decoder("mle-ilp", backend="cpu")
+    decoder.setup(H=H, priors=priors)
+    correction, ok = decoder.decode_single(syndrome)
+
+    assert ok
+    assert correction.tolist() == [0, 1, 1]
+    assert decoder._bounds.ub[0] == 0
+    assert decoder._lp_bounds[0, 1] == 0
+    assert np.array_equal((H @ correction) % 2, syndrome)
+
+
+def test_half_prior_has_zero_weight_and_max_prior_changes_model():
+    from lightstim.simulation.decoder_backend.decoders.mle_ilp import _weights
+
+    assert _weights(np.array([0.0, 0.5]), 0.5).tolist() == [0.0, 0.0]
+    supplied = _weights(np.array([0.4]), 0.5)[0]
+    clamped = _weights(np.array([0.4]), 0.2)[0]
+    assert supplied == pytest.approx(np.log(0.6 / 0.4))
+    assert clamped == pytest.approx(np.log(0.8 / 0.2))
+    assert clamped != pytest.approx(supplied)
+
+
+def test_time_limit_defaults_to_unlimited_and_rejects_invalid_values():
+    H = sp.csr_matrix([[1]], dtype=np.uint8)
+    priors = np.array([0.1])
+
+    decoder = get_decoder("mle-ilp", backend="cpu")
+    decoder.setup(H=H, priors=priors)
+    assert decoder._time_limit == 0.0
+
+    for invalid in (-1.0, np.inf, np.nan):
+        decoder = get_decoder("mle-ilp", backend="cpu", time_limit=invalid)
+        with pytest.raises(ValueError, match="time_limit"):
+            decoder.setup(H=H, priors=priors)
+
+
 def test_rpc_memory_guard_skips_before_allocating_packed_rows():
     """Oversized RPC workspaces must escalate without building the cache."""
     H = sp.eye(4, 1024, dtype=np.uint8, format="csr")

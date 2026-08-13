@@ -28,8 +28,10 @@ from run_memory import (
     COLOR_SE_CIRCUITS,
     _BB_CONFIGS,
     _HGP_CONFIGS,
+    _RESULT_COLUMNS,
     _TOPO_CODES,
     _decoder_config,
+    _ensure_result_schema,
     _task_key,
     build_circuit,
 )
@@ -215,7 +217,7 @@ def test_build_circuit_middle_out_rejects_y_basis():
 
 # ── Layer 2: decoder config + checkpointing ───────────────────────────────────
 
-@pytest.mark.parametrize("name", ["pymatching", "mwpf", "cpu_bposd"])
+@pytest.mark.parametrize("name", ["pymatching", "mwpf", "cpu_bposd", "mle-ilp"])
 def test_decoder_config_cpu(name):
     cfg = _decoder_config(name)
     assert cfg.backend == "cpu"
@@ -225,6 +227,14 @@ def test_decoder_config_cpu(name):
 def test_decoder_config_gpu():
     cfg = _decoder_config("gpu_bposd")
     assert cfg.backend == "gpu"
+
+
+def test_mle_decoder_config_propagates_budget_and_failure_policy():
+    cfg = _decoder_config(
+        "mle-ilp", mle_time_limit=1.25, on_decode_failure="discard"
+    )
+    assert cfg.params == {"time_limit": 1.25}
+    assert cfg.on_decode_failure == "discard"
 
 
 def test_task_key_excludes_result_columns():
@@ -248,6 +258,33 @@ def test_task_key_distinguishes_inputs():
          "noise_model": "circuit_level", "decoder_name": "pymatching"}
     b = {**a, "distance": 5}
     assert _task_key(a) != _task_key(b)
+
+
+def test_task_key_distinguishes_mle_budget_and_failure_policy():
+    base = {
+        "code": "rotated_sc", "distance": 3, "p": 1e-3,
+        "basis": "Z", "rounds": 3, "se_circuit": "default",
+        "noise_model": "circuit_level", "decoder_name": "mle-ilp",
+        "decoder_time_limit": 0.0, "on_decode_failure": "error",
+    }
+    assert _task_key(base) != _task_key({**base, "decoder_time_limit": 1.0})
+    assert _task_key(base) != _task_key({**base, "on_decode_failure": "discard"})
+
+
+def test_legacy_result_schema_adds_decoder_metadata(tmp_path):
+    path = tmp_path / "legacy.csv"
+    old_columns = [
+        column for column in _RESULT_COLUMNS
+        if column not in {"decoder_time_limit", "on_decode_failure"}
+    ]
+    pd.DataFrame([{column: 0 for column in old_columns}]).to_csv(path, index=False)
+
+    _ensure_result_schema(path)
+
+    migrated = pd.read_csv(path)
+    assert list(migrated.columns) == _RESULT_COLUMNS
+    assert migrated["decoder_time_limit"].iloc[0] == 0.0
+    assert migrated["on_decode_failure"].iloc[0] == "error"
 
 
 def test_task_key_distinguishes_color_se_circuits():
@@ -424,6 +461,33 @@ def test_cli_cpu_bposd_surface(tmp_path):
     assert r.returncode == 0, r.stderr
     df = pd.read_csv(out)
     assert df["decoder_name"].iloc[0] == "cpu_bposd"
+
+
+def test_cli_mle_ilp_surface(tmp_path):
+    out = tmp_path / "mle_surface.csv"
+    r = _run_cli([
+        "--codes", "rotated_sc", "--distances", "3",
+        "--p-values", "5e-3", "--decoder", "mle-ilp",
+        "--max-shots", "20", "--max-errors", "20",
+        "--batch-size", "10", "--num-workers", "1",
+        "--on-decode-failure", "discard",
+    ], out)
+    assert r.returncode == 0, r.stderr
+    df = pd.read_csv(out)
+    assert df["decoder_name"].iloc[0] == "mle-ilp"
+    assert df["decoder_time_limit"].iloc[0] == 0.0
+    assert df["on_decode_failure"].iloc[0] == "discard"
+
+
+def test_cli_rejects_mle_budget_for_other_decoder(tmp_path):
+    out = tmp_path / "invalid_mle_budget.csv"
+    r = _run_cli([
+        "--codes", "rotated_sc", "--distances", "3",
+        "--mle-time-limit", "1",
+    ], out)
+    assert r.returncode != 0
+    assert "only valid with --decoder mle-ilp" in r.stderr
+    assert not out.exists()
 
 
 @pytest.mark.slow

@@ -4,6 +4,7 @@ stim>=1.15.0
 sinter>=1.15.0
 PyMatching>=2.0.0
 pandas
+scipy>=1.9.0
 
 # HTTP server (optional — only needed when running `uvicorn server.main:app`)
 fastapi>=0.110.0
