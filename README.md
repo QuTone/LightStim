@@ -135,6 +135,7 @@ print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 | Unrotated surface | `UnrotatedSurfaceCode` | Lattice surgery coupler available |
 | Toric | `ToricCode` | Periodic boundary conditions |
 | Color (6-6-6) | `ColorCode` | Fold-transversal H/S gates |
+| Hypergraph product | `HGPCode` | Binary seed matrices; product-coloration SE |
 | Bivariate bicycle | `BBCode` | [[144,12,12]] gross code etc. |
 | PQRM | `PQRMPatch` | Transversal T gate; CrossLS protocol |
 | Repetition | `RepetitionCode` | Classical benchmark |
