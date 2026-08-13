@@ -41,6 +41,27 @@ def test_registered():
     assert "mle-ilp" in list_decoders()
 
 
+def test_rejects_prior_above_half():
+    """A probability above 1/2 has a negative LLR and must not be clamped."""
+    decoder = get_decoder("mle-ilp", backend="cpu")
+    with pytest.raises(ValueError, match=r"priors.*\[0, 0\.5\]"):
+        decoder.setup(H=sp.csr_matrix([[1]], dtype=np.uint8),
+                      priors=np.array([0.500001]))
+
+
+def test_rpc_memory_guard_skips_before_allocating_packed_rows():
+    """Oversized RPC workspaces must escalate without building the cache."""
+    H = sp.eye(4, 1024, dtype=np.uint8, format="csr")
+    decoder = get_decoder(
+        "mle-ilp", backend="cpu", max_rpc_memory_mb=0.001)
+    decoder.setup(H=H, priors=np.full(H.shape[1], 1e-3))
+
+    assert decoder._rpc_workspace_bytes > decoder._max_rpc_memory_bytes
+    assert decoder._rpc_cuts(np.full(H.shape[1], 0.5),
+                             np.zeros(H.shape[0], dtype=np.uint8)) == []
+    assert decoder._packed is None
+
+
 def test_solution_satisfies_syndrome():
     """The returned error must actually explain the observed syndrome."""
     dem = _surface_code_dem()
@@ -125,6 +146,48 @@ def test_lp_shortcut_matches_pure_milp():
         assert decoder._w @ correction == pytest.approx(reference.fun, abs=1e-6)
 
 
+def test_milp_fallback_reuses_adaptive_lp_cuts(monkeypatch):
+    """A fractional ALP result should strengthen, not just precede, the MILP."""
+    import itertools
+    from lightstim.simulation.decoder_backend.decoders import mle_ilp
+
+    H = np.array([
+        [0, 1, 0, 1],
+        [1, 1, 1, 1],
+        [1, 1, 1, 0],
+    ], dtype=np.uint8)
+    priors = np.array([0.2, 0.05, 0.2, 0.15])
+    syndrome = np.array([0, 1, 0], dtype=np.uint8)
+    decoder = get_decoder("mle-ilp", backend="cpu", max_rpc_rounds=0)
+    decoder.setup(H=sp.csr_matrix(H), priors=priors)
+
+    captured = {}
+    original_milp = mle_ilp.milp
+
+    def capture_milp(*args, **kwargs):
+        captured["constraints"] = kwargs["constraints"]
+        return original_milp(*args, **kwargs)
+
+    monkeypatch.setattr(mle_ilp, "milp", capture_milp)
+    correction, ok = decoder.decode_single(syndrome)
+
+    assert ok
+    assert len(captured["constraints"]) == 2
+    cut_constraint = captured["constraints"][1]
+    assert cut_constraint.A.shape[1] == H.shape[1] + H.shape[0]
+
+    # Every valid error remains feasible under the carried cuts.
+    errors = np.array(list(itertools.product([0, 1], repeat=H.shape[1])),
+                      dtype=np.uint8)
+    valid = errors[np.all((errors @ H.T) % 2 == syndrome, axis=1)]
+    extended = np.hstack([valid, np.zeros((valid.shape[0], H.shape[0]))])
+    lhs = np.asarray(cut_constraint.A @ extended.T)
+    assert np.all(lhs <= np.asarray(cut_constraint.ub)[:, None] + 1e-9)
+
+    costs = valid @ decoder._w
+    assert decoder._w @ correction == pytest.approx(costs.min(), abs=1e-9)
+
+
 def test_exhausted_time_limit_is_heralded_not_silently_wrong():
     """A shot that runs out of budget must report failure, not a bad answer.
 
@@ -158,7 +221,7 @@ def test_exhausted_time_limit_is_heralded_not_silently_wrong():
         "shots were heralded")
 
 
-def test_rpc_cuts_never_exclude_a_valid_error():
+def test_rpc_cuts_never_exclude_a_valid_error(monkeypatch):
     """Redundant-parity-check cuts must be valid inequalities.
 
     An RPC is a GF(2) combination of rows of H, so its syndrome bit is the XOR
@@ -173,6 +236,13 @@ def test_rpc_cuts_never_exclude_a_valid_error():
     H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=False)
     decoder = get_decoder("mle-ilp", backend="cpu")
     decoder.setup(H=H, priors=priors)
+
+    # Regression guard for the old m-by-n dense temporary: RPC support
+    # extraction must stay packed/sparse and never call np.unpackbits.
+    def reject_unpackbits(*args, **kwargs):
+        raise AssertionError("RPC generation must not allocate unpacked rows")
+
+    monkeypatch.setattr(np, "unpackbits", reject_unpackbits)
 
     rng = np.random.default_rng(3)
     sampler = dem.compile_sampler(seed=4)

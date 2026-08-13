@@ -19,7 +19,10 @@ The MILP is the fallback, not the first move. Each shot is first attempted with
 ACG-ALP: Feldman's fundamental-polytope relaxation with forbidden-set cuts
 generated on demand (Taghavi & Siegel), plus redundant-parity-check cuts when
 that stalls (Zhang & Siegel). Only a shot that survives both escalates to the
-MILP. This stays exact; see :meth:`MleIlpDecoder._adaptive_lp`.
+MILP. The valid cuts already generated are retained as MILP constraints instead
+of being discarded; they tighten the branch-and-bound relaxation without
+changing the integer feasible set. This stays exact; see
+:meth:`MleIlpDecoder._adaptive_lp`.
 
 Plain ALP already settles 85-100% of shots and is worth 2.0-11.0x over calling
 the MILP directly, with the largest gains on QLDPC codes. RPC cuts then clear
@@ -74,9 +77,14 @@ from ..registry import register_decoder
 
 _INT_TOL = 1e-6        # treat an LP component as integral within this
 _CUT_TOL = 1e-7        # minimum violation before a cut is worth adding
+_POPCOUNT = np.unpackbits(
+    np.arange(256, dtype=np.uint8)[:, None], axis=1
+).sum(axis=1).astype(np.uint8)
+_BIT_MASKS = np.left_shift(np.uint8(1), np.arange(8, dtype=np.uint8))
+_RPC_XOR_CHUNK_BYTES = 8 << 20
 
 _DEFAULTS = {
-    "max_prior": 0.5,      # clamp: priors >= 0.5 give non-positive weights
+    "max_prior": 0.5,      # optional stricter clamp; priors > 0.5 are rejected
     "time_limit": 0.0,     # soft wall-clock budget per shot; 0 = unlimited.
                            # Cut generation and the MILP fallback share one
                            # deadline, and a shot that exhausts it is reported
@@ -94,12 +102,22 @@ _DEFAULTS = {
                             # 0 disables ACG and leaves plain ALP
     "max_rpc_pivots": 64,   # Gaussian-elimination pivots per RPC round
     "max_rpc_weight": 256,  # skip derived checks denser than this
+    "max_rpc_memory_mb": 512.0,
+                            # cap the main packed RPC workspace (cached H,
+                            # elimination copy, and bounded temporaries). If the
+                            # estimate exceeds this, skip RPC and let the exact
+                            # MILP handle the shot. 0 means unlimited.
 }
 
 
 def _weights(priors: np.ndarray, max_prior: float) -> np.ndarray:
     """Negative-log-likelihood-ratio cost per error mechanism."""
-    q = np.clip(np.asarray(priors, dtype=float), 1e-15, max_prior - 1e-15)
+    q = np.asarray(priors, dtype=float)
+    if not np.all(np.isfinite(q)) or np.any(q < 0.0) or np.any(q > 0.5):
+        raise ValueError("priors must be finite probabilities in [0, 0.5]")
+    if not 0.0 < max_prior <= 0.5:
+        raise ValueError("max_prior must be in (0, 0.5]")
+    q = np.clip(q, 1e-15, max_prior - 1e-15)
     return np.log((1.0 - q) / q)
 
 
@@ -125,6 +143,26 @@ class MleIlpDecoder(ExternalDecoder):
         self._max_rpc_rounds = int(params["max_rpc_rounds"])
         self._max_rpc_pivots = int(params["max_rpc_pivots"])
         self._max_rpc_weight = int(params["max_rpc_weight"])
+        max_rpc_memory_mb = float(params["max_rpc_memory_mb"])
+        if max_rpc_memory_mb < 0:
+            raise ValueError("max_rpc_memory_mb must be non-negative")
+        self._max_rpc_memory_bytes = (
+            int(max_rpc_memory_mb * (1 << 20))
+            if max_rpc_memory_mb > 0 else None
+        )
+        packed_row_bytes = (self._n + 7) // 8
+        packed_bytes = self._m * packed_row_bytes
+        self._rpc_xor_chunk_rows = max(
+            1, _RPC_XOR_CHUNK_BYTES // max(1, packed_row_bytes))
+        max_h_row_weight = int(np.diff(self._indptr).max(initial=0))
+        build_workspace = packed_bytes + 16 * max_h_row_weight
+        eliminate_workspace = (
+            2 * packed_bytes
+            + min(self._m, self._rpc_xor_chunk_rows) * packed_row_bytes
+            + packed_row_bytes + 16 * self._max_rpc_weight
+        )
+        self._rpc_workspace_bytes = max(
+            build_workspace, eliminate_workspace)
         self._packed = None            # built lazily on the first stalled shot
 
         rowsum = np.asarray(H.sum(axis=1)).ravel()
@@ -190,11 +228,16 @@ class MleIlpDecoder(ExternalDecoder):
         """
         if self._packed is None:
             packed = np.zeros((self._m, (self._n + 7) // 8), dtype=np.uint8)
-            counts = np.diff(self._indptr)
-            row_of = np.repeat(np.arange(self._m), counts)
-            np.bitwise_or.at(
-                packed, (row_of, self._indices >> 3),
-                (np.uint8(1) << (self._indices & 7).astype(np.uint8)))
+            # Work one CSR row at a time. Constructing a global row-index array
+            # would add O(nnz) transient memory before elimination even starts.
+            for i in range(self._m):
+                indices = self._indices[self._indptr[i]:self._indptr[i + 1]]
+                if indices.size:
+                    np.bitwise_or.at(
+                        packed[i], indices >> 3,
+                        np.left_shift(
+                            np.uint8(1),
+                            (indices & 7).astype(np.uint8)))
             self._packed = packed
         return self._packed
 
@@ -208,10 +251,20 @@ class MleIlpDecoder(ExternalDecoder):
         combinations come from Gaussian-eliminating the augmented [H | s] with
         the most fractional columns as pivots, so the derived checks isolate
         the fractional variables.
+
+        Elimination stays bit-packed because row XOR on scipy sparse matrices
+        creates substantial fill-in and allocation churn. Derived rows are
+        popcounted while packed, and the sparse support of a qualifying row is
+        extracted directly from its nonzero bytes. If the estimated main
+        workspace exceeds ``max_rpc_memory_mb``, no packed cache is allocated
+        and the caller falls back to the exact MILP.
         """
         frac = np.abs(e - np.round(e))
         order = np.flatnonzero(frac > _CUT_TOL)
         if order.size == 0:
+            return []
+        if (self._max_rpc_memory_bytes is not None
+                and self._rpc_workspace_bytes > self._max_rpc_memory_bytes):
             return []
         order = order[np.argsort(-frac[order])]
 
@@ -231,19 +284,33 @@ class MleIlpDecoder(ExternalDecoder):
             used[p] = True
             others = ones[ones != p]
             if others.size:
-                a[others] ^= a[p]
+                # Advanced indexing creates a temporary. Chunk it so dense
+                # pivot columns cannot briefly allocate another full matrix.
+                for start in range(0, others.size,
+                                   self._rpc_xor_chunk_rows):
+                    chunk = others[start:start + self._rpc_xor_chunk_rows]
+                    a[chunk] ^= a[p]
                 sy[others] ^= sy[p]
             n_piv += 1
             if n_piv >= self._max_rpc_pivots:
                 break
 
-        rows = np.unpackbits(a, axis=1, bitorder="little", count=self._n)
         cuts = []
         for i in range(self._m):
-            cols = np.flatnonzero(rows[i])
             # Dense derived checks give weak cuts for a lot of work.
-            if cols.size == 0 or cols.size > self._max_rpc_weight:
+            weight = int(_POPCOUNT[a[i]].sum())
+            if weight == 0 or weight > self._max_rpc_weight:
                 continue
+            # Extract the support directly from this row's nonzero bytes. This
+            # materialises O(weight) data instead of an m-by-n or length-n
+            # dense uint8 array.
+            nonzero_bytes = np.flatnonzero(a[i])
+            byte_pos, bit_pos = np.nonzero(
+                a[i, nonzero_bytes, None] & _BIT_MASKS)
+            cols = (nonzero_bytes[byte_pos] << 3) + bit_pos
+            # The final packed byte can have padding bits, although H itself
+            # never sets them. Keep the bound explicit for defensive safety.
+            cols = cols[cols < self._n]
             v = e[cols]
             in_s = v > 0.5
             if (int(in_s.sum()) & 1) == (int(sy[i]) & 1):
@@ -272,6 +339,8 @@ class MleIlpDecoder(ExternalDecoder):
         """
         rows, cols, vals, rhs = [], [], [], []
         e = np.zeros(self._n)
+        last_a_ub = None
+        self._fallback_cuts = None
 
         def add(cut_list):
             for c_cols, c_vals, c_rhs in cut_list:
@@ -281,11 +350,12 @@ class MleIlpDecoder(ExternalDecoder):
                 rhs.append(c_rhs)
 
         def resolve():
-            nonlocal e
+            nonlocal e, last_a_ub
             a_ub = sp.csr_matrix(
                 (np.concatenate(vals),
                  (np.concatenate(rows), np.concatenate(cols))),
                 shape=(len(rhs), self._n))
+            last_a_ub = a_ub
             # Hand the LP whatever budget is left, so one pathological solve
             # cannot blow the per-shot limit on its own.
             options = {}
@@ -300,6 +370,13 @@ class MleIlpDecoder(ExternalDecoder):
                 return False
             e = lp.x
             return True
+
+        def fallback():
+            """Preserve valid ALP/RPC cuts to tighten the exact MILP."""
+            if rhs and last_a_ub is not None:
+                self._fallback_cuts = (
+                    last_a_ub, np.asarray(rhs, dtype=float))
+            return None
 
         def out_of_time():
             return deadline is not None and time.monotonic() >= deadline
@@ -317,26 +394,26 @@ class MleIlpDecoder(ExternalDecoder):
             return False                    # cut generation did not converge
 
         if not separate_to_convergence():
-            return None
+            return fallback()
 
         for _ in range(self._max_rpc_rounds):
             if np.abs(e - np.round(e)).max() < _INT_TOL:
                 break
             if out_of_time():
-                return None
+                return fallback()
             rpc = self._rpc_cuts(e, s)
             if not rpc:
                 break                       # no derived check is violated
             add(rpc)
             # RPC cuts move the solution, which can re-violate original checks.
             if not resolve() or not separate_to_convergence():
-                return None
+                return fallback()
 
         if np.abs(e - np.round(e)).max() >= _INT_TOL:
-            return None                     # fractional: a pseudocodeword
+            return fallback()               # fractional: a pseudocodeword
         ei = np.round(e).astype(np.uint8)
         # Verify the parity exactly rather than trusting _INT_TOL.
-        return ei if np.array_equal((self._H @ ei) % 2, s) else None
+        return ei if np.array_equal((self._H @ ei) % 2, s) else fallback()
 
     def decode_single(self, syndrome):
         """Solve one shot: ACG-ALP first, MILP only if it doesn't settle.
@@ -351,7 +428,7 @@ class MleIlpDecoder(ExternalDecoder):
         calling the MILP directly: 3.9x on surface d=5, 2.0x on d=7, 11.0x on
         BB [[72,12,6]] r=2 and 7.9x on r=4, with the LP settling 34/40 to 40/40
         of shots. Totals gain least where a few hard shots dominate, and those
-        shots pay only the discarded cut-generation work.
+        shots reuse the generated cuts to tighten the MILP fallback.
 
         Against the plain (slack-formulation) relaxation this replaced, the
         end-to-end gain is larger still -- a 100-shot BB r=4 run went from 727
@@ -376,9 +453,19 @@ class MleIlpDecoder(ExternalDecoder):
             options["time_limit"] = remaining
 
         sf = s.astype(float)
+        constraints = [LinearConstraint(self._A, sf, sf)]
+        if self._fallback_cuts is not None:
+            cut_a, cut_rhs = self._fallback_cuts
+            cut_a = sp.hstack(
+                [cut_a, sp.csr_matrix((cut_a.shape[0], self._m))],
+                format="csr",
+            )
+            constraints.append(LinearConstraint(
+                cut_a, np.full(cut_rhs.size, -np.inf), cut_rhs))
+
         res = milp(
             c=self._c,
-            constraints=LinearConstraint(self._A, sf, sf),
+            constraints=constraints,
             integrality=self._integrality,
             bounds=self._bounds,
             options=options,
