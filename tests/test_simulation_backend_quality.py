@@ -115,7 +115,7 @@ def test_legacy_nvidia_gpu_backend_is_disabled():
 
 
 def test_relay_bp_registered_and_runs():
-    """Relay-BP (sinter-native, Pattern A) registers and decodes when installed."""
+    """Relay-BP registers and decodes when installed."""
     importorskip_safe("relay_bp")
 
     assert "relay-bp" in list_decoders()
@@ -129,6 +129,66 @@ def test_relay_bp_registered_and_runs():
     )
     stats = pipeline.run(_simple_observable_circuit(error_probability=0.1))
     assert stats.shots > 0
+
+
+def test_relay_bp_exposes_nonconvergence_for_later_chain_stages():
+    """The detailed Relay API must flag shots that need the MLE fallback."""
+    importorskip_safe("relay_bp")
+
+    circuit = stim.Circuit.generated(
+        "surface_code:rotated_memory_z",
+        distance=5,
+        rounds=5,
+        after_clifford_depolarization=0.02,
+        before_measure_flip_probability=0.02,
+        after_reset_flip_probability=0.02,
+    )
+    dem = circuit.detector_error_model(
+        decompose_errors=False, flatten_loops=True)
+    dets, _ = circuit.compile_detector_sampler(seed=7).sample(
+        shots=30, separate_observables=True)
+    compiled = get_decoder(
+        "relay-bp",
+        pre_iter=0,
+        num_sets=1,
+        set_max_iter=1,
+        stop_nconv=1,
+        precision="f32",
+        seed=0,
+    ).compile_decoder_for_dem(dem=dem)
+
+    compiled.decode_shots_bit_packed(
+        bit_packed_detection_event_data=_pack(dets))
+
+    assert compiled.last_flags is not None
+    assert not compiled.last_flags.any()
+    assert compiled.last_iterations.tolist() == [1] * 30
+
+
+def test_relay_bp_preserves_zero_alpha_dynamic_ramp(monkeypatch):
+    """Zero has special upstream meaning and must not be normalized to None."""
+    importorskip_safe("relay_bp")
+    import lightstim.simulation.decoder_backend.decoders.relay_bp as adapter
+
+    captured = {}
+
+    class FakeDecoder:
+        def __init__(self, *_args, **kwargs):
+            captured.update(kwargs)
+
+    class FakeRunner:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(adapter.relay_bp, "RelayDecoderF32", FakeDecoder)
+    monkeypatch.setattr(adapter.relay_bp, "ObservableDecoderRunner", FakeRunner)
+
+    dem = _simple_observable_circuit().detector_error_model()
+    adapter.RelayBpDecoder(
+        alpha=0.0, precision="f32"
+    ).compile_decoder_for_dem(dem=dem)
+
+    assert captured["alpha"] == 0.0
 
 
 def test_ldpc_bp_registered_and_runs():
@@ -396,6 +456,8 @@ def test_chain_escalates_failed_shots():
     assert stats.shots >= 400
     assert stats.post_selected_shots == stats.shots
     assert stats.errors == 0
+    assert stats.decoder_stage_attempts[0] == stats.shots
+    assert 0 < stats.decoder_stage_attempts[1] < stats.shots
 
 
 def test_chain_unresolved_shots_respect_failure_policy():
@@ -486,6 +548,31 @@ def test_chain_multiprocess():
     stats = pipeline.run(_simple_observable_circuit(error_probability=0.3))
     assert stats.post_selected_shots == stats.shots
     assert stats.errors == 0
+    assert stats.decoder_stage_attempts[0] == stats.shots
+    assert 0 < stats.decoder_stage_attempts[1] < stats.shots
+
+
+def test_multiprocess_fixed_seed_is_reproducible():
+    """Batch-offset seeds make repeated multi-worker runs reproducible."""
+    def run_once():
+        return SimulationPipeline(
+            decoder_config=DecoderConfig(
+                "chain",
+                params={"stages": ["test-ext-evenonly", "test-ext-obs"]},
+            ),
+            max_shots=400,
+            max_errors=10_000,
+            batch_size=50,
+            num_workers=2,
+            seed=1234,
+            print_progress=False,
+        ).run(_simple_observable_circuit(error_probability=0.3))
+
+    first = run_once()
+    second = run_once()
+
+    assert first.errors == second.errors
+    assert first.decoder_stage_attempts == second.decoder_stage_attempts
 
 
 def test_chain_without_stages_raises_in_parent():

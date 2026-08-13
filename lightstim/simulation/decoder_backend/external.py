@@ -235,7 +235,10 @@ class _ExternalCompiledDecoder(sinter.CompiledDecoder):
                 if preds
                 else np.zeros((0, self._n_observables), dtype=np.uint8)
             )
-            flags = np.asarray(single_flags, dtype=bool) if any_flag else None
+            flags = self._normalize_flags(
+                np.asarray(single_flags, dtype=bool) if any_flag else None,
+                n_shots,
+            )
 
         self.last_flags = flags
 

@@ -42,6 +42,7 @@ class SimulationPipeline:
         max_errors: int = 100,
         batch_size: int = 10_000,
         num_workers: int = 4,
+        seed: Optional[int] = None,
         post_select_detector_indices: Optional[List[int]] = None,
         post_select_observable_indices: Optional[List[int]] = None,
         post_select_corrected_observable_indices: Optional[List[int]] = None,
@@ -72,6 +73,7 @@ class SimulationPipeline:
             max_errors=max_errors,
             batch_size=batch_size,
             num_workers=num_workers,
+            seed=seed,
             decoder=decoder_config or DecoderConfig("pymatching", backend="cpu"),
             post_select_detector_indices=post_select_detector_indices,
             post_select_observable_indices=post_select_observable_indices,
@@ -175,6 +177,11 @@ class SimulationPipeline:
         completed_counter = mp.Value("q", 0)  # decoded work (drives progress/stats)
         post_counter = mp.Value("q", 0)
         errors_counter = mp.Value("q", 0)
+        n_stages = (
+            len(self.config.decoder.params.get("stages", ()))
+            if decoder_name == "chain" else 0
+        )
+        stage_attempts = mp.Array("q", n_stages) if n_stages else None
         lock = mp.Lock()
 
         procs = []
@@ -201,6 +208,8 @@ class SimulationPipeline:
                     wid if self.config.decoder.backend != "cpu" else None,
                     self.config.decoder.on_decode_failure,
                     completed_counter,
+                    self.config.seed,
+                    stage_attempts,
                 ),
             )
             p.start()
@@ -236,6 +245,9 @@ class SimulationPipeline:
             seconds=elapsed,
             decoder=decoder_name,
             json_metadata=json_metadata,
+            decoder_stage_attempts=(
+                list(stage_attempts[:]) if stage_attempts is not None else None
+            ),
         )
 
     def _run_custom_single(
@@ -261,11 +273,13 @@ class SimulationPipeline:
             ignore_decomposition_failures=self.config.allow_gauge_detectors,
         )
         compiled = decoder_instance.compile_decoder_for_dem(dem=dem)
-        sampler = circuit.compile_detector_sampler(seed=0)
+        sampler = circuit.compile_detector_sampler(
+            seed=0 if self.config.seed is None else self.config.seed)
 
         total_shots = 0
         post_selected_shots = 0
         errors = 0
+        stage_attempts = None
         batch_size = self.config.batch_size
 
         while total_shots < self.config.max_shots and errors < self.config.max_errors:
@@ -298,6 +312,13 @@ class SimulationPipeline:
             pred_packed = compiled.decode_shots_bit_packed(
                 bit_packed_detection_event_data=det_packed,
             )
+            batch_stage_attempts = getattr(
+                compiled, "last_stage_attempts", None)
+            if batch_stage_attempts is not None:
+                if stage_attempts is None:
+                    stage_attempts = [0] * len(batch_stage_attempts)
+                for i, attempts in enumerate(batch_stage_attempts):
+                    stage_attempts[i] += int(attempts)
 
             batch_kept, batch_errors = count_batch(
                 obs_filtered=obs_filtered,
@@ -339,6 +360,7 @@ class SimulationPipeline:
             seconds=elapsed,
             decoder=decoder_name,
             json_metadata=json_metadata,
+            decoder_stage_attempts=stage_attempts,
         )
 
     def run_batch(
@@ -370,6 +392,7 @@ class SimulationPipeline:
                 "logical_error_rate": stats.logical_error_rate,
                 "seconds": stats.seconds,
                 "decoder": stats.decoder,
+                "decoder_stage_attempts": stats.decoder_stage_attempts,
                 **stats.json_metadata,
             }
             records.append(row)

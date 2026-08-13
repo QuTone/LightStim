@@ -8,6 +8,7 @@ from lightstim.qec_code.gala_code import (
     GALA_CODE_PRESETS,
     GalaCode,
     GalaCodeExtractionBlock,
+    GalaGeneratorExtractionBlock,
 )
 from lightstim.qec_code.gala_code.group import LiftAlphabet, commutes, compose, invert, s3, s4
 from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeline
@@ -187,3 +188,39 @@ def test_gala_memory_experiment_end_to_end_smoke():
         num_workers=1, print_progress=False,
     ).run(circuit)
     assert stats.shots >= 100
+
+
+def test_gala_extraction_uses_published_transversal_generator_layers():
+    """The paper's generator order forms 12 conflict-free matchings per basis."""
+    system = QECSystem()
+    system.add_patch(GalaCode.from_preset("gala_132_30_12"), name="gala")
+    block = GalaGeneratorExtractionBlock(system)
+
+    assert block.generator_order == [
+        ("F", 0, 0), ("F", 3, 0), ("F", 4, 0),
+        ("F", 5, 0), ("F", 2, 0), ("F", 1, 0),
+        ("G", 1, 0), ("G", 4, 0), ("G", 2, 0),
+        ("G", 5, 0), ("G", 3, 0), ("G", 0, 0),
+    ]
+    assert (block.depth_x, block.depth_z, block.cnot_depth) == (12, 12, 24)
+
+    cnot_layers = [
+        [target.value for target in instruction.targets_copy()]
+        for instruction in block.circuit
+        if instruction.name == "CX"
+    ]
+    assert len(cnot_layers) == 24
+    for targets in cnot_layers:
+        assert len(targets) == 2 * 55
+        assert len(set(targets)) == len(targets)
+
+    measured = {
+        stabilizer["syn_idx"]: set(stabilizer["data_indices"])
+        for stabilizer in system.active_stabilizers
+    }
+    accumulated = {syn_idx: set() for syn_idx in measured}
+    for layer_index, targets in enumerate(cnot_layers):
+        for a, b in zip(targets[::2], targets[1::2]):
+            syn_idx, data_idx = (a, b) if layer_index < 12 else (b, a)
+            accumulated[syn_idx].add(data_idx)
+    assert accumulated == measured

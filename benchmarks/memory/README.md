@@ -18,6 +18,44 @@ venv/bin/python benchmarks/memory/plot_memory.py \
     benchmarks/memory/results/rotated_sc_pymatching.csv
 ```
 
+## GALA paper replication
+
+`run_gala_replication.py` reproduces the circuit-level setup from Sec. S6.2 of
+arXiv:2608.07431. It uses no idle or one-qubit basis-change noise, single-basis
+detectors, the paper's preparation/readout and two-qubit depolarizing channels,
+and the published Relay-BP parameters. It also supports the paper's exact-MLE
+final tier. The GALA paper does not state `N_c`, so the default 12-round circuit
+follows its bundled notebook and the earlier paper's `W=d` decoder window.
+`--rounds 32` is a monolithic full-memory ablation, not a substitute for proper
+sliding-window decoding of the earlier paper's 32-round experiment.
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib venv/bin/python \
+    benchmarks/memory/run_gala_replication.py \
+    --p 0.0025 --shots 500 --workers 4 --tiers mle \
+    --output benchmarks/memory/results/gala_replication.json
+```
+
+The full hierarchy and an unlimited exact-MLE fallback are the default. The
+paper used Gurobi, while the open-source SciPy/HiGHS backend can take minutes
+or longer and consume substantial memory on one hard residual. An unbounded
+GALA fallback was externally killed under the development container's resource
+limit before proving optimality. `--mle-time-limit` opts into a soft diagnostic
+limit instead. Use `--tiers relay` or `--tiers bp` to omit later tiers.
+`--tiers native-relay`
+approximates the paper's unpublished memory-BP T1 with Relay's native
+200-iteration memory-BP pre-pass before the published Relay ensembles. The
+JSON reports both the
+block failure probability and the paper's per-logical-per-cycle metric
+`1 - (1 - p_fail) ** (1 / (k * rounds))`, with 95% Clopper-Pearson intervals.
+The runner converts preparation/readout depolarization of strength `p` to the
+equivalent LightStim basis-flip probability `2p/3`. The paper's generic
+coloration is the default schedule; `--schedule generator` tests the explicit
+movement-minimizing generator order as a circuit-order ablation.
+
+See [GALA_REPLICATION.md](GALA_REPLICATION.md) for measured results, decoder
+ablations, and the remaining exact-reproduction limitations.
+
 ## Supported Codes
 
 | Code | `--codes` name | Requires `--distances` |

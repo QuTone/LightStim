@@ -6,9 +6,10 @@ T3 MLE. :class:`ChainDecoder` generalises that pattern to any sequence of
 registered decoders: stage k+1 re-decodes only the shots stage k flagged as
 failed (``last_flags == False``); shots every stage fails on surface through
 the chain's own ``last_flags``, so ``DecoderConfig(on_decode_failure=...)``
-applies to the chain as a whole. Decoders that never emit failure flags
-(pymatching, relay-bp, ...) resolve every shot handed to them, so they only
-make sense as the final stage.
+applies to the chain as a whole. Decoders that never emit failure flags (for
+example pymatching) resolve every shot handed to them, so they only make sense
+as the final stage. LightStim's Relay-BP adapter does expose non-convergence,
+allowing a later MLE stage.
 
 Configure by name::
 

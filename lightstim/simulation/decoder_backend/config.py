@@ -61,6 +61,7 @@ class PipelineConfig:
     max_errors: int = 100
     batch_size: int = 10_000
     num_workers: int = 4
+    seed: Optional[int] = None
     decoder: Optional[DecoderConfig] = None
     post_select_detector_indices: Optional[List[int]] = None
     post_select_observable_indices: Optional[List[int]] = None
@@ -113,6 +114,7 @@ class SimulationStats:
     seconds: float
     decoder: str
     json_metadata: Dict[str, Any]
+    decoder_stage_attempts: Optional[List[int]] = None
 
     @property
     def post_selection_rate(self) -> float:

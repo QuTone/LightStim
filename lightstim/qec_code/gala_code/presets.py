@@ -30,6 +30,13 @@ GALA_CODE_PRESETS: Dict[str, Dict[str, Any]] = {
         "L": 12, "J": 5, "degree": 1, "cyclic": (11,),
         "F": [[_cyc(2)], [_cyc(4)], [_cyc(3)], [_cyc(6)], [_cyc(3)], [_cyc(9)]],
         "G": [[_cyc(9)], [_cyc(2)], [_cyc(8)], [_cyc(5)], [_cyc(8)], [_cyc(7)]],
+        # Movement-minimizing generator order from Sec. S5 of the paper.
+        "extraction_order": [
+            ("F", 0, 0), ("F", 3, 0), ("F", 4, 0),
+            ("F", 5, 0), ("F", 2, 0), ("F", 1, 0),
+            ("G", 1, 0), ("G", 4, 0), ("G", 2, 0),
+            ("G", 5, 0), ("G", 3, 0), ("G", 0, 0),
+        ],
         "expected_n": 132, "expected_k": 30, "expected_d": 12,
     },
     "gala_192_40_12": {

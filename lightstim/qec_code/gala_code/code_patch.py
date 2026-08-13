@@ -67,7 +67,8 @@ class GalaCode(QECPatch):
     Scope: this provides the code construction (stabilizers, CSS matrices, GF(2)
     ranks) and ``num_logicals``, but no explicit logical-operator
     representatives — ``logical_ops_available`` is ``False``, as for Kasai
-    codes. Syndrome extraction uses the generic CSS coloration block.
+    codes. The default syndrome extraction uses generic CSS coloration; the
+    generator-layer hardware schedule is available separately.
     """
 
     def _process_params(self):
@@ -94,6 +95,7 @@ class GalaCode(QECPatch):
         self.expected_k = self.params.get("expected_k")
         self.expected_d = self.params.get("expected_d")
         self.compute_k = bool(self.params.get("compute_k", True))
+        self.extraction_order = self.params.get("extraction_order")
 
         if self.L <= 0 or self.L % 2 != 0:
             raise ValueError("'L' must be a positive even integer.")

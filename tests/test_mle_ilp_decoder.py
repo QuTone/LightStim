@@ -1,5 +1,7 @@
 """Tests for the exact most-likely-error (mle-ilp) decoder."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -191,6 +193,69 @@ def test_lp_shortcut_matches_pure_milp():
         assert decoder._w @ correction == pytest.approx(reference.fun, abs=1e-6)
 
 
+def test_end_to_end_observables_match_exhaustive_mle():
+    """DEM conversion and correction-to-observable projection stay exact."""
+    import itertools
+
+    dem = stim.DetectorErrorModel("""
+        error(0.08) D0 L0
+        error(0.14) D1 L1
+        error(0.03) D0 D1 L0 L1
+        error(0.05) D0
+        error(0.02) D1 L0
+    """)
+    H, observables, priors = dem_to_matrices(
+        dem, sparse=True, merge_duplicates=True)
+    errors = np.array(
+        list(itertools.product([0, 1], repeat=H.shape[1])),
+        dtype=np.uint8,
+    )
+    syndromes = np.asarray((H @ errors.T).T) % 2
+    logicals = np.asarray((observables @ errors.T).T) % 2
+    weights = np.log((1.0 - priors) / priors)
+    costs = errors @ weights
+
+    inputs = np.unique(syndromes, axis=0).astype(np.uint8)
+    expected = []
+    for syndrome in inputs:
+        candidates = np.flatnonzero(np.all(syndromes == syndrome, axis=1))
+        expected.append(logicals[candidates[np.argmin(costs[candidates])]])
+
+    compiled = get_decoder(
+        "mle-ilp", backend="cpu"
+    ).compile_decoder_for_dem(dem=dem)
+    packed = compiled.decode_shots_bit_packed(
+        bit_packed_detection_event_data=np.packbits(
+            inputs, axis=1, bitorder="little"))
+    actual = np.unpackbits(
+        packed, axis=1, bitorder="little", count=dem.num_observables)
+
+    assert compiled.last_flags is None
+    assert np.array_equal(actual, np.asarray(expected, dtype=np.uint8))
+
+
+def test_milp_success_is_defensively_verified(monkeypatch):
+    """An invalid solver incumbent must be heralded, never trusted."""
+    from lightstim.simulation.decoder_backend.decoders import mle_ilp
+
+    decoder = get_decoder("mle-ilp", backend="cpu", max_cut_rounds=0)
+    decoder.setup(
+        H=sp.csr_matrix([[1]], dtype=np.uint8),
+        priors=np.array([0.1]),
+    )
+    monkeypatch.setattr(
+        mle_ilp,
+        "milp",
+        lambda **_kwargs: SimpleNamespace(
+            success=True, x=np.array([0.0, 0.0])),
+    )
+
+    correction, ok = decoder.decode_single(np.array([1], dtype=np.uint8))
+
+    assert not ok
+    assert correction.tolist() == [0]
+
+
 def test_milp_fallback_reuses_adaptive_lp_cuts(monkeypatch):
     """A fractional ALP result should strengthen, not just precede, the MILP."""
     import itertools
@@ -211,6 +276,7 @@ def test_milp_fallback_reuses_adaptive_lp_cuts(monkeypatch):
 
     def capture_milp(*args, **kwargs):
         captured["constraints"] = kwargs["constraints"]
+        captured["options"] = kwargs["options"]
         return original_milp(*args, **kwargs)
 
     monkeypatch.setattr(mle_ilp, "milp", capture_milp)
@@ -218,6 +284,7 @@ def test_milp_fallback_reuses_adaptive_lp_cuts(monkeypatch):
 
     assert ok
     assert len(captured["constraints"]) == 2
+    assert "time_limit" not in captured["options"]
     cut_constraint = captured["constraints"][1]
     assert cut_constraint.A.shape[1] == H.shape[1] + H.shape[0]
 

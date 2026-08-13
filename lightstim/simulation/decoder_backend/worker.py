@@ -32,6 +32,8 @@ def _decode_worker_cpu(
     gpu_id: Optional[int] = None,
     on_decode_failure: str = "error",
     completed_counter=None,
+    seed: Optional[int] = None,
+    stage_attempts=None,
 ) -> None:
     """
     Single worker process: reserve shots -> sample -> post-select -> decode.
@@ -55,7 +57,10 @@ def _decode_worker_cpu(
         decompose_errors=getattr(decoder, "decompose_errors", False),
     )
     compiled = decoder.compile_decoder_for_dem(dem=dem)
-    sampler = dem.compile_sampler(seed=os.getpid() + worker_id * 10000)
+    sampler = (
+        dem.compile_sampler(seed=os.getpid() + worker_id * 10000)
+        if seed is None else None
+    )
 
     while True:
         with lock:
@@ -63,9 +68,14 @@ def _decode_worker_cpu(
                 break
             remaining = max_shots - shots_counter.value
             shots_to_take = min(batch_size, remaining)
+            shot_start = shots_counter.value
             shots_counter.value += shots_to_take
 
-        det_data, obs_data, _ = sampler.sample(
+        batch_sampler = (
+            sampler if sampler is not None
+            else dem.compile_sampler(seed=int(seed) + shot_start)
+        )
+        det_data, obs_data, _ = batch_sampler.sample(
             shots=shots_to_take,
             bit_packed=False,
         )
@@ -88,6 +98,8 @@ def _decode_worker_cpu(
         pred_packed = compiled.decode_shots_bit_packed(
             bit_packed_detection_event_data=det_packed,
         )
+        batch_stage_attempts = getattr(
+            compiled, "last_stage_attempts", None)
 
         batch_kept, batch_errors = count_batch(
             obs_filtered=obs_filtered,
@@ -102,3 +114,6 @@ def _decode_worker_cpu(
             errors_counter.value += batch_errors
             if completed_counter is not None:
                 completed_counter.value += shots_to_take
+            if stage_attempts is not None and batch_stage_attempts is not None:
+                for i, attempts in enumerate(batch_stage_attempts):
+                    stage_attempts[i] += int(attempts)

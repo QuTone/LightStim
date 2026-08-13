@@ -125,8 +125,9 @@ class MleIlpDecoder(ExternalDecoder):
 
         H = sp.csr_matrix(H, dtype=np.uint8)
         self._m, self._n = H.shape
+        priors = np.asarray(priors, dtype=float)
         self._w = _weights(priors, float(params["max_prior"]))
-        possible = np.asarray(priors, dtype=float) > 0.0
+        possible = priors > 0.0
 
         self._H = H
         self._indptr = H.indptr
@@ -424,7 +425,13 @@ class MleIlpDecoder(ExternalDecoder):
         already integral. Fractional shots reuse all generated cuts in the
         exact MILP fallback. See ``benchmarks/mle`` for reproducible timings.
         """
-        s = np.asarray(syndrome, dtype=np.uint8).ravel()
+        raw_s = np.asarray(syndrome)
+        if raw_s.size != self._m:
+            raise ValueError(
+                f"syndrome has {raw_s.size} entries; expected {self._m}")
+        if not np.all((raw_s == 0) | (raw_s == 1)):
+            raise ValueError("syndrome entries must be binary")
+        s = raw_s.astype(np.uint8, copy=False).ravel()
         deadline = (time.monotonic() + self._time_limit
                     if self._time_limit > 0 else None)
 
@@ -459,9 +466,20 @@ class MleIlpDecoder(ExternalDecoder):
             bounds=self._bounds,
             options=options,
         )
-        if not res.success:
+        if not res.success or res.x is None:
             return np.zeros(self._n, dtype=np.uint8), False
-        return np.round(res.x[:self._n]).astype(np.uint8), True
+        raw_error = np.asarray(res.x[:self._n], dtype=float)
+        if (not np.all(np.isfinite(raw_error))
+                or np.abs(raw_error - np.round(raw_error)).max(initial=0.0)
+                >= _INT_TOL):
+            return np.zeros(self._n, dtype=np.uint8), False
+        error = np.round(raw_error).astype(np.uint8)
+        # A successful optimizer status should already imply both properties,
+        # but never let a backend/tolerance regression become a silent logical
+        # miscorrection.  Failed validation is heralded to the decoder chain.
+        if not np.array_equal((self._H @ error) % 2, s):
+            return np.zeros(self._n, dtype=np.uint8), False
+        return error, True
 
 
 register_decoder("mle-ilp", MleIlpDecoder, aliases=["mle", "ilp"],
