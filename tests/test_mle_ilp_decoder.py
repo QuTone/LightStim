@@ -26,7 +26,10 @@ def _surface_code_dem(distance=3, rounds=3, p=1e-3):
 
 
 def _decode(dem, detectors, **params):
-    decoder = get_decoder("mle-ilp", backend="cpu", params=params)
+    # get_decoder forwards **kwargs straight to the class, matching how
+    # SimulationPipeline spreads DecoderConfig(params={...}). Passing
+    # params={...} here instead would nest the dict and silently do nothing.
+    decoder = get_decoder("mle-ilp", backend="cpu", **params)
     compiled = decoder.compile_decoder_for_dem(dem=dem)
     out = compiled.decode_shots_bit_packed(
         bit_packed_detection_event_data=np.packbits(
@@ -120,6 +123,39 @@ def test_lp_shortcut_matches_pure_milp():
         assert reference.success
         # Compare cost, not the vector: equal-weight minimisers may differ.
         assert decoder._w @ correction == pytest.approx(reference.fun, abs=1e-6)
+
+
+def test_exhausted_time_limit_is_heralded_not_silently_wrong():
+    """A shot that runs out of budget must report failure, not a bad answer.
+
+    The pipeline routes ok=False to DecoderConfig(on_decode_failure=...); if
+    the decoder instead returned a zero correction with ok=True, the shot would
+    be silently counted as a logical error. A budget too small to finish any
+    stage is the cheap way to exercise that path.
+    """
+    dem = _surface_code_dem(distance=5, rounds=5)
+    H, _, priors = dem_to_matrices(dem, sparse=True, merge_duplicates=True)
+    detectors, _, _ = dem.compile_sampler(seed=5).sample(shots=20)
+
+    decoder = get_decoder("mle-ilp", backend="cpu", time_limit=1e-6)
+    # Guard the param convention itself: params={...} would nest the dict and
+    # leave time_limit at its default, quietly making this test vacuous.
+    assert decoder.params == {"time_limit": 1e-6}
+    decoder.setup(H=H, priors=priors)
+
+    heralded = 0
+    for syndrome in detectors.astype(np.uint8):
+        correction, ok = decoder.decode_single(syndrome)
+        # Either it genuinely finished (a zero syndrome can), or it must say
+        # so. What it must never do is claim success with a bogus correction.
+        if ok:
+            assert np.array_equal((H @ correction) % 2, syndrome)
+        else:
+            heralded += 1
+    nontrivial = int((detectors.sum(axis=1) > 0).sum())
+    assert heralded >= nontrivial, (
+        f"budget exhausted but only {heralded} of {nontrivial} non-trivial "
+        "shots were heralded")
 
 
 def test_rpc_cuts_never_exclude_a_valid_error():

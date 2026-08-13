@@ -9,7 +9,7 @@ The GF(2) parity is linearised with one bounded integer slack per detector:
 
     sum_j H[i,j] e_j - 2 k_i == s_i,   0 <= k_i <= floor(rowweight_i / 2)
 
-This is the decoder papers mean by "exact MLE with Gurobi" (more precisely
+This is the decoder papers mean by "exact MLE" (more precisely
 *most-likely-error*, not degenerate maximum-likelihood: it finds the single
 highest-probability error, it does not sum over the logical coset). It is
 exponential in the worst case and is intended as a **ground-truth reference**
@@ -63,6 +63,8 @@ clash on symbols at import, in either order.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import scipy.sparse as sp
 from scipy.optimize import Bounds, LinearConstraint, linprog, milp
@@ -75,9 +77,18 @@ _CUT_TOL = 1e-7        # minimum violation before a cut is worth adding
 
 _DEFAULTS = {
     "max_prior": 0.5,      # clamp: priors >= 0.5 give non-positive weights
-    "time_limit": 0.0,     # seconds per shot; 0 = unlimited. A shot that hits
-                           # the limit is reported as a decode failure, so
-                           # DecoderConfig(on_decode_failure=...) can herald it.
+    "time_limit": 0.0,     # soft wall-clock budget per shot; 0 = unlimited.
+                           # Cut generation and the MILP fallback share one
+                           # deadline, and a shot that exhausts it is reported
+                           # as a decode failure so
+                           # DecoderConfig(on_decode_failure=...) can herald it
+                           # instead of silently recording a wrong answer.
+                           # Worth setting: the tail is brutal without it. On
+                           # BB [[72,12,6]] r=4, 200 shots, the worst shot goes
+                           # 38.8 s -> 1.0 s at time_limit=0.5 (5 heralded) and
+                           # -> 2.6 s at 2.0 (2 heralded), mean 232 -> 37/57 ms.
+                           # Soft, not hard: HiGHS polices its own limit only
+                           # at checkpoints, so expect overshoot up to ~2x.
     "max_cut_rounds": 200,  # give up on cut generation and fall back to MILP
     "max_rpc_rounds": 8,    # redundant-parity-check rounds once ALP stalls;
                             # 0 disables ACG and leaves plain ALP
@@ -127,8 +138,6 @@ class MleIlpDecoder(ExternalDecoder):
             [H.astype(float), -2.0 * sp.eye(self._m, format="csr")],
             format="csr",
         )
-        self._options = ({"time_limit": self._time_limit}
-                         if self._time_limit > 0 else {})
 
     def _violated_checks(self, e, s):
         """Screen every check for a violated forbidden-set cut, vectorised.
@@ -246,7 +255,7 @@ class MleIlpDecoder(ExternalDecoder):
                              float(in_s.sum()) - 1.0))
         return cuts
 
-    def _adaptive_lp(self, s):
+    def _adaptive_lp(self, s, deadline=None):
         """ACG-ALP decode. Returns the error, or None to escalate to the MILP.
 
         Solves over the fundamental polytope, generating forbidden-set cuts on
@@ -257,6 +266,9 @@ class MleIlpDecoder(ExternalDecoder):
         Terminating with no violated cut and an integral solution means every
         parity holds and the solution is optimal over a relaxation containing
         every valid error, so it is the exact MLE answer.
+
+        ``deadline`` is an absolute :func:`time.monotonic` value; cut generation
+        gives up once past it so the caller's per-shot budget is respected.
         """
         rows, cols, vals, rhs = [], [], [], []
         e = np.zeros(self._n)
@@ -274,15 +286,28 @@ class MleIlpDecoder(ExternalDecoder):
                 (np.concatenate(vals),
                  (np.concatenate(rows), np.concatenate(cols))),
                 shape=(len(rhs), self._n))
+            # Hand the LP whatever budget is left, so one pathological solve
+            # cannot blow the per-shot limit on its own.
+            options = {}
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                options["time_limit"] = remaining
             lp = linprog(c=self._w, A_ub=a_ub, b_ub=np.asarray(rhs),
-                         bounds=(0, 1), method="highs")
+                         bounds=(0, 1), method="highs", options=options)
             if not lp.success:
                 return False
             e = lp.x
             return True
 
+        def out_of_time():
+            return deadline is not None and time.monotonic() >= deadline
+
         def separate_to_convergence():
             for _ in range(self._max_rounds):
+                if out_of_time():
+                    return False
                 violated = self._violated_checks(e, s)
                 if violated.size == 0:
                     return True
@@ -297,6 +322,8 @@ class MleIlpDecoder(ExternalDecoder):
         for _ in range(self._max_rpc_rounds):
             if np.abs(e - np.round(e)).max() < _INT_TOL:
                 break
+            if out_of_time():
+                return None
             rpc = self._rpc_cuts(e, s)
             if not rpc:
                 break                       # no derived check is violated
@@ -332,9 +359,21 @@ class MleIlpDecoder(ExternalDecoder):
         relaxation left fractional, so they never reach the MILP at all.
         """
         s = np.asarray(syndrome, dtype=np.uint8).ravel()
-        e = self._adaptive_lp(s)
+        deadline = (time.monotonic() + self._time_limit
+                    if self._time_limit > 0 else None)
+
+        e = self._adaptive_lp(s, deadline)
         if e is not None:
             return e, True
+
+        # The MILP gets what is *left* of the budget, not a fresh copy of it --
+        # otherwise a shot could spend the full limit twice over.
+        options = {}
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return np.zeros(self._n, dtype=np.uint8), False
+            options["time_limit"] = remaining
 
         sf = s.astype(float)
         res = milp(
@@ -342,7 +381,7 @@ class MleIlpDecoder(ExternalDecoder):
             constraints=LinearConstraint(self._A, sf, sf),
             integrality=self._integrality,
             bounds=self._bounds,
-            options=self._options,
+            options=options,
         )
         if not res.success:
             return np.zeros(self._n, dtype=np.uint8), False
