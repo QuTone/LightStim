@@ -98,16 +98,21 @@ class ToricCode(QECPatch):
             self.create_stim_stabilizer(targets, syn_coord, "Z")
 
         # Phase 3: Logical Operators (2 logical qubits)
-        # Logical 0: Z horizontal, X vertical
-        z0_targets = {(2 * x, 0): "Z" for x in range(dz)}
+        #
+        # The checkerboard contains two data-qubit sublattices.  A logical
+        # loop must stay on the appropriate sublattice so that every
+        # opposite-type stabilizer has even overlap with it.
+        #
+        # Logical 0: horizontal Z and vertical X on the odd sublattice.
+        z0_targets = {(2 * x + 1, 1): "Z" for x in range(dz)}
         self.create_stim_logical(z0_targets, "Z")
-        x0_targets = {(0, 2 * y): "X" for y in range(dx)}
+        x0_targets = {(1, 2 * y + 1): "X" for y in range(dx)}
         self.create_stim_logical(x0_targets, "X")
 
-        # Logical 1: Z horizontal shifted, X vertical shifted
-        z1_targets = {(2 * x, 2): "Z" for x in range(dz)}
+        # Logical 1: vertical Z and horizontal X on the even sublattice.
+        z1_targets = {(0, 2 * y): "Z" for y in range(dx)}
         self.create_stim_logical(z1_targets, "Z")
-        x1_targets = {(2, 2 * y): "X" for y in range(dx)}
+        x1_targets = {(2 * x, 0): "X" for x in range(dz)}
         self.create_stim_logical(x1_targets, "X")
 
         self.num_logicals = 2
