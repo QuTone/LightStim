@@ -94,6 +94,8 @@ fault-tolerant verification path.
 > hyperedge DEMs. Use `mwpf` (CPU), `cpu_bposd` (CPU BP+OSD), or `gpu_bposd`
 > (CUDA BP+OSD via `cudaq_qec`) for these.
 > LS-based experiments (ZZ-LS, XX-LS, LS distillation) use `pymatching`.
+> The runner defaults TG distillation to `cpu_bposd` and LS distillation to
+> `pymatching` when `--decoder` is omitted.
 > `gpu_bposd` requires a visible NVIDIA GPU (`nvidia-smi -L`).
 
 ## Output format

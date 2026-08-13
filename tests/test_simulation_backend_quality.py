@@ -148,6 +148,73 @@ def test_ldpc_bp_registered_and_runs():
     assert stats.shots > 0
 
 
+def test_bposd_handles_more_detector_rows_than_error_mechanisms():
+    """Redundant/zero detector rows must not produce a negative OSD order."""
+    importorskip_safe("stimbposd")
+
+    dem = stim.DetectorErrorModel(
+        """
+        error(0.1) D0 D1 L2
+        error(0.2) D1 D2
+        detector D3
+        detector D4
+        """
+    )
+    decoder = get_decoder("bposd", backend="cpu")
+    compiled = decoder.compile_decoder_for_dem(dem=dem)
+
+    # The first two rows are an independent basis. D2 is their XOR and D3/D4
+    # are zero rows. These valid syndromes uniquely identify the two errors.
+    syndromes = np.array(
+        [
+            [0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0],
+            [0, 1, 1, 0, 0],
+            [1, 0, 1, 0, 0],
+        ],
+        dtype=np.uint8,
+    )
+    predictions = compiled.decode_shots_bit_packed(
+        bit_packed_detection_event_data=np.packbits(
+            syndromes, axis=1, bitorder="little"
+        )
+    )
+    predictions = np.unpackbits(
+        predictions, axis=1, bitorder="little"
+    )[:, :3]
+
+    np.testing.assert_array_equal(
+        predictions,
+        [
+            [0, 0, 0],
+            [0, 0, 1],
+            [0, 0, 0],
+            [0, 0, 1],
+        ],
+    )
+
+
+def test_bposd_handles_observable_only_error_mechanisms():
+    """Injection-only DEMs may contain detectors untouched by every error."""
+    importorskip_safe("stimbposd")
+
+    dem = stim.DetectorErrorModel(
+        """
+        error(0.1) L0
+        detector D0
+        detector D1
+        """
+    )
+    compiled = get_decoder("bposd", backend="cpu").compile_decoder_for_dem(
+        dem=dem
+    )
+    predictions = compiled.decode_shots_bit_packed(
+        bit_packed_detection_event_data=np.zeros((3, 1), dtype=np.uint8)
+    )
+
+    np.testing.assert_array_equal(predictions, np.zeros((3, 1), dtype=np.uint8))
+
+
 def test_tesseract_registered_and_runs():
     """Tesseract (sinter-native, Pattern A, lazy import) registers and decodes.
 
