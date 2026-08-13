@@ -228,7 +228,8 @@ def inject_noise(circuit, magic_qubits, p, p_injected, mode="full"):
 
 
 def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
-                  max_shots=10_000_000, max_errors=100, batch_size=5_000):
+                  max_shots=10_000_000, max_errors=100, batch_size=5_000,
+                  decoder_name="bposd", backend="cpu", decoder_params=None):
     """
     Estimate effective logical input infidelity P_in for TG |Y⟩ magic state.
 
@@ -237,6 +238,9 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
 
     Args:
         rounds_init: SE rounds after corner injection. Defaults to d (paper setting).
+        decoder_name: Hypergraph-capable decoder used for calibration.
+        backend: Decoder backend. The notebook uses CPU BP+OSD.
+        decoder_params: Optional decoder-specific parameters.
 
     Returns:
         p_in (float): logical error rate of the corner-injected |Y⟩ state.
@@ -280,10 +284,15 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
     noisy = inj.inject_noise(circuit)
 
     pipeline = SimulationPipeline(
-        decoder_config=DecoderConfig("pymatching"),
+        decoder_config=DecoderConfig(
+            decoder_name,
+            backend=backend,
+            params=decoder_params or {},
+        ),
         max_shots=max_shots,
         max_errors=max_errors,
         batch_size=batch_size,
+        num_workers=1,
         target_observable_indices=[0],
         print_progress=False,
     )
@@ -291,7 +300,7 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
 
 
 def run_simulation(circuit, magic_qubits, p, p_injected, mode,
-                   T, ps_indices, target_indices, decoder_name,
+                   T, ps_indices, target_indices, decoder_name="bposd",
                    max_shots=10_000_000, max_errors=200,
                    num_workers=32, backend="cpu", batch_size=50_000,
                    decoder_params=None):

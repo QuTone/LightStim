@@ -363,7 +363,9 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
     noise_modes = args.noise_mode or ["injection"]
     p_injected_list = args.p_injected or [1e-3, 5e-3, 2e-2]
     p_list = args.p_values if args.p_values else [1e-3]
-    decoder_name = args.decoder or "pymatching"
+    decoder_name = args.decoder or (
+        "cpu_bposd" if which == "tg" else "pymatching"
+    )
     decoder_cfg = _checked_decoder_config(decoder_name)
 
     if which == "ls" and decoder_cfg.backend != "cpu":
@@ -411,11 +413,20 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                 # Calibrate p_in (injection and both modes only)
                 if mode in ("injection", "both"):
                     p_bg = p if mode == "both" else 0.0
-                    p_in = p_in_fn(d, rounds_init, p_injected=p_inj,
-                                   p_background=p_bg,
-                                   max_shots=args.max_shots // 10,
-                                   max_errors=50,
-                                   batch_size=5_000)
+                    calibration_kwargs = {
+                        "p_injected": p_inj,
+                        "p_background": p_bg,
+                        "max_shots": args.max_shots // 10,
+                        "max_errors": 50,
+                        "batch_size": 5_000,
+                    }
+                    if which == "tg":
+                        calibration_kwargs.update({
+                            "decoder_name": decoder_cfg.name,
+                            "backend": decoder_cfg.backend,
+                            "decoder_params": decoder_cfg.params,
+                        })
+                    p_in = p_in_fn(d, rounds_init, **calibration_kwargs)
                 else:
                     p_in = float("nan")
 
