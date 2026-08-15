@@ -413,7 +413,9 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
     noise_modes = args.noise_mode or ["injection"]
     p_injected_list = args.p_injected or [1e-3, 5e-3, 2e-2]
     p_list = args.p_values if args.p_values else [1e-3]
-    decoder_name = args.decoder or "pymatching"
+    decoder_name = args.decoder or (
+        "cpu_bposd" if which == "tg" else "pymatching"
+    )
     decoder_cfg = _checked_decoder_config(
         decoder_name,
         args.mle_time_limit,
@@ -469,11 +471,22 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                 # Calibrate p_in (injection and both modes only)
                 if mode in ("injection", "both"):
                     p_bg = p if mode == "both" else 0.0
-                    p_in = p_in_fn(d, rounds_init, p_injected=p_inj,
-                                   p_background=p_bg,
-                                   max_shots=args.max_shots // 10,
-                                   max_errors=50,
-                                   batch_size=5_000)
+                    calibration_max_shots = max(1, args.max_shots // 10)
+                    calibration_kwargs = {
+                        "p_injected": p_inj,
+                        "p_background": p_bg,
+                        "max_shots": calibration_max_shots,
+                        "max_errors": 50,
+                        "batch_size": min(args.batch_size, calibration_max_shots),
+                    }
+                    if which == "tg":
+                        calibration_kwargs.update({
+                            "decoder_name": decoder_cfg.name,
+                            "backend": decoder_cfg.backend,
+                            "decoder_params": decoder_cfg.params,
+                            "on_decode_failure": decoder_cfg.on_decode_failure,
+                        })
+                    p_in = p_in_fn(d, rounds_init, **calibration_kwargs)
                 else:
                     p_in = float("nan")
 
@@ -485,7 +498,8 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                         circuit, magic_qubits, p, p_inj, mode,
                         ps_obs, target_obs, decoder_cfg.name,
                         args.max_shots, args.max_errors,
-                        batch_size=50_000, num_workers=args.num_workers,
+                        batch_size=min(args.batch_size, args.max_shots),
+                        num_workers=args.num_workers,
                         data_indices=magic_data,
                         decoder_params=decoder_cfg.params,
                         on_decode_failure=decoder_cfg.on_decode_failure,
@@ -497,7 +511,7 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                         args.max_shots, args.max_errors,
                         num_workers=args.num_workers,
                         backend=decoder_cfg.backend,
-                        batch_size=50_000,
+                        batch_size=min(args.batch_size, args.max_shots),
                         decoder_params=decoder_cfg.params,
                         on_decode_failure=decoder_cfg.on_decode_failure,
                     )

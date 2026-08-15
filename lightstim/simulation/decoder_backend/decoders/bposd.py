@@ -1,11 +1,15 @@
-"""BP+OSD decoder (CPU) for quantum LDPC codes.
+"""BP+OSD decoder (CPU) for hypergraph detector error models.
 
 Prefers stimbposd; falls back to ldpc package if stimbposd not installed.
 Accepts unified parameter names shared with the GPU backend (see cudaqx.py).
 """
 
+import numpy as np
+import scipy.sparse as sp
 import sinter
+import stim
 
+from ..dem_matrices import dem_to_matrices
 from ..registry import register_decoder
 
 _BPOSD_AVAILABLE = False
@@ -91,11 +95,110 @@ class BpOsdCpuDecoder(sinter.Decoder):
     """Thin wrapper around SinterDecoder_BPOSD that accepts unified parameter names."""
 
     def __init__(self, **params):
-        translated = _unified_to_cpu({**_DEFAULTS, **params})
-        self._inner = SinterDecoder_BPOSD(**translated)
+        self._translated = _unified_to_cpu({**_DEFAULTS, **params})
+        self._inner = SinterDecoder_BPOSD(**self._translated)
 
     def compile_decoder_for_dem(self, *, dem):
+        # stimbposd limits the requested OSD order to n_columns - n_rows.
+        # Detector-rich, low-rank DEMs (notably injection-only protocols) can
+        # have more detector rows than error mechanisms, making that value
+        # negative and causing ldpc to reject the decoder at compile time.
+        # Keep the normal path untouched, and row-reduce only when it would
+        # otherwise be impossible for stimbposd to select a valid OSD order.
+        if dem.num_detectors > dem.num_errors:
+            reduced_dem, detector_rows = _independent_detector_dem(dem)
+            compiled = self._inner.compile_decoder_for_dem(dem=reduced_dem)
+            return _DetectorSubsetCompiledDecoder(
+                compiled=compiled,
+                detector_rows=detector_rows,
+                num_detectors=dem.num_detectors,
+            )
         return self._inner.compile_decoder_for_dem(dem=dem)
+
+
+class _DetectorSubsetCompiledDecoder(sinter.CompiledDecoder):
+    """Project packed syndromes onto independent original detector rows."""
+
+    def __init__(self, *, compiled, detector_rows, num_detectors):
+        self._compiled = compiled
+        self._detector_rows = np.asarray(detector_rows, dtype=np.int64)
+        self._num_detectors = num_detectors
+
+    def decode_shots_bit_packed(self, *, bit_packed_detection_event_data):
+        syndromes = np.unpackbits(
+            bit_packed_detection_event_data,
+            axis=1,
+            bitorder="little",
+        )[:, :self._num_detectors]
+        reduced = syndromes[:, self._detector_rows]
+        reduced_packed = np.packbits(reduced, axis=1, bitorder="little")
+        return self._compiled.decode_shots_bit_packed(
+            bit_packed_detection_event_data=reduced_packed
+        )
+
+
+def _independent_detector_dem(dem):
+    """Return an equivalent DEM containing only independent detector rows."""
+    check_matrix, observables_matrix, priors = dem_to_matrices(
+        dem,
+        sparse=True,
+        merge_duplicates=False,
+    )
+    detector_rows = _independent_row_indices(check_matrix)
+    reduced_checks = check_matrix[detector_rows].tocsc()
+    observables = observables_matrix.tocsc()
+
+    reduced_dem = stim.DetectorErrorModel()
+    for error_index, probability in enumerate(priors):
+        targets = [
+            stim.target_relative_detector_id(int(row))
+            for row in reduced_checks.indices[
+                reduced_checks.indptr[error_index]:
+                reduced_checks.indptr[error_index + 1]
+            ]
+        ]
+        targets.extend(
+            stim.target_logical_observable_id(int(observable))
+            for observable in observables.indices[
+                observables.indptr[error_index]:
+                observables.indptr[error_index + 1]
+            ]
+        )
+        reduced_dem.append("error", float(probability), targets)
+
+    # An observable with no error mechanism still contributes an output bit.
+    # Preserve the original DEM's output width for the sinter contract.
+    if reduced_dem.num_observables < dem.num_observables:
+        reduced_dem.append(
+            "logical_observable",
+            [],
+            [stim.target_logical_observable_id(dem.num_observables - 1)],
+        )
+
+    return reduced_dem, detector_rows
+
+
+def _independent_row_indices(check_matrix):
+    """Select original rows forming a GF(2) basis without densifying H."""
+    matrix = sp.csr_matrix(check_matrix, dtype=np.uint8)
+    pivots = {}
+    selected = []
+
+    for row in range(matrix.shape[0]):
+        value = 0
+        for column in matrix.indices[matrix.indptr[row]:matrix.indptr[row + 1]]:
+            value ^= 1 << int(column)
+
+        while value:
+            pivot = value.bit_length() - 1
+            basis_row = pivots.get(pivot)
+            if basis_row is None:
+                pivots[pivot] = value
+                selected.append(row)
+                break
+            value ^= basis_row
+
+    return np.asarray(selected, dtype=np.int64)
 
 
 if _BPOSD_AVAILABLE:
