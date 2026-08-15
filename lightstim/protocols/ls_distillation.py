@@ -291,7 +291,8 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
                    decoder_name="pymatching",
                    max_shots=10_000_000, max_errors=100,
                    batch_size=50_000, num_workers=1,
-                   data_indices=None):
+                   data_indices=None, decoder_params=None,
+                   on_decode_failure="error"):
     """
     Run noisy LS simulation with post-decode post-selection.
 
@@ -299,12 +300,19 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
         ps_obs:       Observable indices to post-select on.
         target_obs:   Observable indices to measure LER on.
         data_indices: system.data_indices — restricts injection to data qubits.
+        decoder_params: Parameters forwarded to the selected decoder.
+        on_decode_failure: Error/discard/ignore policy for flagged failures.
     """
     noisy = inject_noise(circuit, magic_qubits, p, p_injected, mode,
                          data_indices=data_indices)
 
     pipeline = SimulationPipeline(
-        decoder_config=DecoderConfig(decoder_name, backend="cpu"),
+        decoder_config=DecoderConfig(
+            decoder_name,
+            backend="cpu",
+            params=decoder_params or {},
+            on_decode_failure=on_decode_failure,
+        ),
         max_shots=max_shots,
         max_errors=max_errors,
         batch_size=batch_size,

@@ -229,7 +229,8 @@ def inject_noise(circuit, magic_qubits, p, p_injected, mode="full"):
 
 def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
                   max_shots=10_000_000, max_errors=100, batch_size=5_000,
-                  decoder_name="bposd", backend="cpu", decoder_params=None):
+                  decoder_name="bposd", backend="cpu", decoder_params=None,
+                  on_decode_failure="error"):
     """
     Estimate effective logical input infidelity P_in for TG |Y⟩ magic state.
 
@@ -241,6 +242,7 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
         decoder_name: Hypergraph-capable decoder used for calibration.
         backend: Decoder backend. The notebook uses CPU BP+OSD.
         decoder_params: Optional decoder-specific parameters.
+        on_decode_failure: Error/discard/ignore policy for flagged failures.
 
     Returns:
         p_in (float): logical error rate of the corner-injected |Y⟩ state.
@@ -288,6 +290,7 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
             decoder_name,
             backend=backend,
             params=decoder_params or {},
+            on_decode_failure=on_decode_failure,
         ),
         max_shots=max_shots,
         max_errors=max_errors,
@@ -303,27 +306,31 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
                    T, ps_indices, target_indices, decoder_name="bposd",
                    max_shots=10_000_000, max_errors=200,
                    num_workers=32, backend="cpu", batch_size=50_000,
-                   decoder_params=None):
+                   decoder_params=None, on_decode_failure="error"):
     """
     Run noisy TG simulation with GF(2)-transformed post-selection.
 
     If T is the identity matrix, uses standard SimulationPipeline.
     Otherwise, uses a custom decode loop with observable transformation.
+    ``on_decode_failure`` has the same error/discard/ignore semantics in both
+    paths, including for timeout flags emitted by ``mle-ilp``.
     """
     import math
 
     decoder_params = decoder_params or {}
+    decoder_config = DecoderConfig(
+        decoder_name,
+        backend=backend,
+        params=decoder_params,
+        on_decode_failure=on_decode_failure,
+    )
     noisy = inject_noise(circuit, magic_qubits, p, p_injected, mode)
     n_obs = circuit.num_observables
     n_det = circuit.num_detectors
 
     if np.array_equal(T, np.eye(T.shape[0], dtype=int)):
         pipeline = SimulationPipeline(
-            decoder_config=DecoderConfig(
-                decoder_name,
-                backend=backend,
-                params=decoder_params,
-            ),
+            decoder_config=decoder_config,
             max_shots=max_shots,
             max_errors=max_errors,
             batch_size=batch_size,
@@ -335,9 +342,14 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
         )
         return pipeline.run(noisy)
 
+    from lightstim.simulation.decoder_backend._accounting import count_batch
     from lightstim.simulation.decoder_backend.registry import get_decoder
 
-    decoder = get_decoder(decoder_name, backend=backend, **decoder_params)
+    decoder = get_decoder(
+        decoder_config.name,
+        backend=decoder_config.backend,
+        **decoder_config.params,
+    )
     dem = noisy.detector_error_model(
         decompose_errors=getattr(decoder, "decompose_errors", False),
         approximate_disjoint_errors=True,
@@ -351,8 +363,12 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
     t0 = time.perf_counter()
 
     while total_shots < max_shots and errors < max_errors:
-        dets, obs = sampler.sample(shots=batch_size, separate_observables=True)
-        total_shots += batch_size
+        shots_to_take = min(batch_size, max_shots - total_shots)
+        dets, obs = sampler.sample(
+            shots=shots_to_take,
+            separate_observables=True,
+        )
+        total_shots += dets.shape[0]
 
         obs_t = transform_observables(obs, T)
         mask = np.all(obs_t[:, ps_indices] == 0, axis=1)
@@ -364,7 +380,6 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
 
         dets_kept = dets[mask]
         obs_t_kept = obs_t[mask]
-        kept_shots += dets_kept.shape[0]
 
         n_det_bytes = math.ceil(n_det / 8)
         dets_packed = np.packbits(dets_kept, axis=1, bitorder="little")[:, :n_det_bytes]
@@ -373,9 +388,17 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
         )
         pred_unpacked = np.unpackbits(pred_packed, axis=1, bitorder="little")[:, :n_obs]
         pred_t = transform_observables(pred_unpacked, T)
-
-        corrected = obs_t_kept[:, target_indices] ^ pred_t[:, target_indices]
-        errors += int(np.sum(np.any(corrected, axis=1)))
+        pred_t_packed = np.packbits(pred_t, axis=1, bitorder="little")
+        batch_kept, batch_errors = count_batch(
+            obs_filtered=obs_t_kept,
+            pred_packed=pred_t_packed,
+            post_select_corrected_observable_indices=None,
+            target_observable_indices=target_indices,
+            flags=getattr(compiled, "last_flags", None),
+            on_decode_failure=decoder_config.on_decode_failure,
+        )
+        kept_shots += batch_kept
+        errors += batch_errors
 
         elapsed = time.perf_counter() - t0
         ler = errors / kept_shots if kept_shots > 0 else 0
