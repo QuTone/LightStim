@@ -56,6 +56,43 @@ def test_group_member_relation_is_not_banked():
     assert tracker.num_absorbed_dof() == 0
 
 
+def test_insertion_stores_the_canonical_residue():
+    # Review round 3, item 2 (the exact counterexample): stabilizer Z0,
+    # inserted relation Z0*Z1 — the stored row must be the irreducible
+    # residue Z1, and a reset on the ELIMINATED qubit 0 must pass while a
+    # reset on the residue's own support still fails loud.
+    n = 2
+    tracker = SyndromeTracker(n, 0)
+    tracker.stabilizers.matrix = _z_row(n, [0]).reshape(1, -1)
+    tracker.stabilizers.records = [[7]]
+
+    assert tracker.record_absorbed_op(_z_row(n, [0, 1])) is True
+    assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [1])).all()
+    assert tracker.num_absorbed_dof() == 1
+
+    reset = np.zeros((1, 2 * n), dtype=np.uint8)
+    reset[0, n + 0] = 1            # reset the eliminated qubit: passes now
+    tracker.process_resets(reset)
+    assert tracker.num_absorbed_dof() == 1
+
+    reset2 = np.zeros((1, 2 * n), dtype=np.uint8)
+    reset2[0, n + 1] = 1           # reset the residue's qubit: still loud
+    with pytest.raises(RuntimeError, match="banked absorbed relations"):
+        tracker.process_resets(reset2)
+
+
+def test_insertion_reduces_against_the_ledger_too():
+    # The reduction basis is [stabilizers ∪ ledger]: a second relation
+    # overlapping an already-banked one stores only its new content, and
+    # the census still counts two DOFs.
+    n = 3
+    tracker = SyndromeTracker(n, 0)
+    assert tracker.record_absorbed_op(_z_row(n, [0, 1])) is True
+    assert tracker.record_absorbed_op(_z_row(n, [0, 2])) is True
+    assert (tracker.absorbed_ops.matrix[1] == _z_row(n, [1, 2])).all()
+    assert tracker.num_absorbed_dof() == 2
+
+
 def test_banked_relation_survives_its_own_closure_row():
     # After a merge, the joint's CLOSURE row (same relation, carrying the
     # merge records) legitimately enters the stabilizer bank.  The banked

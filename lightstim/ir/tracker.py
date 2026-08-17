@@ -152,29 +152,36 @@ class SyndromeTracker:
         return _gf2_rank(self.absorbed_ops.matrix)
 
     def record_absorbed_op(self, op: np.ndarray) -> bool:
-        """Bank one absorbed logical relation, deduplicated up to logical
-        equivalence AT THIS MOMENT: a representative already expressible by
-        the current stabilizer rows and the banked relations reduces to
-        zero and is skipped.  Returns True iff a new row was banked.
+        """Bank one absorbed logical relation as its canonical residue AT
+        THIS MOMENT: the operator is reduced against the current stabilizer
+        rows and the already-banked relations, and only the irreducible
+        residue is stored.  A representative already expressible by that
+        basis reduces to zero and is skipped, and a wider representative
+        (e.g. Z0*Z1 when Z0 is a stabilizer) shrinks to its logical content
+        (Z1) — so the reset guard never rejects a qubit whose share of the
+        relation the stabilizer group already carries.  Returns True iff a
+        new row was banked.
 
         The ledger is OPERATOR-ONLY: absorbed_ops.records is never written.
         Banked-parity retrieval (per-relation measurement records) has no
         consumer in the retained scope and returns with the liveness
         layer's readout of banked relations."""
-        op = np.asarray(op, dtype=np.uint8).reshape(1, -1)
+        op = (np.asarray(op, dtype=np.uint8).reshape(-1) % 2).copy()
         if not op.any():
             return False
         A = self.absorbed_ops
         basis_parts = [M for M in (self.stabilizers.matrix, A.matrix)
                        if M.shape[0] > 0]
         if basis_parts:
-            basis = np.vstack(basis_parts)
-            _, dep, _ = solve_linear_decomposition(basis=basis, targets=op,
-                                                   reduce_weight=False)
-            if dep[0]:
+            reduced, pivots = _gf2_rref(np.vstack(basis_parts))
+            for row, pivot_col in zip(reduced, pivots):
+                if op[pivot_col]:
+                    op ^= row
+            if not op.any():
                 return False
+        op = op.astype(np.uint8).reshape(1, -1)
         A.matrix = (np.vstack([A.matrix, op]).astype(np.uint8)
-                    if A.count else op.astype(np.uint8))
+                    if A.count else op)
         return True
 
     def allocate_observable(self) -> int:
