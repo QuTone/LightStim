@@ -8,8 +8,10 @@ ledger] and skips dependent representatives; the count is deliberately
 NOT quotiented by the bank — see num_absorbed_dof).  There is
 deliberately no separately maintained integer (the old
 `_absorbed_logical_dofs` counter demanded perfect increment/decrement
-pairing from every path and drifted silently when one forgot).
-Geometry-independent, like test_tracker_closure_contract.
+pairing from every path and drifted silently when one forgot).  The
+ledger is OPERATOR-ONLY: absorbed_ops.records is never written — banked
+parity retrieval returns with the liveness layer (scope ruling
+2026-08-17).  Geometry-independent, like test_tracker_closure_contract.
 """
 import numpy as np
 import pytest
@@ -75,14 +77,12 @@ def test_alarm_fires_when_a_relation_is_lost():
     n = 4
     tracker = SyndromeTracker(n, 1)  # budget: one logical DOF somewhere
     tracker.absorbed_ops.matrix = _z_row(n, [2, 3]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[]]
     tracker.validate_logical_count(context="healthy state")  # no raise
 
     # A path that loses the relation without accounting for it must trip
     # the alarm at the next validation — the ledger IS the count, so the
     # two can no longer drift apart silently.
     tracker.absorbed_ops.matrix = np.zeros((0, 2 * n), dtype=np.uint8)
-    tracker.absorbed_ops.records = []
     with pytest.raises(RuntimeError, match="absorbed logical DOFs"):
         tracker.validate_logical_count(context="after losing the relation")
 
@@ -121,18 +121,16 @@ def test_block_absorb_requires_the_frame():
         tracker._record_measurement_logical_effects(set())
 
 
-def test_corridor_fold_carries_stabilizer_records():
+def test_corridor_fold_reexpresses_off_the_bus():
     # Corridor readout re-expresses a banked relation off the bus via a
-    # stabilizer row: the row's RECORDS must fold in alongside its Pauli
-    # (same contract as the reset fold - a silent truncation corrupts the
-    # banked parity invisibly to the census and to p=0 sampling).
+    # stabilizer row: the patch-side representative survives the bus
+    # readout (the relation is only defined MOD the stabilizer group).
     import stim
     n = 3
     tracker = SyndromeTracker(n, 0)
     tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
     tracker.stabilizers.records = [[7]]
     tracker.absorbed_ops.matrix = _z_row(n, [1]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[5]]
     fp = np.vstack([_z_row(n, [1]), _z_row(n, [2])])
 
     tracker.process_data_measurement(
@@ -140,20 +138,18 @@ def test_corridor_fold_carries_stabilizer_records():
         resolve_absorbed=False)
 
     assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [0])).all()
-    assert tracker.absorbed_ops.records == [[5, 7]], \
-        "the folded stabilizer's record must ride along"
+    assert tracker.num_absorbed_dof() == 1
 
 
-def test_corridor_residual_folds_against_readout_records():
+def test_corridor_residual_folds_against_readout():
     # Bus support the stabilizer group cannot cancel is folded against the
-    # readout's own measured Paulis - and their measurement records ride
-    # along.  (The old code hard-zeroed the columns and kept the truncated
-    # operator with unchanged records.)
+    # readout's own measured Paulis.  (The old code hard-zeroed the
+    # columns, silently changing the relation instead of its
+    # representative.)
     import stim
     n = 3
     tracker = SyndromeTracker(n, 0)
     tracker.absorbed_ops.matrix = _z_row(n, [0, 2]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[5]]
     fp = np.vstack([_z_row(n, [0]), _z_row(n, [1])])   # bus = {0, 1}
 
     tracker.process_data_measurement(
@@ -161,8 +157,7 @@ def test_corridor_residual_folds_against_readout_records():
         resolve_absorbed=False)
 
     assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [2])).all()
-    assert tracker.absorbed_ops.records == [[0, 5]], \
-        "the readout record for the folded bus component must ride along"
+    assert tracker.num_absorbed_dof() == 1
 
 
 def test_corridor_refuses_to_consume_bus_only_relation():
@@ -174,7 +169,6 @@ def test_corridor_refuses_to_consume_bus_only_relation():
     n = 2
     tracker = SyndromeTracker(n, 1)
     tracker.absorbed_ops.matrix = _z_row(n, [0, 1]).reshape(1, -1)
-    tracker.absorbed_ops.records = [[5]]
     fp = np.vstack([_z_row(n, [0]), _z_row(n, [1])])
 
     with pytest.raises(RuntimeError, match="resolve_absorbed=True"):
@@ -193,7 +187,6 @@ def test_corridor_refuses_undetermined_bus_support():
     row[0] = 1                       # X0
     row[n + 1] = 1                   # Z1
     tracker.absorbed_ops.matrix = row.reshape(1, -1)
-    tracker.absorbed_ops.records = [[5]]
     fp = _z_row(n, [0]).reshape(1, -1)
 
     with pytest.raises(RuntimeError, match="corrupted"):
@@ -202,24 +195,21 @@ def test_corridor_refuses_undetermined_bus_support():
             resolve_absorbed=False)
 
 
-def test_gauge_absorb_carries_seed_records():
-    # A record-pinned logical consumed by a gauge measurement keeps its
-    # pin: the ledger row's records are the banked parity a later readout
-    # XORs with the measuring records.  (The old
-    # code recorded the operator with empty records - the pin vanished.)
+def test_gauge_absorb_banks_the_consumed_operator():
+    # A gauge measurement consuming the SECOND of two logicals banks that
+    # logical's operator (and only it) while the surviving first logical
+    # stays out of the ledger.
     n = 3
     tracker = SyndromeTracker(n, 0)
     tracker._gauge_logical_vectors = [np.array([0, 1], dtype=np.uint8)]
     old = np.vstack([_z_row(n, [0]), _z_row(n, [1])])
 
     tracker._record_measurement_logical_effects(
-        {0}, old_logicals_current_frame=old,
-        old_logicals_records=[[], [9]])
+        {0}, old_logicals_current_frame=old)
 
     assert tracker.absorbed_ops.count == 1
     assert (tracker.absorbed_ops.matrix[0] == _z_row(n, [1])).all()
-    assert tracker.absorbed_ops.records == [[9]], \
-        "the consumed logical's seed records must ride into the ledger"
+    assert tracker.num_absorbed_dof() == 1
 
 
 def test_terminal_observable_refuses_sentinel_records():
@@ -285,7 +275,7 @@ def test_partial_resolve_readout_of_banked_relation_fails_loud():
     """)
     tracker = SyndromeTracker(n, 1)
     tracker.total_measurements = 1
-    tracker.record_absorbed_op(_z_row(n, [0, 1, 2, 3]), records=[0])
+    tracker.record_absorbed_op(_z_row(n, [0, 1, 2, 3]))
 
     final_paulis = np.zeros((2, 2 * n), dtype=np.uint8)
     final_paulis[0, n + 0] = 1

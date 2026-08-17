@@ -120,7 +120,8 @@ class SyndromeTracker:
         # increment/decrement pairing from every path and drifts silently when one
         # forgets. Self-correcting: once an absorbed relation is read out
         # (process_data_measurement), its row is dropped and stops being
-        # counted.
+        # counted. OPERATOR-ONLY: the .records side of this tableau is never
+        # written (see record_absorbed_op).
         self.absorbed_ops = PauliTableau(num_qubits)
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
@@ -150,13 +151,16 @@ class SyndromeTracker:
         the group later expresses it."""
         return _gf2_rank(self.absorbed_ops.matrix)
 
-    def record_absorbed_op(self, op: np.ndarray, records=()) -> bool:
+    def record_absorbed_op(self, op: np.ndarray) -> bool:
         """Bank one absorbed logical relation, deduplicated up to logical
-        equivalence AT THIS MOMENT: the operator is reduced against the
-        current stabilizer rows and the already-banked relations, and only
-        an irreducible residue is recorded.  A second representative of an
-        already-banked relation (differing by stabilizers) reduces to zero
-        and is skipped.  Returns True iff a new row was banked."""
+        equivalence AT THIS MOMENT: a representative already expressible by
+        the current stabilizer rows and the banked relations reduces to
+        zero and is skipped.  Returns True iff a new row was banked.
+
+        The ledger is OPERATOR-ONLY: absorbed_ops.records is never written.
+        Banked-parity retrieval (per-relation measurement records) has no
+        consumer in the retained scope and returns with the liveness
+        layer's readout of banked relations."""
         op = np.asarray(op, dtype=np.uint8).reshape(1, -1)
         if not op.any():
             return False
@@ -171,7 +175,6 @@ class SyndromeTracker:
                 return False
         A.matrix = (np.vstack([A.matrix, op]).astype(np.uint8)
                     if A.count else op.astype(np.uint8))
-        A.records = list(A.records) + [list(records)]
         return True
 
     def allocate_observable(self) -> int:
@@ -596,7 +599,7 @@ class SyndromeTracker:
     def _reject_reset_over_banked(self, touched_qubits, *, context):
         """A banked absorbed relation must never ride silently through a
         physical reset/re-initialisation: the reset destroys the relation's
-        support while its recorded parity stays banked, so the census would
+        support while the relation stays banked, so the census would
         go stale without any alarm.  Production flows never reset a qubit
         that still carries a banked relation (readouts resolve or fold the
         ledger first) — both real reset paths (process_resets, reached from
@@ -768,7 +771,6 @@ class SyndromeTracker:
         self,
         surviving_logical_indices: Set[int],
         old_logicals_current_frame: Optional[np.ndarray] = None,
-        old_logicals_records: Optional[List[List[int]]] = None,
     ) -> None:
         """Account for logical DOFs consumed by the current measurement block.
 
@@ -777,12 +779,7 @@ class SyndromeTracker:
         derived from that ledger via num_absorbed_dof().  Callers pass the
         pre-block logical rows already pushed into the current frame
         (i.e. after the block's forward symplectic), so the recorded
-        operators live in the same frame as every other tableau row —
-        together with those rows' RECORDS: a consumed record-pinned
-        logical's seed records are the banked parity of the absorbed
-        relation, and a later readout of the relation (terminal or
-        measured_absorbed) emits seed XOR measuring records.  Dropping the
-        seeds here would corrupt that parity invisibly to the census.
+        operators live in the same frame as every other tableau row.
         """
         if self._gauge_logical_vectors:
             gauge_matrix = np.array(
@@ -802,13 +799,8 @@ class SyndromeTracker:
                 n_logs = old_logicals_current_frame.shape[0]
                 ops = (gauge_matrix[:, :n_logs]
                        @ old_logicals_current_frame) % 2
-                for gv, op in zip(gauge_matrix, ops):
-                    recs: Set[int] = set()
-                    if old_logicals_records is not None:
-                        for j in np.flatnonzero(gv[:n_logs]):
-                            recs.symmetric_difference_update(
-                                old_logicals_records[int(j)])
-                    self.record_absorbed_op(op, records=sorted(recs))
+                for op in ops:
+                    self.record_absorbed_op(op)
 
         if surviving_logical_indices and self._gauge_logical_vectors:
             rows_to_remove = set()
@@ -1155,8 +1147,6 @@ class SyndromeTracker:
                 surviving_logical_indices,
                 old_logicals_current_frame=(
                     full_matrix[num_stabs:] @ forward_symplectic_matrix) % 2,
-                old_logicals_records=[
-                    list(r) for r in full_records[num_stabs:]],
             )
             return set()
 
@@ -1311,8 +1301,6 @@ class SyndromeTracker:
             surviving_log_indices,
             old_logicals_current_frame=(
                 full_matrix[num_stabs:] @ forward_symplectic_matrix) % 2,
-            old_logicals_records=[
-                list(r) for r in full_records[num_stabs:]],
         )
         return {
             num_output_stabilizers + position
@@ -1580,18 +1568,12 @@ class SyndromeTracker:
                     # budget delta below retires the slot
             else:
                 A.matrix = A.matrix.copy()
-                A.records = [list(rr) for rr in A.records]
                 # An absorbed relation is only defined MOD the stabilizer group; a
                 # stored rep may sit entirely on bus qubits (e.g. the joint of a
                 # colour-wall corridor reduces to a weight-2 bus operator).  Before
                 # folding the bus columns out, re-express each touched row off the
                 # measured qubits wherever the group allows — the patch-patch
-                # relation survives the bus readout.  Every fold is a change of
-                # REPRESENTATIVE: the folded row's records must ride along
-                # (stabilizer rows' records, or the readout's measurement
-                # records), same contract as reset_records_for_qubits — a
-                # silent truncation corrupts the banked parity invisibly to
-                # both the census (rank ignores records) and p=0 sampling.
+                # relation survives the bus readout.
                 touched = [r for r in range(A.count) if A.matrix[r, mcols].any()]
                 if touched and self.stabilizers.count:
                     coeffs, dep, _ = solve_linear_decomposition(
@@ -1600,35 +1582,19 @@ class SyndromeTracker:
                         reduce_weight=False)
                     for k, r in enumerate(touched):
                         if dep[k]:
-                            folded_recs = set(A.records[r])
-                            for s in np.flatnonzero(coeffs[k]):
-                                s_recs = self.stabilizers.records[int(s)]
-                                if UNMEASURED_STAB_RECORD in s_recs:
-                                    raise RuntimeError(
-                                        f"corridor readout: re-expressing "
-                                        f"absorbed relation {r} off the bus "
-                                        f"needs stabilizer row {int(s)}, "
-                                        f"whose records already carry the "
-                                        f"UNMEASURED sentinel — the "
-                                        f"relation's parity cannot be "
-                                        f"reconstructed.")
-                                folded_recs.symmetric_difference_update(
-                                    s_recs)
                             comb = (coeffs[k][None, :]
                                     @ self.stabilizers.matrix) % 2
                             A.matrix[r] = (A.matrix[r] + comb[0]) % 2
-                            A.records[r] = sorted(folded_recs)
                 # Residual bus support the group could not cancel: fold it
-                # against THIS readout's measured Paulis, XORing the matching
-                # measurement records in.  A residue outside the readout's
-                # span anticommutes with (or is undetermined by) the bus
-                # readout — the banked parity is destroyed: fail loud.  A row
-                # fully consumed by the fold lies entirely in the measured
-                # bus: a corridor readout resolves no absorbed relation, so
-                # silently dropping it would leak the DOF from the books
-                # (the census then misfires at an unrelated later
-                # checkpoint) — fail loud and let the caller route it as a
-                # patch readout instead.
+                # against THIS readout's measured Paulis.  A residue outside
+                # the readout's span anticommutes with (or is undetermined
+                # by) the bus readout — the banked relation is destroyed:
+                # fail loud.  A row fully consumed by the fold lies entirely
+                # in the measured bus: a corridor readout resolves no
+                # absorbed relation, so silently dropping it would leak the
+                # DOF from the books (the census then misfires at an
+                # unrelated later checkpoint) — fail loud and let the caller
+                # route it as a patch readout instead.
                 still = [r for r in touched if A.matrix[r, mcols].any()]
                 if still:
                     cf2, dep2, _ = solve_linear_decomposition(
@@ -1641,12 +1607,8 @@ class SyndromeTracker:
                                 f"corridor readout leaves absorbed relation "
                                 f"{r} with bus support that neither the "
                                 f"stabilizer group nor the readout basis "
-                                f"determines — the banked parity would be "
+                                f"determines — the banked relation would be "
                                 f"corrupted.")
-                        folded_recs = set(A.records[r])
-                        for j in np.flatnonzero(cf2[k]):
-                            folded_recs.symmetric_difference_update(
-                                {base_meas_idx + int(j)})
                         comb = (cf2[k][None, :] @ final_paulis) % 2
                         newrow = ((A.matrix[r] + comb[0]) % 2).astype(
                             np.uint8)
@@ -1659,12 +1621,10 @@ class SyndromeTracker:
                                 f"relation — route this readout with "
                                 f"resolve_absorbed=True instead.")
                         A.matrix[r] = newrow
-                        A.records[r] = sorted(folded_recs)
                 A.matrix = A.matrix.astype(np.uint8)
                 keep = [r for r in range(A.count) if A.matrix[r].any()]
             if len(keep) != A.count:
                 A.matrix = A.matrix[keep] if keep else np.zeros((0, 2 * n), dtype=np.uint8)
-                A.records = [A.records[r] for r in keep] if A.records else []
 
 
         num_stabs = self.stabilizers.count
