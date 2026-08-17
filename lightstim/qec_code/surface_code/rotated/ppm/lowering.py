@@ -440,4 +440,4 @@ def apply_ppm_plan(system, plan: RotatedSurfacePPMPlan, name: str) -> None:
         patch_names=target_names, name=name,
         placements=list(plan.placements),
         target=list(plan.request.targets), subset_route=plan.route_result,
-        seam=True, minority_names=plan.conj_names)
+        seam=True, conj_names=plan.conj_names)

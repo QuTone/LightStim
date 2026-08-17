@@ -36,7 +36,7 @@ class RotatedSurfacePPMCoupler(LogicalCouplerProtocol):
         subset_route=None,
         seam=True,
         route=None,
-        minority_names=frozenset(),
+        conj_names=frozenset(),
     ):
         result = subset_route
         if result is None:
@@ -71,7 +71,7 @@ class RotatedSurfacePPMCoupler(LogicalCouplerProtocol):
             }
             registered_orientation = (
                 self._FLIP_O[placement.orientation]
-                if placement.name in minority_names
+                if placement.name in conj_names
                 else placement.orientation
             )
             registered = place_patch(SimpleNamespace(
@@ -79,7 +79,7 @@ class RotatedSurfacePPMCoupler(LogicalCouplerProtocol):
                 distance=placement.distance,
                 orientation=registered_orientation,
             ))['checks']
-            if placement.name in minority_names:
+            if placement.name in conj_names:
                 registered = [
                     dict(
                         check,
