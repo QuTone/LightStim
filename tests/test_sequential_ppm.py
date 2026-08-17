@@ -9,7 +9,8 @@ liveness / rotations / snake / Y births are not included.
 Covered here (noiseless silence + deterministic observables + graphlike
 distance d at p=1e-3):
   * explicit one-cell corridor Z⊗Z;
-  * all four rule-table rows on cell-adjacent pairs (route=[]);
+  * executable row-1/4 cell-adjacent merges;
+  * pure lowering plus explicit experiment rejection for row-2/3 walls;
   * the Handbook Sec. 10.4 cap-slot regression (transposed row-3 E/W wall);
   * route-required enforcement at every layer;
   * independence from the circls package (subprocess import probe).
@@ -22,10 +23,15 @@ import sys
 import pytest
 
 from lightstim.noise.config import NoiseConfig
+from lightstim.ir.qec_system import QECSystem
 from lightstim.protocols.ppm.spec import PatchSpec, PPMStep, origin_of
 from lightstim.protocols.ppm.coupler import route_and_build, BentLayoutError
+from lightstim.protocols.ppm.lowering import lower_ppm
 from lightstim.protocols.ppm.seam_rules import SeamRuleError
-from lightstim.protocols.ppm.sequential import SequentialPPMExperiment
+from lightstim.protocols.ppm.sequential import (
+    SequentialPPMExperiment,
+    UnsupportedPPMExperimentError,
+)
 
 pytestmark = pytest.mark.smoke
 
@@ -48,11 +54,29 @@ def _run(px, target, states, *, route=(), **kw):
     return exp, c
 
 
-def _verify(exp, c, row=None, wall=None):
+def _lower(px, target, states, *, route=(), **kw):
+    step_kw = kw.pop('step_kw', {})
+    step = PPMStep(target, route=list(route), **step_kw)
+    exp = SequentialPPMExperiment(
+        px, [step], initial_states=states, final_measure_states=states,
+        rounds=D, rounds_init=1, **kw)
+    exp.system = QECSystem()
+    exp._by_name = {s.name: s for s in exp.patches}
+    for patch in exp.patches:
+        exp._alloc_patch(patch.name)
+    plan = lower_ppm(
+        exp._specs(),
+        exp._request(step),
+        system=exp.system,
+        conj_names=exp._conj(step),
+        schedule_policy=exp.schedule,
+    )
+    return exp, plan
+
+
+def _verify(exp, c, row=None):
     if row is not None:
         assert exp._rules[0].row == row
-    if wall is not None:
-        assert (0 in exp._walls) == wall
     det, obs = c.compile_detector_sampler(seed=0).sample(
         512, separate_observables=True)
     assert not det.any(), "detector fired at p=0"
@@ -134,31 +158,39 @@ def test_row1_same_pauli_same_type_plain_merge():
                    _spec("B", 1, 0, "X_horizontal")],
                   [("A", "Z"), ("B", "Z")], {"A": "Z", "B": "Z"})
     assert exp._sched[0] == 'bent'
-    _verify(exp, c, row=1, wall=False)
+    _verify(exp, c, row=1)
 
 
 def test_row2_same_pauli_diff_type_wall():
     # A = place(X_horizontal), B = place(X_vertical) with swapped colours
     # (live X̄ horizontal, textbook positions); X⊗X through the N/S seam ->
     # uniform-domino wall on the diagonal schedule
-    exp, c = _run([_spec("A", 0, 0, "X_horizontal"),
-                   _spec("B", 0, 1, "X_vertical")],
-                  [("A", "X"), ("B", "X")], {"A": "X", "B": "X"},
-                  colour_swapped={"B"})
-    assert exp._sched[0] == 'diagonal'
-    _verify(exp, c, row=2, wall=True)
+    px = [_spec("A", 0, 0, "X_horizontal"),
+          _spec("B", 0, 1, "X_vertical")]
+    target = [("A", "X"), ("B", "X")]
+    states = {"A": "X", "B": "X"}
+    _, plan = _lower(px, target, states, colour_swapped={"B"})
+    assert plan.rule.row == 2
+    assert plan.kind == 'wall'
+    assert plan.schedule == 'diagonal'
+    with pytest.raises(UnsupportedPPMExperimentError, match="wall"):
+        _run(px, target, states, colour_swapped={"B"})
 
 
 def test_row3_mixed_diff_type_wall():
     # A minority -> conjugate type, Z̄ horizontal; B colour-swapped ->
     # textbook type, X̄ horizontal; Z⊗X through the N/S seam ->
     # mixed-domino wall, diagonal schedule
-    exp, c = _run([_spec("A", 0, 0, "X_horizontal"),
-                   _spec("B", 0, 1, "X_vertical")],
-                  [("A", "Z"), ("B", "X")], {"A": "Z", "B": "X"},
-                  colour_swapped={"A", "B"})
-    assert exp._sched[0] == 'diagonal'
-    _verify(exp, c, row=3, wall=True)
+    px = [_spec("A", 0, 0, "X_horizontal"),
+          _spec("B", 0, 1, "X_vertical")]
+    target = [("A", "Z"), ("B", "X")]
+    states = {"A": "Z", "B": "X"}
+    _, plan = _lower(px, target, states, colour_swapped={"A", "B"})
+    assert plan.rule.row == 3
+    assert plan.kind == 'wall'
+    assert plan.schedule == 'diagonal'
+    with pytest.raises(UnsupportedPPMExperimentError, match="wall"):
+        _run(px, target, states, colour_swapped={"A", "B"})
 
 
 def test_row4_mixed_same_type_recoloured_merge():
@@ -169,7 +201,7 @@ def test_row4_mixed_same_type_recoloured_merge():
                   [("A", "X"), ("B", "Z")], {"A": "X", "B": "Z"},
                   colour_swapped={"B"})
     assert exp._sched[0] == 'bent'
-    _verify(exp, c, row=4, wall=False)
+    _verify(exp, c, row=4)
 
 
 def test_row3_transposed_ew_wall_cap_slot():
@@ -179,16 +211,19 @@ def test_row3_transposed_ew_wall_cap_slot():
     # one gap away (no slot), so the cap must sit at the free NORTH end;
     # the old far-side-colour proxy put it south (three checks fighting one
     # corner -> 50% random detectors).
-    exp, c = _run([_spec("A", 0, 0, "X_vertical"),
-                   _spec("B", 1, 0, "X_horizontal")],
-                  [("A", "X"), ("B", "Z")], {"A": "Z", "B": "Z"})
-    _verify(exp, c, row=3, wall=True)
-    wall = [st for st in exp.system.stabilizers
-            if st.get('patch_name') == 'ppm_0']
-    caps = [st for st in wall if len(st['data_indices']) == 2]
+    px = [_spec("A", 0, 0, "X_vertical"),
+          _spec("B", 1, 0, "X_horizontal")]
+    target = [("A", "X"), ("B", "Z")]
+    states = {"A": "Z", "B": "Z"}
+    _, plan = _lower(px, target, states)
+    assert plan.rule.row == 3
+    assert plan.kind == 'wall'
+    caps = [record for record in plan.wall.checks if len(record[1]) == 2]
     assert len(caps) == 1
-    assert caps[0]['syn_coord'][1] == 0, \
-        f"cap must sit at the free north end, got {caps[0]['syn_coord']}"
+    assert caps[0][0][1] == 0, \
+        f"cap must sit at the free north end, got {caps[0][0]}"
+    with pytest.raises(UnsupportedPPMExperimentError, match="wall"):
+        _run(px, target, states)
 
 
 def test_wall_step_rejects_bent_schedule():

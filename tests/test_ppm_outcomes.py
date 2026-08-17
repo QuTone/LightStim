@@ -3,17 +3,21 @@
 Every applied PPM exposes its physical measurement-record parity as a
 PPMOutcome; whether that parity is deterministic is a property of the
 request's relation to the tracked state, not a correctness question.
-An anti-commuting outcome is a legitimate free coin (protocol output);
-the deterministic quantities the circuit DOES certify (closure
-detectors, standing observables) are the evaluation layer's choice.
+The initial integration supports commuting sequences. Anti-commuting
+sequences are rejected until the absorbed-relation liveness contract can
+retire or transform prior protocol outputs soundly.
 """
 import contextlib
 import io
 
 import numpy as np
+import pytest
 
 from lightstim.protocols.ppm.spec import PatchSpec, PPMStep, origin_of
-from lightstim.protocols.ppm.sequential import SequentialPPMExperiment
+from lightstim.protocols.ppm.sequential import (
+    SequentialPPMExperiment,
+    UnsupportedPPMExperimentError,
+)
 
 D = 3
 
@@ -57,7 +61,7 @@ def test_commuting_repeat_outcome_is_reproducible():
     assert (b0 == b1).all(), "repeated commuting PPM outcomes must agree"
 
 
-def test_anticommuting_outcome_is_a_free_coin():
+def test_anticommuting_sequence_is_rejected_explicitly():
     # A sits on a corner: M(X̄A X̄B) through the E/W seam, then M(Z̄A Z̄C)
     # through the N/S seam — the joints anti-commute at A (X̄A vs Z̄A), and
     # each step is individually parallel-law-legal on its own seam (no
@@ -69,24 +73,14 @@ def test_anticommuting_outcome_is_a_free_coin():
           _spec("C", 0, 1, "X_vertical")]
     seq = [PPMStep([("A", "X"), ("B", "X")], route=[]),
            PPMStep([("A", "Z"), ("C", "Z")], route=[])]
-    exp = SequentialPPMExperiment(
-        px, seq, initial_states={"A": "X", "B": "X", "C": "Z"},
-        final_measure_states={"A": "Z", "B": "X", "C": "Z"},
-        rounds=D, rounds_init=1)
-    c = _build(exp)
-    o_0, o_1 = exp.ppm_outcomes[0], exp.ppm_outcomes[1]
-    assert o_0.records_post_split is not None
-    assert o_1.records_pre_merge is None, \
-        "an anti-commuting joint must NOT be pinned before its merge"
-    assert o_1.records_post_split is not None
-
-    coin = _bits(c, o_1.records_post_split)
-    assert coin.any() and not coin.all(), \
-        "the anti-commuting outcome must be a per-shot coin"
-
-    det = c.compile_detector_sampler(seed=0).sample(1024)
-    assert not det.any(), \
-        "every certified (evaluation-layer) correlation must stay silent"
+    with pytest.raises(
+        UnsupportedPPMExperimentError,
+        match="anti-commutes.*commuting sequences only",
+    ):
+        SequentialPPMExperiment(
+            px, seq, initial_states={"A": "X", "B": "X", "C": "Z"},
+            final_measure_states={"A": "Z", "B": "X", "C": "Z"},
+            rounds=D, rounds_init=1)
 
 
 def test_record_parity_excludes_sentinel_rows():

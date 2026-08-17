@@ -1,6 +1,6 @@
 # PPM lowering: design note and capability table
 
-Status: PR-B working document (general-ppm branch).
+Status: initial supported integration.
 
 ## Layering
 
@@ -18,9 +18,11 @@ PPMRequest ──lower_ppm()──► LoweringPlan ──apply_plan()──► Q
   merged-round schedule, and returns a declarative `LoweringPlan`.  It never
   touches the system, builder, or tracker.
 - `apply_plan(system, plan, name)` is the single mutation: coupler
-  registration.  Activation, merged rounds, split, and corridor readout
-  remain with the caller (`SequentialPPMExperiment` is one such caller; a
-  logical-level compiler is the intended other — see
+  registration. Couplers are define-by-run resources and must be registered
+  after the baseline has established the logical patches, immediately before
+  the corresponding PPM. Activation, merged rounds, split, and corridor
+  readout remain with the caller (`SequentialPPMExperiment` is one such
+  caller; a logical-level compiler is the intended other; see
   `test_kernel_api_composes_with_measurement_block_engine` for the
   driver-free consumption path).
 - Routing and lowering are separate responsibilities.  The route is an
@@ -46,27 +48,28 @@ oracle items on `SubsetRoute.certificate` / `LoweringPlan.certificate`:
 `certificate.measures_exactly_the_product` (= `joint & no_single &
 no_subjoint`) is the **true weight-w instrument guarantee**: measuring
 `M(P1*...*Pw)` reveals ONE bit; measuring `w-1` pairwise parities reveals
-more logical information and is a different quantum instrument.  Wall
+more logical information and is a different quantum instrument. Wall
 (stretched-stabilizer) plans currently carry `certificate=None`: their
-validation lives in the rule-table laws and end-to-end distance tests — a
-known gap.
+geometry is validated by the rule-table laws. The experiment driver does not
+yet execute wall plans because their rounds require a mixed-measurement
+lifecycle contract.
 
 ## Protocol output vs evaluation observable
 
 Each applied PPM banks a `PPMOutcome`: the joint's measurement-record
 parity before the merge and after the split (`record_parity()` over the
 record-carrying tracker rows; UNMEASURED-sentinel rows are excluded from
-the reconstruction basis).  `None` before the merge of an anti-commuting
-request is a **legitimately random protocol output**, not an error.
+the reconstruction basis).
 
 Whether a protocol output enters a deterministic, decodable quantity — an
 `OBSERVABLE_INCLUDE`, a closure detector, a feed-forward dependency — is
 the caller's EVALUATION choice, made from input states, the record
-parities, and the final measurement bases.  The driver's final readout
+parities, and the final measurement bases. The driver's final readout
 emits the standing logical observables; the closure detectors it emits are
-the certified correlations.  Tests: `tests/test_ppm_outcomes.py`
-(commuting repeat reproducible shot-by-shot; anti-commuting corner-layout
-pair is a per-shot coin while every certified correlation stays silent).
+the certified correlations. The initial driver accepts commuting sequences
+only. Anti-commuting sequences are rejected explicitly until the tracker has
+a complete absorbed-relation retirement/liveness contract. Tests:
+`tests/test_ppm_outcomes.py`.
 
 ## Capability table
 
@@ -80,17 +83,23 @@ pair is a per-shot coin while every certified correlation stays silent).
 | target weight | 2 (adjacent + routed), 3 (T corridor) | row tests, `test_three_target_one_step_t_corridor` |
 | weight ≥ 4 | **rejected explicitly** (`BentLayoutError`): needs the snake / kf-wall attach machinery not carried by this variant | `test_weight4_straight_chain_is_an_explicit_gap` |
 | route shapes | zero-cell (adjacent), straight (incl. 3-cell longer route), bent/L (forces the diagonal schedule), branched/T | corridor tests, `test_longer_straight_route_full_distance`, `test_bent_route_forces_diagonal_and_full_distance` |
-| sequential composition | commuting and anti-commuting consecutive PPMs; corridor reuse between steps | `test_ppm_outcomes`, driver tests |
+| adjacent seams | rows 1/4 execute as plain/recoloured merges; rows 2/3 lower to wall plans but experiment execution is rejected | rule-row tests |
+| sequential composition | commuting consecutive PPMs and corridor reuse; anti-commuting sequences rejected explicitly | `test_ppm_outcomes`, driver tests |
 | engine composition | measurement-block engine round over post-PPM tracker state (shared census) | `test_kernel_api_composes_with_measurement_block_engine` |
 | deformed / non-rectangular patches | not supported: the corridor path reconstructs standard rectangles from specs; adjacent classification would reject a mismatched live view | — |
+| reproducibility | circuit text is stable across process hash seeds for straight, bent/L, and branched/T routes | `test_ppm_determinism` |
 
 ## Known interface gaps against the review's spec
 
 Honestly listed, each a deliberate scope cut of this iteration:
 
-- **wall certificates**: wall (stretched-stabilizer) plans carry
-  `certificate=None`; their validation lives in the rule-table laws and
-  the end-to-end distance tests.
+- **wall execution and certificates**: wall plans carry `certificate=None`
+  and are available to compiler consumers, but
+  `SequentialPPMExperiment` rejects them until the tracker supports their
+  mixed disposable/retained measurement lifecycle.
+- **anti-commuting sequences**: the driver rejects them until absorbed
+  relations can be retired or transformed soundly across later
+  anti-commuting measurements.
 - **paused/restored checks**: handled by coupler activation
   (`QECSystem.activate_coupler` pauses, `deactivate` restores), not
   exposed as a `LoweringPlan` field.
@@ -107,9 +116,8 @@ Honestly listed, each a deliberate scope cut of this iteration:
   distinction is carried by `PPMOutcome` plus the emitted
   observables/closure detectors.
 
-## Known reproducibility note
+## Reproducibility
 
-Circuit builds are process-nondeterministic without a pinned
-`PYTHONHASHSEED` (set ordering reaches detector-coordinate assignment;
-physics is unaffected).  Byte-level reproduction of a build requires
-recording the hash seed alongside the commit.
+Circuit emission is deterministic across process hash seeds. Record XORs are
+stored and emitted in canonical order, and subprocess regressions cover
+straight, bent/L, and branched/T routes.

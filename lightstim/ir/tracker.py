@@ -470,7 +470,7 @@ class SyndromeTracker:
             rec_set = set()
             for idx in contributing_indices:
                 rec_set.symmetric_difference_update(full_records[idx])
-            canonical_records = list(rec_set)
+            canonical_records = sorted(rec_set)
 
             # Replace the target logical row
             abs_idx = num_stabs + log_idx  # index in full_matrix
@@ -509,7 +509,7 @@ class SyndromeTracker:
                     full_matrix[j_abs] ^= canonical_pauli[0]
                     rec_set_j = set(full_records[j_abs])
                     rec_set_j.symmetric_difference_update(canonical_records)
-                    full_records[j_abs] = list(rec_set_j)
+                    full_records[j_abs] = sorted(rec_set_j)
 
         # Write back
         self.logicals.matrix = full_matrix[num_stabs:]
@@ -1745,7 +1745,7 @@ class SyndromeTracker:
                         # (avoids inheriting coords from unrelated qubits via row updates).
                         if row_k[qubit_idx] or row_k[n_q + qubit_idx]:
                             det_coord = idx_to_coord_map[qubit_idx]
-            args = list(args_set)
+            args = sorted(args_set, key=lambda target: target.value)
 
             # Fallback when no data-qubit coord found via support check
             if det_coord is None:
@@ -1843,7 +1843,7 @@ class SyndromeTracker:
                     meas_abs_idx = base_meas_idx + i
                     rec_set = set(full_records[k])
                     rec_set.symmetric_difference_update({meas_abs_idx})
-                    full_records[k] = list(rec_set)
+                    full_records[k] = sorted(rec_set)
 
         # ======================================================================
         # Step 5: Persist updated tableau state

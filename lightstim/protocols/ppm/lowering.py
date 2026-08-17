@@ -83,6 +83,22 @@ class PPMRequest:
                 "PPMRequest: route is required — pass the explicit corridor "
                 "cells, or () for cell-adjacent targets (no auto-router "
                 "exists in this stack)")
+        if len(self.targets) < 2:
+            raise ValueError(
+                "PPMRequest: a Pauli-product measurement needs at least "
+                "two distinct target patches")
+        names = [name for name, _ in self.targets]
+        if len(set(names)) != len(names):
+            raise ValueError(
+                f"PPMRequest: target patches must be unique; got {names}")
+        if self.construction not in ('auto', 'wall', 'merge'):
+            raise ValueError(
+                "PPMRequest: construction must be 'auto', 'wall', or "
+                f"'merge'; got {self.construction!r}")
+        if self.schedule not in (None, 'bent', 'diagonal'):
+            raise ValueError(
+                "PPMRequest: schedule must be None, 'bent', or 'diagonal'; "
+                f"got {self.schedule!r}")
         for name, letter in self.targets:
             if letter == 'Y':
                 raise UnsupportedPauliError(
@@ -213,12 +229,24 @@ def lower_ppm(specs: List[PatchSpec], request: PPMRequest, *,
         conj_names: the colour-swapped subset of the targets.
         schedule_policy: experiment-wide policy ('auto'|'bent'|'diagonal').
     """
+    if schedule_policy not in ('auto', 'bent', 'diagonal'):
+        raise ValueError(
+            "lower_ppm: schedule_policy must be 'auto', 'bent', or "
+            f"'diagonal'; got {schedule_policy!r}")
     by_name = {s.name: s for s in specs}
+    if len(by_name) != len(specs):
+        raise ValueError("lower_ppm: patch specifications must have unique names")
     unknown = [nm for nm, _ in request.targets if nm not in by_name]
     if unknown:
         raise ValueError(f"lower_ppm: unknown target patch(es) {unknown}")
 
-    if is_cell_adjacent_pair(by_name, request):
+    adjacent_pair = is_cell_adjacent_pair(by_name, request)
+    if not adjacent_pair and request.construction != 'auto':
+        raise ValueError(
+            "lower_ppm: construction overrides apply only to cell-adjacent "
+            "two-patch requests")
+
+    if adjacent_pair:
         if system is None:
             raise ValueError(
                 "lower_ppm: a cell-adjacent pair is classified by the seam "
@@ -312,13 +340,20 @@ def joint_pauli_vector(system, targets) -> np.ndarray:
     n = system.num_qubits
     v = np.zeros(2 * n, dtype=np.uint8)
     for nm, letter in targets:
-        for rec in (x for x in system.logical_ops
-                    if x.get('patch_name') == nm and x.get('type') == letter):
-            for q, pp in rec['pauli'].items():
-                if pp in ('X', 'Y'):
-                    v[q] ^= 1
-                if pp in ('Z', 'Y'):
-                    v[n + q] ^= 1
+        matches = [
+            rec for rec in system.logical_ops
+            if rec.get('patch_name') == nm and rec.get('type') == letter
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "joint_pauli_vector: expected exactly one registered "
+                f"{letter} logical representative for patch {nm!r}; "
+                f"found {len(matches)}")
+        for q, pp in matches[0]['pauli'].items():
+            if pp in ('X', 'Y'):
+                v[q] ^= 1
+            if pp in ('Z', 'Y'):
+                v[n + q] ^= 1
     return v
 
 

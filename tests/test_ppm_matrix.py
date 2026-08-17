@@ -145,12 +145,6 @@ def test_kernel_api_composes_with_measurement_block_engine():
         system.add_patch(p, name=s.name,
                          offset=(s.origin[0] - 1, s.origin[1] - 1))
 
-    plan = lower_ppm(specs,
-                     PPMRequest(targets=(("A", "Z"), ("B", "Z")),
-                                route=((1, 0),)),
-                     system=system)
-    apply_plan(system, plan, "ppm_0")
-
     tracker = SyndromeTracker(num_qubits=system.num_qubits,
                               expected_num_logicals=system.num_logicals)
     builder = CircuitBuilder(tracker=tracker, system_config=system,
@@ -166,6 +160,14 @@ def test_kernel_api_composes_with_measurement_block_engine():
                for q in system.data_indices if owner.get(q) in orient}
     builder.apply_syndrome_extraction(
         circuit_chunk=se_round_chunk(system, domains=domains), rounds=1)
+
+    # Couplers are define-by-run resources: lower/register only after the
+    # baseline has established the logical patches.
+    plan = lower_ppm(specs,
+                     PPMRequest(targets=(("A", "Z"), ("B", "Z")),
+                                route=((1, 0),)),
+                     system=system)
+    apply_plan(system, plan, "ppm_0")
 
     builder.activate_coupler("ppm_0")
     coupler_patch = system.coupler_patches["ppm_0"]

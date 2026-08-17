@@ -16,7 +16,8 @@ from .coupler import (MultiPatchLayout, RotatedRoutedMultiPatchCoupler,
 from .lowering import (LoweringCertificate, LoweringPlan, PPMRequest,
                        UnsupportedPauliError, apply_plan,
                        is_cell_adjacent_pair, lower_ppm)
-from .sequential import SequentialPPMExperiment
+from .sequential import (SequentialPPMExperiment,
+                         UnsupportedPPMExperimentError)
 
 __all__ = [
     "BentLayoutError", "PatchSpec", "PPMStep", "cell", "cell_index",
@@ -28,4 +29,5 @@ __all__ = [
     "LoweringCertificate", "LoweringPlan", "PPMRequest",
     "UnsupportedPauliError", "apply_plan", "is_cell_adjacent_pair",
     "lower_ppm", "SequentialPPMExperiment",
+    "UnsupportedPPMExperimentError",
 ]

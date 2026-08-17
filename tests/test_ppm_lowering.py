@@ -11,12 +11,17 @@ import io
 
 import pytest
 
+from lightstim.ir.qec_system import QECSystem
+from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
 from lightstim.protocols.ppm.spec import PatchSpec, PPMStep, origin_of
 from lightstim.protocols.ppm.lowering import (
-    PPMRequest, UnsupportedPauliError, lower_ppm)
+    PPMRequest, UnsupportedPauliError, joint_pauli_vector, lower_ppm)
 from lightstim.protocols.ppm.coupler import route_and_build
 from lightstim.protocols.ppm.seam_rules import SeamRuleError
-from lightstim.protocols.ppm.sequential import SequentialPPMExperiment
+from lightstim.protocols.ppm.sequential import (
+    SequentialPPMExperiment,
+    UnsupportedPPMExperimentError,
+)
 
 D = 3
 
@@ -74,11 +79,75 @@ def test_route_is_required_no_autorouter():
         PPMRequest(targets=(("A", "Z"), ("B", "Z")), route=None)
 
 
+@pytest.mark.parametrize(
+    ("targets", "message"),
+    [
+        ((), "at least two"),
+        ((("A", "Z"),), "at least two"),
+        ((("A", "Z"), ("A", "X")), "unique"),
+    ],
+)
+def test_request_rejects_invalid_target_sets(targets, message):
+    with pytest.raises(ValueError, match=message):
+        PPMRequest(targets=targets, route=())
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("construction", "banana", "construction"),
+        ("schedule", "banana", "schedule"),
+    ],
+)
+def test_request_rejects_unknown_options(field, value, message):
+    kwargs = {field: value}
+    with pytest.raises(ValueError, match=message):
+        PPMRequest(
+            targets=(("A", "Z"), ("B", "Z")),
+            route=(),
+            **kwargs,
+        )
+
+
 def test_adjacent_pair_requires_live_system():
     px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 1, 0, "X_horizontal")]
     req = PPMRequest(targets=(("A", "Z"), ("B", "Z")), route=())
     with pytest.raises(ValueError, match="live probe"):
         lower_ppm(px, req, system=None)
+
+
+def test_lowering_rejects_invalid_policy_and_nonadjacent_override():
+    px = [_spec("A", 0, 0, "X_horizontal"),
+          _spec("B", 2, 0, "X_horizontal")]
+    req = PPMRequest(
+        targets=(("A", "Z"), ("B", "Z")),
+        route=((1, 0),),
+    )
+    with pytest.raises(ValueError, match="schedule_policy"):
+        lower_ppm(px, req, schedule_policy="banana")
+    override = PPMRequest(
+        targets=(("A", "Z"), ("B", "Z")),
+        route=((1, 0),),
+        construction="wall",
+    )
+    with pytest.raises(ValueError, match="cell-adjacent"):
+        lower_ppm(px, override)
+
+
+def test_joint_vector_requires_one_representative_per_target():
+    system = QECSystem()
+    system.add_patch(RotatedSurfaceCode(distance=D), name="A")
+    with pytest.raises(ValueError, match="patch 'B'.*found 0"):
+        joint_pauli_vector(system, (("A", "Z"), ("B", "Z")))
+
+    duplicate = next(
+        op.copy() for op in system.logical_ops
+        if op.get("patch_name") == "A" and op.get("type") == "Z"
+    )
+    duplicate["pauli"] = dict(duplicate["pauli"])
+    system.logical_ops.append(duplicate)
+    with pytest.raises(ValueError, match="patch 'A'.*found 2"):
+        joint_pauli_vector(system, (("A", "Z"), ("B", "Z")))
 
 
 def test_lower_ppm_is_pure_apply_is_the_mutation():
@@ -101,12 +170,23 @@ def test_wall_plan_and_bent_conflict():
     exp = SequentialPPMExperiment(
         px, seq, initial_states=states, final_measure_states=states,
         rounds=D, rounds_init=1, colour_swapped={"B"})
-    with contextlib.redirect_stdout(io.StringIO()):
-        exp.build()
-    plan = exp._plans[0]
+    exp.system = QECSystem()
+    exp._by_name = {s.name: s for s in exp.patches}
+    for patch in exp.patches:
+        exp._alloc_patch(patch.name)
+    plan = lower_ppm(
+        exp._specs(),
+        exp._request(seq[0]),
+        system=exp.system,
+        conj_names=exp._conj(seq[0]),
+        schedule_policy=exp.schedule,
+    )
     assert plan.kind == 'wall'
     assert plan.schedule == 'diagonal'
     assert plan.wall is not None
+    with pytest.raises(UnsupportedPPMExperimentError, match="wall"):
+        with contextlib.redirect_stdout(io.StringIO()):
+            exp.build()
 
     bad = SequentialPPMExperiment(
         px, seq, initial_states=states, final_measure_states=states,

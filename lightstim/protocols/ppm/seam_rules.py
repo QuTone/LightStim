@@ -49,13 +49,17 @@ patches carries the stretched stabilizers.
 from dataclasses import dataclass
 
 from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
-from lightstim.qec_code.surface_code.rotated.litinski_layouts import ptype
 from .spec import BentLayoutError
 
 _FLIP = {'X': 'Z', 'Z': 'X'}
 _FLIP_O = {'X_horizontal': 'X_vertical', 'X_vertical': 'X_horizontal'}
 
 TEXTBOOK, CONJUGATE = 'textbook', 'conjugate'
+
+
+def _plaquette_type(cx, cy, phase=0):
+    """Checkerboard type at an even-coordinate plaquette center."""
+    return 'X' if (((cx + cy) // 2) + phase) % 2 else 'Z'
 
 
 class SeamRuleError(BentLayoutError):
@@ -124,7 +128,7 @@ def detect_layout(system, name, d, origin):
     if not (lr and tb and bulk_type):
         raise SeamRuleError(f"could not read the live layout of {name!r}")
     sx, sy, t = bulk_type
-    phase = 0 if t == ptype(sx, sy, 0) else 1
+    phase = 0 if t == _plaquette_type(sx, sy, 0) else 1
     return lr, tb, phase
 
 
@@ -298,10 +302,10 @@ def _wall_checks(d, phi_near, phi_far, x0, y0, axis, sgn_override=None):
     inter = cs[1:-1]
 
     def cn(c):
-        return ptype(*P(c, lo), phi_near)
+        return _plaquette_type(*P(c, lo), phi_near)
 
     def cf(c):
-        return ptype(*P(c, hi), phi_far)
+        return _plaquette_type(*P(c, hi), phi_far)
 
     # cap end: the alternating-spacing rule (Handbook Sec. 10.4) decides —
     # wall_spec passes it in via sgn_override.  The far-side-colour proxy

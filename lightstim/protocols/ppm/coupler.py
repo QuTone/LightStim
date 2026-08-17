@@ -1823,8 +1823,8 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
         wall_fn = None
         retyped_bus = frozenset()
         if walls:
-            from .seam_rules import _wall_checks as _wc
-            from lightstim.qec_code.surface_code.rotated.litinski_layouts import ptype as _pt
+            from .seam_rules import (_plaquette_type as _pt,
+                                     _wall_checks as _wc)
             _retype = frozenset(retype)
 
             def wall_fn(phase, _wc=_wc, d=d, walls=walls, _retype=_retype):

@@ -15,10 +15,11 @@
 on rotated routed surface-code patches; between PPMs measure out ONLY the bus
 (corridor), target patches persist with state.
 
-Cell-adjacent two-patch steps are classified live by the four-row rule table
-(:mod:`.seam_rules`): rows 2/3 take the stretched-stabilizer wall coupler
-(diagonal schedule mandatory), rows 1/4 take the plain/recoloured zero-cell
-merge.  Distant targets go through the explicit-route corridor.
+Cell-adjacent two-patch steps are classified live by the four-row rule table.
+The lowering layer can describe all four rows, but this initial experiment
+driver executes only rows 1/4 (plain/recoloured merge). Rows 2/3 require a
+mixed-measurement wall lifecycle that is not yet part of the tracker contract
+and are rejected explicitly. Distant targets use the explicit-route corridor.
 """
 from dataclasses import replace
 from typing import Dict, List
@@ -33,12 +34,23 @@ from lightstim.qec_code.surface_code.rotated.diagonal_se import (
 
 from .spec import PPMStep, conjugate_patch_records
 from .lowering import (PPMOutcome, PPMRequest, apply_plan,
-                       is_cell_adjacent_pair, joint_pauli_vector, lower_ppm,
-                       record_parity)
+                       joint_pauli_vector, lower_ppm, record_parity)
 
-__all__ = ["SequentialPPMExperiment"]
+__all__ = ["SequentialPPMExperiment", "UnsupportedPPMExperimentError"]
 
 _FLIP_O = {'X_horizontal': 'X_vertical', 'X_vertical': 'X_horizontal'}
+
+
+class UnsupportedPPMExperimentError(NotImplementedError):
+    """A valid lowering plan that this experiment driver cannot execute."""
+
+
+def _steps_commute(a, b):
+    """Whether two logical Pauli products commute on their shared patches."""
+    pa = dict(a.interaction_type)
+    pb = dict(b.interaction_type)
+    anti = sum(pa[name] != pb[name] for name in pa.keys() & pb.keys())
+    return anti % 2 == 0
 
 
 class SequentialPPMExperiment:
@@ -46,8 +58,9 @@ class SequentialPPMExperiment:
     patches declared by ``patches`` (a list of :class:`~.spec.PatchSpec`
     on the seam-column coarse grid, pitch ``2d+2``).
 
-    All patches are allocated and initialised up front; each PPM activates
-    its pre-registered coupler, runs ``rounds`` merged SE rounds, splits, and
+    All patches are allocated and initialised up front; each PPM lowers and
+    registers its coupler immediately before use, runs ``rounds`` merged SE
+    rounds, splits, and
     measures out the corridor only; the final data readout measures every
     patch in its ``final_measure_states`` letter (the builder emits the
     standing logical observables there).
@@ -59,6 +72,10 @@ class SequentialPPMExperiment:
                  schedule: str = 'auto', colour_swapped=frozenset()):
         self.patches = list(patches)
         self.ppm_sequence = list(ppm_sequence)
+        patch_name_list = [s.name for s in self.patches]
+        if len(set(patch_name_list)) != len(patch_name_list):
+            raise ValueError(
+                f"patch names must be unique; got {patch_name_list}")
         self.initial_states = {k: v.upper() for k, v in initial_states.items()}
         self.final_measure_states = {k: v.upper()
                                      for k, v in final_measure_states.items()}
@@ -83,14 +100,22 @@ class SequentialPPMExperiment:
         self.noise_params = noise_params
         self.noise_model = noise_model
         for i, step in enumerate(self.ppm_sequence):
-            if step.route is None:
-                raise ValueError(
-                    f"PPM {i}: route is required in this variant — pass the "
-                    f"explicit corridor cells, or [] for cell-adjacent targets")
-            for name, P in step.interaction_type:
-                if P not in ('X', 'Z'):
-                    raise ValueError(
-                        f"PPM Pauli must be 'X' or 'Z', got {P!r} on patch {name}")
+            try:
+                PPMRequest(
+                    targets=tuple(step.interaction_type),
+                    route=(None if step.route is None else
+                           tuple(tuple(c) for c in step.route)),
+                    construction=step.construction,
+                    schedule=step.schedule,
+                )
+            except ValueError as exc:
+                raise type(exc)(f"PPM {i}: {exc}") from exc
+        for i, step in enumerate(self.ppm_sequence):
+            for j, earlier in enumerate(self.ppm_sequence[:i]):
+                if not _steps_commute(earlier, step):
+                    raise UnsupportedPPMExperimentError(
+                        f"PPM {i} anti-commutes with PPM {j}; the current "
+                        "experiment driver supports commuting sequences only")
         patch_names = {s.name for s in self.patches}
         missing_init = patch_names - self.initial_states.keys()
         if missing_init:
@@ -144,9 +169,6 @@ class SequentialPPMExperiment:
                           construction=step.construction,
                           schedule=step.schedule)
 
-    def _adjacent_pair(self, step):
-        return is_cell_adjacent_pair(self._by_name, self._request(step))
-
     def _register_step(self, i, step):
         """Lower PPM ``i`` through the kernel and register its plan.  All
         construction decisions (rule row, wall vs merge, schedule, corridor
@@ -160,13 +182,16 @@ class SequentialPPMExperiment:
             if 'route_and_build failed' in str(e):
                 raise ValueError(f'PPM {i}: {e}') from None
             raise
+        if plan.kind == 'wall':
+            raise UnsupportedPPMExperimentError(
+                f"PPM {i} lowers to a stretched-stabilizer wall. The lowering "
+                "plan is available, but SequentialPPMExperiment does not yet "
+                "execute wall rounds because they mix disposable syndrome "
+                "measurements with retained data measurements.")
         apply_plan(self.system, plan, f'ppm_{i}')
         self._plans[i] = plan
         self._sched[i] = plan.schedule
-        if plan.kind == 'wall':
-            self._walls[i] = plan.wall
-        else:
-            self._routes[i] = plan.route_result
+        self._routes[i] = plan.route_result
         if plan.rule is not None:
             self._rules[i] = plan.rule
 
@@ -266,25 +291,6 @@ class SequentialPPMExperiment:
                                         resolve_absorbed=False)
         self._capture_outcome(i, step, pre)
 
-    def _apply_wall_step(self, i, step):
-        """A stretched-stabilizer wall step: activate the wall coupler (its
-        apparatus adds no data qubits, so there is no corridor init/readout),
-        run the merged rounds on the DIAGONAL schedule (mandatory for kf
-        checks), then split by deactivating — the paused facing lobes come
-        back automatically."""
-        cname = f'ppm_{i}'
-        if self.idle_rounds:
-            self._standalone_se(self.idle_rounds)
-        pre = record_parity(
-            self.tracker, joint_pauli_vector(self.system,
-                                             step.interaction_type))
-        self.builder.activate_coupler(cname)
-        self.builder.apply_syndrome_extraction(
-            DiagonalSurfaceCodeExtractionBlock(self.system).circuit,
-            rounds=self.rounds)
-        self.builder.deactivate_coupler(cname)
-        self._capture_outcome(i, step, pre)
-
     def _init_and_baseline(self, names):
         """Reset the data qubits owned by ``names`` to their initial states,
         then run the baseline SE (``rounds_init``) that establishes their
@@ -305,11 +311,6 @@ class SequentialPPMExperiment:
                         for s in self.patches}
         self.system = QECSystem()
         self._by_name = {s.name: s for s in self.patches}
-        # direct-seam steps (two cell-adjacent targets): classified by the
-        # rule table against the LIVE system, so always registered lazily
-        self._adj_steps = {i for i, st in enumerate(self.ppm_sequence)
-                           if self._adjacent_pair(st)}
-        self._walls = {}
         self._rules = {}
         self._sched = {}
         self._plans = {}
@@ -321,25 +322,14 @@ class SequentialPPMExperiment:
         for s in self.patches:
             self._alloc_patch(s.name)
 
-        # register the routed couplers up front (BEFORE the tracker exists);
-        # adjacent-pair steps register lazily in the loop, off the live probe
         self._routes: List = [None] * len(self.ppm_sequence)
-        for i, step in enumerate(self.ppm_sequence):
-            if i in self._adj_steps:
-                continue
-            self._register_step(i, step)
 
         self._setup()
         self.builder.write_coordinates()
         self._init_and_baseline({s.name for s in self.patches})
 
         for i, step in enumerate(self.ppm_sequence):
-            if i in self._adj_steps and i not in self._walls \
-                    and self._routes[i] is None:
-                self._register_step(i, step)
-            if i in self._walls:
-                self._apply_wall_step(i, step)
-                continue
+            self._register_step(i, step)
             self._apply_ppm_step(i, step)
 
         owner = self.system.index_to_owner_map
