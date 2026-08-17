@@ -48,6 +48,19 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | `mwpf` | CPU | General QLDPC |
 | `cpu_bposd` | CPU | QLDPC codes, no GPU |
 | `gpu_bposd` | GPU (CUDA) | BB/HGP codes at scale |
+| `mle-ilp` | CPU | Exact reference decoding on small instances |
+
+`mle-ilp` has an unlimited per-shot budget by default. For practical large-DEM
+runs, set `--mle-time-limit SECONDS` and choose an explicit
+`--on-decode-failure error|discard|ignore` policy. `error` is the conservative
+default. A positive MLE time limit is rejected for other decoders.
+
+```bash
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes rotated_sc --distances 3 5 --p-values 5e-3 \
+    --decoder mle-ilp --mle-time-limit 2 \
+    --on-decode-failure discard --num-workers 8
+```
 
 ## Color Code SE Circuits
 
@@ -199,7 +212,8 @@ Results are saved as CSV with one row per complete benchmark configuration:
 
 ```
 code, distance, p, basis, rounds, se_circuit, noise_model, decoder_name,
-layout, block_class, shots, errors, logical_error_rate, seconds,
+decoder_time_limit, on_decode_failure, layout, block_class,
+shots, errors, logical_error_rate, seconds,
 n_data, n_total, k
 ```
 

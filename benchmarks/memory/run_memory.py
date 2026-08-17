@@ -208,17 +208,32 @@ def _make_code(code_name: str, distance: int, se_circuit: str | None = None):
     raise ValueError(f"Unknown code: {code_name!r}. Available: {ALL_CODES}")
 
 
-def _decoder_config(name: str, osd_order: int = 10, max_iterations: int = 1000) -> DecoderConfig:
+def _decoder_config(
+    name: str,
+    osd_order: int = 10,
+    max_iterations: int = 1000,
+    mle_time_limit: float = 0.0,
+    on_decode_failure: str = "error",
+) -> DecoderConfig:
     if name == "pymatching":
-        return DecoderConfig(name="pymatching", backend="cpu")
+        return DecoderConfig(
+            name="pymatching", backend="cpu",
+            on_decode_failure=on_decode_failure,
+        )
     if name == "mwpf":
-        return DecoderConfig(name="mwpf", backend="cpu", params={"cluster_node_limit": 50})
+        return DecoderConfig(
+            name="mwpf", backend="cpu", params={"cluster_node_limit": 50},
+            on_decode_failure=on_decode_failure,
+        )
     if name == "cpu_bposd":
-        return DecoderConfig(name="bposd", backend="cpu", params={
-            "max_iterations": max_iterations, "osd_order": osd_order,
-            "bp_method": "min_sum", "ms_scaling_factor": 0,
-            "osd_method": "osd_cs",
-        })
+        return DecoderConfig(
+            name="bposd", backend="cpu", params={
+                "max_iterations": max_iterations, "osd_order": osd_order,
+                "bp_method": "min_sum", "ms_scaling_factor": 0,
+                "osd_method": "osd_cs",
+            },
+            on_decode_failure=on_decode_failure,
+        )
     if name == "gpu_bposd":
         return DecoderConfig(
             name="nv-qldpc-decoder", backend="gpu",
@@ -227,8 +242,18 @@ def _decoder_config(name: str, osd_order: int = 10, max_iterations: int = 1000) 
                 "bp_method": "min_sum", "ms_scaling_factor": 0,
                 "osd_method": "osd_cs", "use_osd": True,
             },
+            on_decode_failure=on_decode_failure,
         )
-    raise ValueError(f"Unknown decoder: {name!r}. Choose: pymatching, mwpf, cpu_bposd, gpu_bposd")
+    if name == "mle-ilp":
+        return DecoderConfig(
+            name="mle-ilp", backend="cpu",
+            params={"time_limit": mle_time_limit},
+            on_decode_failure=on_decode_failure,
+        )
+    raise ValueError(
+        f"Unknown decoder: {name!r}. Choose: pymatching, mwpf, cpu_bposd, "
+        "gpu_bposd, mle-ilp"
+    )
 
 
 # ── Circuit builder ───────────────────────────────────────────────────────────
@@ -302,6 +327,36 @@ _RESULT_COLS = frozenset({
     "block_class",
 })
 
+_RESULT_COLUMNS = [
+    "code", "distance", "p", "basis", "rounds", "se_circuit",
+    "noise_model", "decoder_name", "decoder_time_limit",
+    "on_decode_failure", "layout", "block_class", "shots", "errors",
+    "logical_error_rate", "seconds", "n_data", "n_total", "k",
+]
+_RESULT_METADATA_DEFAULTS = {
+    "decoder_time_limit": 0.0,
+    "on_decode_failure": "error",
+}
+
+
+def _ensure_result_schema(path: Path) -> None:
+    """Upgrade pre-MLE benchmark CSVs before checkpointing or appending."""
+    if not path.exists():
+        return
+    df = pd.read_csv(path)
+    unknown = set(df.columns) - set(_RESULT_COLUMNS)
+    if unknown:
+        raise ValueError(
+            f"Cannot migrate {path}: unknown result columns {sorted(unknown)}"
+        )
+    changed = False
+    for column, default in _RESULT_METADATA_DEFAULTS.items():
+        if column not in df.columns:
+            df[column] = default
+            changed = True
+    if changed or list(df.columns) != _RESULT_COLUMNS:
+        df.reindex(columns=_RESULT_COLUMNS).to_csv(path, index=False)
+
 
 def _task_key(row: dict) -> tuple:
     """Stable key from input-only columns (used to skip completed tasks)."""
@@ -314,6 +369,7 @@ def _task_key(row: dict) -> tuple:
 def _load_done_keys(path: Path) -> set:
     if not path.exists():
         return set()
+    _ensure_result_schema(path)
     df = pd.read_csv(path)
     return {_task_key(r) for r in df.to_dict("records")}
 
@@ -395,7 +451,7 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
             "n_total":             n_total,
             "k":                   k,
         }
-        pd.DataFrame([row]).to_csv(
+        pd.DataFrame([row], columns=_RESULT_COLUMNS).to_csv(
             output_path, mode="a", header=not output_path.exists(), index=False,
         )
         print(f"  LER={stats.logical_error_rate:.2e} | "
@@ -433,13 +489,22 @@ def main():
     )
     ap.add_argument("--rounds", type=int, default=None,
                     help="SE rounds per cycle (default: distance)")
-    ap.add_argument("--decoder", choices=["pymatching", "mwpf", "cpu_bposd", "gpu_bposd"],
+    ap.add_argument("--decoder", choices=["pymatching", "mwpf", "cpu_bposd", "gpu_bposd", "mle-ilp"],
                     default="pymatching",
                     help="Decoder (default: pymatching)")
     ap.add_argument("--osd-order", type=int, default=10,
                     help="OSD order for cpu_bposd/gpu_bposd decoders (default: 10)")
     ap.add_argument("--max-iterations", type=int, default=1000,
                     help="BP iteration limit for cpu_bposd/gpu_bposd decoders (default: 1000)")
+    ap.add_argument(
+        "--mle-time-limit", type=float, default=0.0,
+        help="Soft seconds/shot limit for mle-ilp; 0 is exact/unlimited (default: 0)",
+    )
+    ap.add_argument(
+        "--on-decode-failure", choices=["error", "discard", "ignore"],
+        default="error",
+        help="Policy for decoder timeouts/failures (default: error)",
+    )
     ap.add_argument("--max-shots",   type=int, default=1_000_000)
     ap.add_argument("--max-errors",  type=int, default=200)
     ap.add_argument("--num-workers", type=int, default=8)
@@ -461,6 +526,10 @@ def main():
         ap.error("--num-workers must be between 1 and 48")
     if args.batch_size < 1:
         ap.error("--batch-size must be positive")
+    if not np.isfinite(args.mle_time_limit) or args.mle_time_limit < 0:
+        ap.error("--mle-time-limit must be finite and non-negative")
+    if args.mle_time_limit > 0 and args.decoder != "mle-ilp":
+        ap.error("--mle-time-limit is only valid with --decoder mle-ilp")
 
     if args.quick:
         args.codes = args.codes if args.codes else ["rotated_sc"]
@@ -515,6 +584,11 @@ def main():
                             "se_circuit": se_circuit,
                             "noise_model": args.noise_model,
                             "decoder_name": args.decoder,
+                            "decoder_time_limit": (
+                                args.mle_time_limit
+                                if args.decoder == "mle-ilp" else 0.0
+                            ),
+                            "on_decode_failure": args.on_decode_failure,
                         })
 
     # Default output path
@@ -528,6 +602,9 @@ def main():
     print(f"Tasks:       {len(tasks)} total")
     print(f"Decoder:     {args.decoder} | noise_model={args.noise_model} | "
           f"osd_order={args.osd_order} | max_iterations={args.max_iterations}")
+    if args.decoder == "mle-ilp":
+        limit = "unlimited" if args.mle_time_limit == 0 else f"{args.mle_time_limit:g}s/shot"
+        print(f"MLE budget:  {limit} | failure_policy={args.on_decode_failure}")
     if "color" in args.codes:
         print(f"Color SE:    {', '.join(args.color_se_circuits)}")
     print(f"batch_size:  {args.batch_size}")
@@ -535,7 +612,13 @@ def main():
     print(f"workers:     {effective_workers}")
     print(f"max_shots:   {args.max_shots:.0e} | max_errors={args.max_errors}\n")
 
-    run(tasks, _decoder_config(args.decoder, args.osd_order, args.max_iterations),
+    run(tasks, _decoder_config(
+            args.decoder,
+            args.osd_order,
+            args.max_iterations,
+            args.mle_time_limit,
+            args.on_decode_failure,
+        ),
         args.max_shots, args.max_errors,
         args.num_workers, args.batch_size,
         output)

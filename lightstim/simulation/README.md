@@ -41,6 +41,7 @@
 | `"relay-bp"` | `"cpu"` | `relay_bp` | Relay-BP; aliases `"relay_bp"`, `"relaybp"` |
 | `"tesseract"` | `"cpu"` | `tesseract_decoder` | Beam-search MLE; lazy import |
 | `"ldpc-bp"` | `"cpu"` | `ldpc` | Plain BP (no OSD), via `ldpc.BpDecoder`; aliases `"ldpc_bp"`, `"bp"` |
+| `"mle-ilp"` | `"cpu"` | `scipy>=1.9` | Exact most-likely-error via ACG-ALP/RPC with MILP fallback; aliases `"mle"`, `"ilp"` |
 | `"chain"` | `"cpu"` | *(none — composes other registered decoders)* | Multi-level escalation, e.g. BP → relay-BP → MLE; aliases `"decoder-chain"`, `"multi-level"` — see §11 |
 
 Requesting a backend with no registration raises `ImportError` immediately (e.g. `backend="gpu"` without `cudaq_qec`).
@@ -59,6 +60,31 @@ Both CPU and GPU bposd backends accept the same parameter names:
 | `osd_order` | `osd_order` | `osd_order` | `10` |
 | `osd_method` | `'osd_cs'` etc | `3` (int) | `'osd_cs'` |
 | `use_osd` | *(ignored; always on)* | `use_osd` | `True` |
+
+### Exact MLE parameters
+
+`DecoderConfig("mle-ilp")` is exact for supplied priors in `[0, 0.5]` by default and has
+no solve deadline. Large detector error models can have long MILP tails; use a
+positive `time_limit` together with an explicit `on_decode_failure` policy when
+bounded throughput is more important than completing every shot.
+
+| Parameter | Default | Meaning |
+|---|---:|---|
+| `time_limit` | `0.0` | Soft seconds-per-shot budget; zero is unlimited |
+| `max_prior` | `0.5` | Optional cap applied after validation; `c<0.5` maps each positive `p` to `min(p, c)` |
+| `max_cut_rounds` | `200` | Maximum forbidden-set cut rounds before MILP fallback |
+| `max_rpc_rounds` | `8` | Redundant-parity-check rounds; zero disables RPC generation |
+| `max_rpc_pivots` | `64` | Gaussian-elimination pivots per RPC round |
+| `max_rpc_weight` | `256` | Skip denser derived checks |
+| `max_rpc_memory_mb` | `512` | Packed RPC workspace cap; zero is unlimited |
+
+Supplied priors must be in `[0, 0.5]`; values above `0.5` are rejected rather
+than clamped. The default `max_prior=0.5` changes no accepted prior. A smaller
+cap intentionally changes accepted priors above that cap. Zero-probability
+mechanisms are fixed off, and probability-0.5 mechanisms have exactly zero
+objective weight. A timed-out shot is flagged; `"error"`
+counts it as wrong, `"discard"` removes it, and `"ignore"` trusts the partial
+prediction.
 
 ---
 
@@ -118,6 +144,7 @@ simulation/
 │   │   ├── relay_bp.py    # Relay-BP decoder (CPU, sinter-native)
 │   │   ├── tesseract.py   # Tesseract beam-search MLE (CPU, lazy import)
 │   │   ├── ldpc_bp.py     # Plain BP decoder (CPU, ExternalDecoder facade)
+│   │   ├── mle_ilp.py     # Exact most-likely-error decoder (CPU, SciPy MILP)
 │   │   └── chain.py       # Multi-level decoder chain (CPU, composes other decoders)
 │   ├── pipeline.py        # SimulationPipeline, ExperimentTask
 │   ├── post_select.py     # apply_post_selection, get_post_select_detector_indices
@@ -138,6 +165,7 @@ simulation/
 - `relay_bp` — Relay-BP decoder: `pip install "relay-bp[stim]"`
 - `tesseract_decoder` — Tesseract beam-search MLE: `pip install tesseract-decoder` (a prebuilt wheel may not match every CPU; build from source if it fails to import)
 - `ldpc` — Plain BP decoder: `pip install ldpc`
+- `scipy>=1.9` — exact MLE (`scipy.optimize.milp`)
 - `cudaq_qec` — GPU BP+OSD: `pip install cudaq_qec` (NVIDIA GPU required)
 
 ---
@@ -157,6 +185,22 @@ pipeline = SimulationPipeline(
     progress_interval_sec=10.0,
 )
 stats = pipeline.run(circuit, json_metadata={"d": 3, "p": 0.001})
+
+# Exact MLE: unlimited by default.
+mle_pipeline = SimulationPipeline(
+    decoder_config=DecoderConfig("mle-ilp"),
+    max_shots=2_000,
+    num_workers=4,
+)
+
+# A practical bounded run. Timeout shots are explicitly discarded.
+bounded_mle_pipeline = SimulationPipeline(
+    decoder_config=DecoderConfig(
+        "mle-ilp",
+        params={"time_limit": 2.0},
+        on_decode_failure="discard",
+    ),
+)
 
 # GPU BP+OSD (cudaq_qec nv-qldpc-decoder)
 pipeline = SimulationPipeline(

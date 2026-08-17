@@ -26,6 +26,7 @@ dependencies = [
     "sinter>=1.15.0",
     "PyMatching>=2.0.0",
     "pandas",
+    "scipy>=1.9.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +48,7 @@ decoders = [
     # build it from source if it fails to import.
     "tesseract-decoder",
     "ldpc",                     # Plain BP (ldpc-bp)
+    # The exact-MLE decoder (mle-ilp) uses the core scipy dependency.
 ]
 gpu = [
     "cudaq-qec",

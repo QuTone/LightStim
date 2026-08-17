@@ -125,6 +125,7 @@ print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 | MWPF | `DecoderConfig('mwpf')` | Hyperedges (CrossLS, PQRM, color code). |
 | Relay-BP | `DecoderConfig('relay-bp')` | LDPC / hyperedge circuits. Needs `.[decoders]`. |
 | Tesseract | `DecoderConfig('tesseract', params={'det_beam': 50})` | Beam-search MLE. Needs `.[decoders]`. |
+| Exact MLE | `DecoderConfig('mle-ilp')` | Exact reference decoder; unlimited by default. |
 | GPU BP+OSD | `DecoderConfig('nv-qldpc-decoder')` | NVIDIA GPU. Large d or high p. |
 
 ### Available QEC codes
