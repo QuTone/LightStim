@@ -8,4 +8,4 @@ __all__ = [
     "RotatedSurfaceCodeExtractionBlock",
     "RotatedSurfaceCodeLogicalOpSet",
     "RotatedTwoPatchCoupler",
-]
+    ]

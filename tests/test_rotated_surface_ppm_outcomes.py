@@ -1,0 +1,107 @@
+"""Protocol output vs evaluation observable (review §3).
+
+Every applied PPM exposes its physical measurement-record parity as a
+PPMOutcome; whether that parity is deterministic is a property of the
+request's relation to the tracked state, not a correctness question.
+The initial integration supports commuting sequences. Anti-commuting
+sequences are rejected until the absorbed-relation liveness contract can
+retire or transform prior protocol outputs soundly.
+"""
+import contextlib
+import io
+
+import numpy as np
+import pytest
+
+from lightstim.qec_code.surface_code.rotated.ppm import (
+    RotatedSurfacePatchPlacement,
+    origin_of,
+)
+from lightstim.protocols.rotated_surface_ppm import (
+    RotatedSurfacePPMExperiment,
+    RotatedSurfacePPMStep,
+    UnsupportedPPMExperimentError,
+)
+
+D = 3
+
+
+def _spec(nm, a, b, o):
+    return RotatedSurfacePatchPlacement(nm, origin_of(a, b, D, seam=True), D, o)
+
+
+def _build(exp):
+    with contextlib.redirect_stdout(io.StringIO()):
+        return exp.build()
+
+
+def _bits(circuit, records, shots=400, seed=5):
+    m = circuit.compile_sampler(seed=seed).sample(shots)
+    out = np.zeros(shots, dtype=bool)
+    for r in records:
+        out ^= m[:, r]
+    return out
+
+
+def test_commuting_repeat_outcome_is_reproducible():
+    # M(ZZ) twice: the second joint is pinned BEFORE its merge (pre-merge
+    # records exist), and the two protocol outputs agree shot by shot — a
+    # deterministic correlation between two protocol outputs.
+    px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 2, 0, "X_horizontal")]
+    seq = [RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0)]),
+           RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0)])]
+    st = {"A": "Z", "B": "Z"}
+    exp = RotatedSurfacePPMExperiment(px, seq, initial_states=st,
+                                  final_measure_states=st, rounds=D,
+                                  rounds_init=1)
+    c = _build(exp)
+    o0, o1 = exp.ppm_outcomes[0], exp.ppm_outcomes[1]
+    assert o0.records_post_split is not None
+    assert o1.records_pre_merge is not None, \
+        "a commuting repeat is pinned before its own merge"
+    assert o1.records_post_split is not None
+    b0 = _bits(c, o0.records_post_split)
+    b1 = _bits(c, o1.records_post_split)
+    assert (b0 == b1).all(), "repeated commuting PPM outcomes must agree"
+
+
+def test_anticommuting_sequence_is_rejected_explicitly():
+    # A sits on a corner: M(X̄A X̄B) through the E/W seam, then M(Z̄A Z̄C)
+    # through the N/S seam — the joints anti-commute at A (X̄A vs Z̄A), and
+    # each step is individually parallel-law-legal on its own seam (no
+    # rotation needed).  The second outcome is a legitimately random
+    # protocol output: no pre-merge parity, per-shot coin after the split
+    # — while every correlation the circuit certifies (closures,
+    # observables) stays silent at p=0.
+    px = [_spec("A", 0, 0, "X_vertical"), _spec("B", 1, 0, "X_vertical"),
+          _spec("C", 0, 1, "X_vertical")]
+    seq = [RotatedSurfacePPMStep([("A", "X"), ("B", "X")], route=[]),
+           RotatedSurfacePPMStep([("A", "Z"), ("C", "Z")], route=[])]
+    with pytest.raises(
+        UnsupportedPPMExperimentError,
+        match="anti-commutes.*commuting sequences only",
+    ):
+        RotatedSurfacePPMExperiment(
+            px, seq, initial_states={"A": "X", "B": "X", "C": "Z"},
+            final_measure_states={"A": "Z", "B": "X", "C": "Z"},
+            rounds=D, rounds_init=1)
+
+
+def test_record_parity_excludes_sentinel_rows():
+    """A reconstruction through an UNMEASURED-sentinel row would XOR in an
+    unbanked, per-shot-random gauge — record_parity must refuse it and
+    report the operator as not record-deterministic (None), not fabricate
+    a wrong record set."""
+    import numpy as np
+    from lightstim.ir.tracker import (SyndromeTracker,
+                                      UNMEASURED_STAB_RECORD)
+    from lightstim.qec_code.surface_code.rotated.ppm.lowering import record_parity
+
+    n = 4
+    tracker = SyndromeTracker(n, 0)
+    row = np.zeros(2 * n, dtype=np.uint8)
+    row[[n + 0, n + 1]] = 1
+    tracker.stabilizers.matrix = row.reshape(1, -1)
+    tracker.stabilizers.records = [[UNMEASURED_STAB_RECORD]]
+
+    assert record_parity(tracker, row.copy()) is None

@@ -41,7 +41,9 @@ class PauliTableau:
         # GF(2) record merge: symmetric difference cancels duplicate entries
         target_set = set(self.records[target_idx])
         source_set = set(self.records[source_idx])
-        self.records[target_idx] = list(target_set.symmetric_difference(source_set))
+        self.records[target_idx] = sorted(
+            target_set.symmetric_difference(source_set)
+        )
 
     def update_row_from_external(self, target_idx: int, external_pauli: np.ndarray, external_record: List[int]):
         """
@@ -57,7 +59,9 @@ class PauliTableau:
         # GF(2) record merge: symmetric difference cancels duplicate entries
         target_set = set(self.records[target_idx])
         ext_set = set(external_record)
-        self.records[target_idx] = list(target_set.symmetric_difference(ext_set))
+        self.records[target_idx] = sorted(
+            target_set.symmetric_difference(ext_set)
+        )
         
     def replace_row(self, idx: int, new_pauli: np.ndarray, new_record: List[int]):
         """Replaces a stabilizer (e.g. after anti-commutation)."""
