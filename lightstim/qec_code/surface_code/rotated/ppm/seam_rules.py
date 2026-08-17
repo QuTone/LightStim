@@ -1,14 +1,8 @@
-# protocols/ppm/seam_rules.py
-#
-# Copied from https://github.com/John-YuehanZhang/CircLS @ 8802a5b — the
-# author's own repository (John Yuehan Zhang).  Source: circls/joint_merge.py
-# (near-verbatim; only BentLayoutError is rewired to the local spec module).
-#
-# Includes the Handbook Sec. 10.4 alternating-spacing end-cap rule in
-# ``wall_spec`` (the free-slot selection that supersedes the far-side-colour
-# proxy on transposed row-3 seams).
-
 """The four-row merge rule table as production code (single-seam Phase 1).
+
+Adapted from John Yuehan Zhang's CircLS repository at commit ``8802a5b``.
+Includes the Handbook Sec. 10.4 alternating-spacing end-cap rule in
+``wall_spec``.
 
 For a joint Pauli-product measurement between two cell-adjacent patches, the
 merge construction is chosen by (measurement kind x patch types):
@@ -48,8 +42,9 @@ patches carries the stretched stabilizers.
 """
 from dataclasses import dataclass
 
-from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
-from .spec import BentLayoutError
+from lightstim.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
+
+from .placement import RotatedSurfacePPMLayoutError
 
 _FLIP = {'X': 'Z', 'Z': 'X'}
 _FLIP_O = {'X_horizontal': 'X_vertical', 'X_vertical': 'X_horizontal'}
@@ -62,7 +57,7 @@ def _plaquette_type(cx, cy, phase=0):
     return 'X' if (((cx + cy) // 2) + phase) % 2 else 'Z'
 
 
-class SeamRuleError(BentLayoutError):
+class SeamRuleError(RotatedSurfacePPMLayoutError):
     """A seam violates the rule table (wrong orientation, unreadable patch,
     or a live geometry that contradicts the type model)."""
 

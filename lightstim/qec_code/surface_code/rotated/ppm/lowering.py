@@ -1,13 +1,12 @@
-# protocols/ppm/lowering.py
-"""Pure PPM lowering kernel.
+"""Rotated-surface-code PPM lowering.
 
 ``lower_ppm()`` turns ONE Pauli-product-measurement request into a
-:class:`LoweringPlan` — a declarative description of the construction —
-without touching the system, builder, or tracker.  ``apply_plan()``
+:class:`RotatedSurfacePPMPlan` — a declarative description of the construction —
+without touching the system, builder, or tracker.  ``apply_ppm_plan()``
 registers the plan's coupler with a :class:`~lightstim.ir.qec_system.QECSystem`
-in a separate step.  The experiment driver
-(:class:`~.sequential.SequentialPPMExperiment`) is one consumer of this
-kernel; a logical-level compiler is the intended other.
+in a separate step. The experiment driver in
+:mod:`lightstim.protocols.rotated_surface_ppm` is one consumer of this
+kernel; a future logical-level compiler backend can be another.
 
 Scope and honesty notes:
 
@@ -21,7 +20,7 @@ Scope and honesty notes:
 - Cell-adjacent two-patch requests are classified by the four-row seam
   rule table against the LIVE system (the classification is a live probe,
   so ``system`` is required for them).
-- ``LoweringPlan.certificate`` carries the algebraic acceptance oracle of
+- ``RotatedSurfacePPMPlan.certificate`` carries the algebraic acceptance oracle of
   the accepted layout (commutation, the joint IS measured, no single
   logical and no proper subset product is exposed — the "true weight-w
   measurement, not w-1 pairwise parities" guarantee — expected rank
@@ -31,23 +30,24 @@ Scope and honesty notes:
   end-to-end distance tests, not by this oracle — a known gap, tracked in
   the PR's capability table.
 """
-from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
+from dataclasses import dataclass
+from typing import FrozenSet, List, Mapping, Optional, Tuple
 
 import numpy as np
 
 from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
 from lightstim.utils.linear_algebra import solve_linear_decomposition
 
-from .spec import PatchSpec, cell_index
-from .coupler import (route_and_build, RotatedRoutedMultiPatchCoupler,
-                      SubsetRoute)
+from .coupler import RotatedSurfacePPMCoupler
+from .layout import SubsetRoute, build_explicit_ppm_layout
+from .placement import RotatedSurfacePatchPlacement, cell_index
 from .seam_rules import (RotatedSeamWallCoupler, SeamRuleError, classify_seam,
                          patch_view, wall_spec)
 
 __all__ = [
-    "PPMRequest", "LoweringPlan", "LoweringCertificate", "PPMOutcome",
-    "UnsupportedPauliError", "lower_ppm", "apply_plan",
+    "RotatedSurfacePPMRequest", "RotatedSurfacePPMPlan",
+    "RotatedSurfacePPMCertificate", "PPMOutcome",
+    "UnsupportedPauliError", "lower_ppm", "apply_ppm_plan",
     "is_cell_adjacent_pair", "joint_pauli_vector", "record_parity",
 ]
 
@@ -59,7 +59,7 @@ class UnsupportedPauliError(ValueError):
 
 
 @dataclass(frozen=True)
-class PPMRequest:
+class RotatedSurfacePPMRequest:
     """One joint Pauli-product measurement, declaratively.
 
     Args:
@@ -80,24 +80,24 @@ class PPMRequest:
     def __post_init__(self):
         if self.route is None:
             raise ValueError(
-                "PPMRequest: route is required — pass the explicit corridor "
+                "RotatedSurfacePPMRequest: route is required — pass the explicit corridor "
                 "cells, or () for cell-adjacent targets (no auto-router "
                 "exists in this stack)")
         if len(self.targets) < 2:
             raise ValueError(
-                "PPMRequest: a Pauli-product measurement needs at least "
+                "RotatedSurfacePPMRequest: a Pauli-product measurement needs at least "
                 "two distinct target patches")
         names = [name for name, _ in self.targets]
         if len(set(names)) != len(names):
             raise ValueError(
-                f"PPMRequest: target patches must be unique; got {names}")
+                f"RotatedSurfacePPMRequest: target patches must be unique; got {names}")
         if self.construction not in ('auto', 'wall', 'merge'):
             raise ValueError(
-                "PPMRequest: construction must be 'auto', 'wall', or "
+                "RotatedSurfacePPMRequest: construction must be 'auto', 'wall', or "
                 f"'merge'; got {self.construction!r}")
         if self.schedule not in (None, 'bent', 'diagonal'):
             raise ValueError(
-                "PPMRequest: schedule must be None, 'bent', or 'diagonal'; "
+                "RotatedSurfacePPMRequest: schedule must be None, 'bent', or 'diagonal'; "
                 f"got {self.schedule!r}")
         for name, letter in self.targets:
             if letter == 'Y':
@@ -120,7 +120,7 @@ class PPMRequest:
 
 
 @dataclass(frozen=True)
-class LoweringCertificate:
+class RotatedSurfacePPMCertificate:
     """Named algebraic/circuit acceptance items of the accepted layout."""
     items: Mapping[str, bool]
 
@@ -138,18 +138,18 @@ class LoweringCertificate:
 
 
 @dataclass
-class LoweringPlan:
+class RotatedSurfacePPMPlan:
     """Declarative result of lowering one PPM request.
 
-    ``apply_plan(system, plan, name)`` performs the registration; the
+    ``apply_ppm_plan(system, plan, name)`` performs the registration; the
     driver (or compiler backend) then activates, runs the merged rounds
     under ``schedule``, deactivates, and reads the corridor out in
     ``corridor_readout_basis``.
     """
-    request: PPMRequest
+    request: RotatedSurfacePPMRequest
     kind: str                                  # 'corridor' | 'wall'
     schedule: str                              # 'bent' | 'diagonal'
-    specs: Tuple[PatchSpec, ...]               # live-orientation-stamped
+    placements: Tuple[RotatedSurfacePatchPlacement, ...]
     conj_names: FrozenSet[str]
     # corridor plans:
     route_result: Optional[SubsetRoute] = None
@@ -157,7 +157,7 @@ class LoweringPlan:
     wall: Optional[dict] = None
     # adjacent-pair rule-table row (live probe), when applicable:
     rule: Optional[object] = None
-    certificate: Optional[LoweringCertificate] = None
+    certificate: Optional[RotatedSurfacePPMCertificate] = None
 
     @property
     def bus(self) -> str:
@@ -184,7 +184,7 @@ class LoweringPlan:
         return any(c.get('kf') for c in self.merged_checks)
 
 
-def _pick_schedule(request: PPMRequest, policy: str, *,
+def _pick_schedule(request: RotatedSurfacePPMRequest, policy: str, *,
                    is_wall: bool, collinear: bool) -> str:
     """Merged-round schedule: a wall or any corridor bend forces the whole
     merged block onto the diagonal schedule; straight corridors stay bent."""
@@ -214,14 +214,15 @@ def is_cell_adjacent_pair(specs_by_name, request) -> bool:
     return abs(a1 - a2) + abs(b1 - b2) == 1
 
 
-def lower_ppm(specs: List[PatchSpec], request: PPMRequest, *,
+def lower_ppm(placements: List[RotatedSurfacePatchPlacement],
+              request: RotatedSurfacePPMRequest, *,
               system=None, conj_names: FrozenSet[str] = frozenset(),
-              schedule_policy: str = 'auto') -> LoweringPlan:
-    """Lower one PPM request to a :class:`LoweringPlan`.  Pure: no
+              schedule_policy: str = 'auto') -> RotatedSurfacePPMPlan:
+    """Lower one PPM request to a :class:`RotatedSurfacePPMPlan`.  Pure: no
     system/builder/tracker mutation.
 
     Args:
-        specs: every patch, stamped with its LIVE orientation.
+        placements: every patch, stamped with its LIVE orientation.
         request: the PPM request (explicit route, X/Z letters).
         system: the live :class:`QECSystem` — required for cell-adjacent
             pairs, whose rule-table classification probes the REAL
@@ -233,8 +234,8 @@ def lower_ppm(specs: List[PatchSpec], request: PPMRequest, *,
         raise ValueError(
             "lower_ppm: schedule_policy must be 'auto', 'bent', or "
             f"'diagonal'; got {schedule_policy!r}")
-    by_name = {s.name: s for s in specs}
-    if len(by_name) != len(specs):
+    by_name = {placement.name: placement for placement in placements}
+    if len(by_name) != len(placements):
         raise ValueError("lower_ppm: patch specifications must have unique names")
     unknown = [nm for nm, _ in request.targets if nm not in by_name]
     if unknown:
@@ -261,32 +262,37 @@ def lower_ppm(specs: List[PatchSpec], request: PPMRequest, *,
             else rule.construction
         if cons == 'wall':
             spec = wall_spec(views[names[0]], views[names[1]], tgt)
-            return LoweringPlan(
+            return RotatedSurfacePPMPlan(
                 request=request, kind='wall',
                 schedule=_pick_schedule(request, schedule_policy,
                                         is_wall=True, collinear=True),
-                specs=tuple(specs), conj_names=frozenset(conj_names),
+                placements=tuple(placements),
+                conj_names=frozenset(conj_names),
                 wall=spec, rule=rule)
-        plan = _lower_corridor(specs, request, conj_names, by_name,
+        plan = _lower_corridor(placements, request, conj_names, by_name,
                                schedule_policy, force_collinear=True)
-        return LoweringPlan(
+        return RotatedSurfacePPMPlan(
             request=request, kind=plan.kind, schedule=plan.schedule,
-            specs=plan.specs, conj_names=plan.conj_names,
+            placements=plan.placements, conj_names=plan.conj_names,
             route_result=plan.route_result, certificate=plan.certificate,
             rule=rule)
 
-    return _lower_corridor(specs, request, conj_names, by_name,
+    return _lower_corridor(placements, request, conj_names, by_name,
                            schedule_policy, force_collinear=False)
 
 
-def _lower_corridor(specs, request, conj_names, by_name, schedule_policy,
+def _lower_corridor(placements, request, conj_names, by_name, schedule_policy,
                     *, force_collinear):
-    r = route_and_build(specs, list(request.targets), seam=True,
-                        route=list(request.route),
-                        conj_names=frozenset(conj_names))
+    r = build_explicit_ppm_layout(
+        placements,
+        list(request.targets),
+        route=list(request.route),
+        seam=True,
+        conj_names=frozenset(conj_names),
+    )
     if r.status != 'ok':
         raise ValueError(
-            f"lower_ppm: route_and_build failed: {r.status} — {r.message}")
+            f"lower_ppm: build_explicit_ppm_layout failed: {r.status} — {r.message}")
     has_kf = any(ch.get('kf')
                  for ch in (r.layout.checks if r.layout is not None else ()))
     if force_collinear:
@@ -303,11 +309,11 @@ def _lower_corridor(specs, request, conj_names, by_name, schedule_policy,
                      or len({b for _, b in cells}) == 1)
         schedule = _pick_schedule(request, schedule_policy,
                                   is_wall=has_kf, collinear=collinear)
-    cert = (LoweringCertificate(items=dict(r.certificate))
+    cert = (RotatedSurfacePPMCertificate(items=dict(r.certificate))
             if r.certificate is not None else None)
-    return LoweringPlan(
+    return RotatedSurfacePPMPlan(
         request=request, kind='corridor', schedule=schedule,
-        specs=tuple(specs), conj_names=frozenset(conj_names),
+        placements=tuple(placements), conj_names=frozenset(conj_names),
         route_result=r, certificate=cert)
 
 
@@ -420,7 +426,7 @@ def record_parity(tracker, vec) -> Optional[List[int]]:
     return sorted(recs)
 
 
-def apply_plan(system, plan: LoweringPlan, name: str) -> None:
+def apply_ppm_plan(system, plan: RotatedSurfacePPMPlan, name: str) -> None:
     """Register the plan's coupler with the system (the ONLY mutation of
     this module's API; activation/rounds/split stay with the caller)."""
     target_names = [nm for nm, _ in plan.request.targets]
@@ -430,7 +436,8 @@ def apply_plan(system, plan: LoweringPlan, name: str) -> None:
             spec=plan.wall, occupied=frozenset(system.index_map))
         return
     system.register_coupler(
-        RotatedRoutedMultiPatchCoupler(),
-        patch_names=target_names, name=name, specs=list(plan.specs),
+        RotatedSurfacePPMCoupler(),
+        patch_names=target_names, name=name,
+        placements=list(plan.placements),
         target=list(plan.request.targets), subset_route=plan.route_result,
         seam=True, minority_names=plan.conj_names)

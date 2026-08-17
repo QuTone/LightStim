@@ -1,24 +1,18 @@
-# protocols/ppm/spec.py
-#
-# Copied from https://github.com/John-YuehanZhang/CircLS @ 8802a5b — the
-# author's own repository (John Yuehan Zhang).  Sources: circls/
-# multi_patch_coupler.py (PatchSpec, place_patch, conjugate_patch_records,
-# origin_of / cell_index) and circls/sequential_ppm_ls.py (PPMStep).
-#
-# Minimal explicit-route variant, intentionally independent of CircLS:
-# LightStim's PPMStep REQUIRES an explicit ``route`` (there is no
-# auto-router in this package); liveness / first-use init / snake steps /
-# Y initial states are NOT included.
+"""Patch placement helpers for rotated-surface-code PPM lowering.
+
+Adapted from John Yuehan Zhang's CircLS repository at commit ``8802a5b``.
+This module describes physical rotated-surface-code placement only. Protocol
+sequence objects live in :mod:`lightstim.protocols.rotated_surface_ppm`.
+"""
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
 
 from lightstim.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
 
 _FLIP = {"X": "Z", "Z": "X"}
 
 
-class BentLayoutError(ValueError):
+class RotatedSurfacePPMLayoutError(ValueError):
     """Raised when the requested patch placement cannot host the joint
     measurement (e.g. the two patches are misaligned, or their parity/seam
     endpoints are incompatible).  The message states the concrete geometric
@@ -26,7 +20,7 @@ class BentLayoutError(ValueError):
 
 
 @dataclass(frozen=True)
-class PatchSpec:
+class RotatedSurfacePatchPlacement:
     """A logical patch placed on the coarse routing grid.
 
     origin:           bus-facing corner data coord, in the library (1,1)-corner convention.
@@ -34,7 +28,7 @@ class PatchSpec:
     orientation:      "X_horizontal" (X̄ runs along a row) | "X_vertical" (X̄ runs up a column).
 
     Which logical each patch contributes to the joint ``M(∏ᵢ P̄ᵢ)`` is given
-    separately by the ``target`` / ``interaction_type`` list (e.g.
+    separately by the PPM ``targets`` list (e.g.
     ``[("Q1", "Z"), ("Q2", "Z")]``), not by the patch itself.
     """
     name: str
@@ -112,7 +106,7 @@ def cell(a, b, d, seam=False):
 
 def origin_of(a, b, d, seam=False):
     """The data-qubit **origin** (bus-facing ``(1,1)``-corner) of coarse cell ``(a, b)`` —
-    i.e. the :attr:`PatchSpec.origin` that places a distance-``d`` patch on that cell.
+    i.e. the :attr:`RotatedSurfacePatchPlacement.origin` that places a distance-``d`` patch on that cell.
     Inverse of :func:`cell_index`.  ``seam=True`` uses the seam-column grid (pitch ``2d+2``)."""
     P = _pitch(d, seam)
     return (1 + P * a, 1 + P * b)
@@ -127,27 +121,3 @@ def cell_index(origin, d, seam=False):
     if (ox - 1) % P or (oy - 1) % P:
         raise ValueError(f"origin {origin} is not on the pitch-{P} coarse grid for d={d}")
     return ((ox - 1) // P, (oy - 1) // P)
-
-
-# -----------------------------------------------------------------------------
-# The PPM sequence element
-# -----------------------------------------------------------------------------
-
-@dataclass
-class PPMStep:
-    """One joint PPM in a sequence.
-
-    interaction_type: [(patch_name, Pauli), ...] with Pauli in {'X', 'Z'}.
-    route:            REQUIRED explicit corridor cell list — this variant has
-                      no auto-router.  Pass the coarse-grid ``(a, b)`` cells
-                      the corridor occupies, in order; pass ``[]`` for
-                      cell-adjacent targets (zero-cell seam).
-    construction:     'auto' (rule table decides) | 'merge' | 'wall' —
-                      only meaningful for cell-adjacent targets.
-    schedule:         per-step override of the merged-round schedule
-                      ('bent' | 'diagonal'); None = the experiment's policy.
-    """
-    interaction_type: List[Tuple[str, str]]
-    route: list
-    construction: str = 'auto'
-    schedule: Optional[str] = None

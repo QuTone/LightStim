@@ -1,9 +1,8 @@
-"""Sequential PPM (explicit-route minimal driver) —
-lightstim/protocols/ppm (spec / seam_rules / coupler / sequential).
+"""Sequential rotated-surface PPM experiment and lowering backend.
 
 These modules are copied from the author's CircLS repository
 (https://github.com/John-YuehanZhang/CircLS @ 8802a5b) and intentionally
-independent of it: route is REQUIRED on every PPMStep (no auto-router),
+independent of it: route is REQUIRED on every RotatedSurfacePPMStep (no auto-router),
 liveness / rotations / snake / Y births are not included.
 
 Covered here (noiseless silence + deterministic observables + graphlike
@@ -24,12 +23,17 @@ import pytest
 
 from lightstim.noise.config import NoiseConfig
 from lightstim.ir.qec_system import QECSystem
-from lightstim.protocols.ppm.spec import PatchSpec, PPMStep, origin_of
-from lightstim.protocols.ppm.coupler import route_and_build, BentLayoutError
-from lightstim.protocols.ppm.lowering import lower_ppm
-from lightstim.protocols.ppm.seam_rules import SeamRuleError
-from lightstim.protocols.ppm.sequential import (
-    SequentialPPMExperiment,
+from lightstim.qec_code.surface_code.rotated.ppm import (
+    RotatedSurfacePatchPlacement,
+    RotatedSurfacePPMLayoutError,
+    SeamRuleError,
+    build_explicit_ppm_layout,
+    lower_ppm,
+    origin_of,
+)
+from lightstim.protocols.rotated_surface_ppm import (
+    RotatedSurfacePPMExperiment,
+    RotatedSurfacePPMStep,
     UnsupportedPPMExperimentError,
 )
 
@@ -40,13 +44,13 @@ NP = NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3, p_reset=1e-3, p_idle=1e-3)
 
 
 def _spec(nm, a, b, o):
-    return PatchSpec(nm, origin_of(a, b, D, seam=True), D, o)
+    return RotatedSurfacePatchPlacement(nm, origin_of(a, b, D, seam=True), D, o)
 
 
 def _run(px, target, states, *, route=(), **kw):
     step_kw = kw.pop('step_kw', {})
-    exp = SequentialPPMExperiment(
-        px, [PPMStep(target, route=list(route), **step_kw)],
+    exp = RotatedSurfacePPMExperiment(
+        px, [RotatedSurfacePPMStep(target, route=list(route), **step_kw)],
         initial_states=states, final_measure_states=states,
         rounds=D, rounds_init=1, **kw)
     with contextlib.redirect_stdout(io.StringIO()):
@@ -56,8 +60,8 @@ def _run(px, target, states, *, route=(), **kw):
 
 def _lower(px, target, states, *, route=(), **kw):
     step_kw = kw.pop('step_kw', {})
-    step = PPMStep(target, route=list(route), **step_kw)
-    exp = SequentialPPMExperiment(
+    step = RotatedSurfacePPMStep(target, route=list(route), **step_kw)
+    exp = RotatedSurfacePPMExperiment(
         px, [step], initial_states=states, final_measure_states=states,
         rounds=D, rounds_init=1, **kw)
     exp.system = QECSystem()
@@ -91,22 +95,27 @@ def _verify(exp, c, row=None):
 
 def test_ppmstep_route_is_required():
     with pytest.raises(TypeError):
-        PPMStep([("A", "Z"), ("B", "Z")])          # no route argument
+        RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")])          # no route argument
 
 
 def test_experiment_rejects_route_none():
     px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 2, 0, "X_horizontal")]
     with pytest.raises(ValueError, match="route is required"):
-        SequentialPPMExperiment(
-            px, [PPMStep([("A", "Z"), ("B", "Z")], route=None)],
+        RotatedSurfacePPMExperiment(
+            px, [RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")], route=None)],
             initial_states={"A": "Z", "B": "Z"},
             final_measure_states={"A": "Z", "B": "Z"})
 
 
-def test_route_and_build_rejects_route_none():
+def test_build_explicit_ppm_layout_rejects_route_none():
     px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 2, 0, "X_horizontal")]
-    with pytest.raises(BentLayoutError, match="no auto-router"):
-        route_and_build(px, [("A", "Z"), ("B", "Z")], seam=True)
+    with pytest.raises(RotatedSurfacePPMLayoutError, match="no auto-router"):
+        build_explicit_ppm_layout(
+            px,
+            [("A", "Z"), ("B", "Z")],
+            route=None,
+            seam=True,
+        )
 
 
 # ── explicit corridor ────────────────────────────────────────────────────────
@@ -242,10 +251,12 @@ def test_independent_of_circls():
     # … and the strong form: a fresh interpreter that imports the whole
     # protocol stack must never pull in circls
     code = ("import sys; "
-            "import lightstim.protocols.ppm.sequential; "
-            "import lightstim.protocols.ppm.coupler; "
-            "import lightstim.protocols.ppm.seam_rules; "
-            "import lightstim.protocols.ppm.spec; "
+            "import lightstim.protocols.rotated_surface_ppm; "
+            "import lightstim.qec_code.surface_code.rotated.ppm.coupler; "
+            "import lightstim.qec_code.surface_code.rotated.ppm.layout; "
+            "import lightstim.qec_code.surface_code.rotated.ppm.lowering; "
+            "import lightstim.qec_code.surface_code.rotated.ppm.placement; "
+            "import lightstim.qec_code.surface_code.rotated.ppm.seam_rules; "
             "assert 'circls' not in sys.modules, 'circls leaked'; "
             "print('ok')")
     out = subprocess.run([sys.executable, "-c", code],

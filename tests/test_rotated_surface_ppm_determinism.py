@@ -11,39 +11,45 @@ import contextlib
 import io
 import os
 
-from lightstim.protocols.ppm.spec import PatchSpec, PPMStep, origin_of
-from lightstim.protocols.ppm.sequential import SequentialPPMExperiment
+from lightstim.qec_code.surface_code.rotated.ppm import (
+    RotatedSurfacePatchPlacement,
+    origin_of,
+)
+from lightstim.protocols.rotated_surface_ppm import (
+    RotatedSurfacePPMExperiment,
+    RotatedSurfacePPMStep,
+)
 
 d = 3
 case = os.environ["LIGHTSTIM_PPM_CASE"]
 if case == "straight":
     patches = [
-        PatchSpec("A", origin_of(0, 0, d, seam=True), d, "X_horizontal"),
-        PatchSpec("B", origin_of(2, 0, d, seam=True), d, "X_horizontal"),
+        RotatedSurfacePatchPlacement("A", origin_of(0, 0, d, seam=True), d, "X_horizontal"),
+        RotatedSurfacePatchPlacement("B", origin_of(2, 0, d, seam=True), d, "X_horizontal"),
     ]
     targets = [("A", "Z"), ("B", "Z")]
     route = [(1, 0)]
 elif case == "bent":
     patches = [
-        PatchSpec("A", origin_of(0, 0, d, seam=True), d, "X_horizontal"),
-        PatchSpec("B", origin_of(2, 1, d, seam=True), d, "X_vertical"),
+        RotatedSurfacePatchPlacement("A", origin_of(0, 0, d, seam=True), d, "X_horizontal"),
+        RotatedSurfacePatchPlacement("B", origin_of(2, 1, d, seam=True), d, "X_vertical"),
     ]
     targets = [("A", "Z"), ("B", "Z")]
     route = [(1, 0), (2, 0)]
 elif case == "branched":
     patches = [
-        PatchSpec("A", origin_of(0, 0, d, seam=True), d, "X_horizontal"),
-        PatchSpec("B", origin_of(4, 0, d, seam=True), d, "X_horizontal"),
-        PatchSpec("C", origin_of(2, 1, d, seam=True), d, "X_vertical"),
+        RotatedSurfacePatchPlacement("A", origin_of(0, 0, d, seam=True), d, "X_horizontal"),
+        RotatedSurfacePatchPlacement("B", origin_of(4, 0, d, seam=True), d, "X_horizontal"),
+        RotatedSurfacePatchPlacement("C", origin_of(2, 1, d, seam=True), d, "X_vertical"),
     ]
     targets = [("A", "Z"), ("B", "Z"), ("C", "Z")]
     route = [(1, 0), (2, 0), (3, 0)]
 else:
     raise ValueError(case)
 
-step = PPMStep(targets, route=route)
+step = RotatedSurfacePPMStep(targets, route=route)
 states = {patch.name: "Z" for patch in patches}
-experiment = SequentialPPMExperiment(
+experiment = RotatedSurfacePPMExperiment(
     patches,
     [step],
     initial_states=states,

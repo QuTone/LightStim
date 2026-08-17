@@ -5,7 +5,7 @@
 - a d=5 representative (slow-marked);
 - composition with the measurement-block engine on post-PPM tracker
   state, driven through the compiler-facing kernel API (lower_ppm /
-  apply_plan + builder primitives, no experiment driver).
+  apply_ppm_plan + builder primitives, no experiment driver).
 """
 import contextlib
 import io
@@ -23,16 +23,24 @@ from lightstim.qec_code.surface_code.rotated.SE_block import (
 from lightstim.qec_code.surface_code.rotated.bent_joint_se import (
     se_round_chunk,
 )
-from lightstim.protocols.ppm.spec import PatchSpec, PPMStep, origin_of
-from lightstim.protocols.ppm.lowering import (PPMRequest, apply_plan,
-                                              lower_ppm)
-from lightstim.protocols.ppm.sequential import SequentialPPMExperiment
+from lightstim.qec_code.surface_code.rotated.ppm import (
+    RotatedSurfacePatchPlacement,
+    RotatedSurfacePPMLayoutError,
+    RotatedSurfacePPMRequest,
+    apply_ppm_plan,
+    lower_ppm,
+    origin_of,
+)
+from lightstim.protocols.rotated_surface_ppm import (
+    RotatedSurfacePPMExperiment,
+    RotatedSurfacePPMStep,
+)
 
 D = 3
 
 
 def _spec(nm, a, b, o, d=D):
-    return PatchSpec(nm, origin_of(a, b, d, seam=True), d, o)
+    return RotatedSurfacePatchPlacement(nm, origin_of(a, b, d, seam=True), d, o)
 
 
 def _build(exp):
@@ -48,15 +56,14 @@ def test_weight4_straight_chain_is_an_explicit_gap():
     physics layer rejects it loudly with the exact reason; nothing
     silently degrades.  Supported target weights today: 2 and 3 (T
     corridor); see the capability table."""
-    from lightstim.protocols.ppm.spec import BentLayoutError
     px = [_spec("q1", 0, 0, "X_horizontal"), _spec("q2", 2, 0, "X_horizontal"),
           _spec("q3", 4, 0, "X_horizontal"), _spec("q4", 6, 0, "X_horizontal")]
     st = {q: "Z" for q in ("q1", "q2", "q3", "q4")}
-    exp = SequentialPPMExperiment(
-        px, [PPMStep([("q1", "Z"), ("q2", "Z"), ("q3", "Z"), ("q4", "Z")],
+    exp = RotatedSurfacePPMExperiment(
+        px, [RotatedSurfacePPMStep([("q1", "Z"), ("q2", "Z"), ("q3", "Z"), ("q4", "Z")],
                      route=[(1, 0), (3, 0), (5, 0)])],
         initial_states=st, final_measure_states=st, rounds=D, rounds_init=1)
-    with pytest.raises(BentLayoutError, match="never reaches the corridor"):
+    with pytest.raises(RotatedSurfacePPMLayoutError, match="never reaches the corridor"):
         _build(exp)
 
 
@@ -65,14 +72,14 @@ def test_longer_straight_route_full_distance():
     from lightstim.noise.config import NoiseConfig
     px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 4, 0, "X_horizontal")]
     st = {"A": "Z", "B": "Z"}
-    exp = SequentialPPMExperiment(
-        px, [PPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0), (2, 0), (3, 0)])],
+    exp = RotatedSurfacePPMExperiment(
+        px, [RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0), (2, 0), (3, 0)])],
         initial_states=st, final_measure_states=st, rounds=D, rounds_init=1,
         noise_params=NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3,
                                  p_reset=1e-3, p_idle=1e-3))
     c = _build(exp)
     assert exp._sched[0] == 'bent'
-    assert exp._plans[0].certificate.measures_exactly_the_product
+    assert exp.plans[0].certificate.measures_exactly_the_product
     c.detector_error_model(decompose_errors=True)
     assert len(c.shortest_graphlike_error()) == D
 
@@ -83,14 +90,14 @@ def test_bent_route_forces_diagonal_and_full_distance():
     from lightstim.noise.config import NoiseConfig
     px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 2, 1, "X_vertical")]
     st = {"A": "Z", "B": "Z"}
-    exp = SequentialPPMExperiment(
-        px, [PPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0), (2, 0)])],
+    exp = RotatedSurfacePPMExperiment(
+        px, [RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0), (2, 0)])],
         initial_states=st, final_measure_states=st, rounds=D, rounds_init=1,
         noise_params=NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3,
                                  p_reset=1e-3, p_idle=1e-3))
     c = _build(exp)
     assert exp._sched[0] == 'diagonal'
-    assert exp._plans[0].certificate.measures_exactly_the_product
+    assert exp.plans[0].certificate.measures_exactly_the_product
     c.detector_error_model(decompose_errors=True)
     assert len(c.shortest_graphlike_error()) == D
 
@@ -101,12 +108,12 @@ def test_three_target_certificate_pins_true_multibody_instrument():
     px = [_spec("q1", 0, 0, "X_horizontal"), _spec("q2", 4, 0, "X_horizontal"),
           _spec("q3", 2, 1, "X_vertical")]
     st = {"q1": "Z", "q2": "Z", "q3": "Z"}
-    exp = SequentialPPMExperiment(
-        px, [PPMStep([("q1", "Z"), ("q2", "Z"), ("q3", "Z")],
+    exp = RotatedSurfacePPMExperiment(
+        px, [RotatedSurfacePPMStep([("q1", "Z"), ("q2", "Z"), ("q3", "Z")],
                      route=[(1, 0), (2, 0), (3, 0)])],
         initial_states=st, final_measure_states=st, rounds=D, rounds_init=1)
     _build(exp)
-    cert = exp._plans[0].certificate
+    cert = exp.plans[0].certificate
     assert cert.ok
     assert cert.items['no_subjoint'] is True
     assert cert.items['no_single'] is True
@@ -120,8 +127,8 @@ def test_zz_pair_full_distance_d5():
                                                      "X_horizontal", d)]
     st = {"A": "Z", "B": "Z"}
     from lightstim.noise.config import NoiseConfig
-    exp = SequentialPPMExperiment(
-        px, [PPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0)])],
+    exp = RotatedSurfacePPMExperiment(
+        px, [RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0)])],
         initial_states=st, final_measure_states=st, rounds=d, rounds_init=1,
         noise_params=NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3,
                                  p_reset=1e-3, p_idle=1e-3))
@@ -131,7 +138,7 @@ def test_zz_pair_full_distance_d5():
 
 
 def test_kernel_api_composes_with_measurement_block_engine():
-    """Compiler-consumer path: lower_ppm/apply_plan + builder primitives,
+    """Compiler-consumer path: lower_ppm/apply_ppm_plan + builder primitives,
     no experiment driver — then ONE measurement-block engine round on the
     post-PPM tracker state (absorbed joint present), then readout.  The
     block path and the PPM tracker semantics must share one census."""
@@ -164,10 +171,10 @@ def test_kernel_api_composes_with_measurement_block_engine():
     # Couplers are define-by-run resources: lower/register only after the
     # baseline has established the logical patches.
     plan = lower_ppm(specs,
-                     PPMRequest(targets=(("A", "Z"), ("B", "Z")),
+                     RotatedSurfacePPMRequest(targets=(("A", "Z"), ("B", "Z")),
                                 route=((1, 0),)),
                      system=system)
-    apply_plan(system, plan, "ppm_0")
+    apply_ppm_plan(system, plan, "ppm_0")
 
     builder.activate_coupler("ppm_0")
     coupler_patch = system.coupler_patches["ppm_0"]

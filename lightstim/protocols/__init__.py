@@ -8,8 +8,12 @@ from .ls_distillation import (
     run_simulation as run_ls_simulation,
     LS_MAGIC_NAMES,
 )
-from .ppm import (PatchSpec, PPMStep, origin_of, cell_index,
-                  SequentialPPMExperiment)
+from .rotated_surface_ppm import (
+    PPMOutcome,
+    RotatedSurfacePPMExperiment,
+    RotatedSurfacePPMStep,
+    UnsupportedPPMExperimentError,
+)
 from .tg_distillation import (
     build_distillation_circuit as build_tg_distillation_circuit,
     inject_noise as inject_tg_noise,

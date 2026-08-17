@@ -4,11 +4,9 @@ off-the-hook: diagonal syndrome-extraction scheduling*).
 One globally uniform gate ORDER for every patch shape and orientation —
 Z-plaquette corners coupled NW→SE→NE→SW, X-plaquette SW→NE→SE→NW (y-up frame) —
 so every ancilla hook lands on a DIAGONAL data pair and never aligns with a
-horizontal or vertical logical path.  This is what keeps boundary-deformation
-steps (grow / move-corners / shrink) fault-tolerant: their logical
-representatives bend, and an exhaustive sweep showed every N/Z zigzag variant
-caps the Z-memory distance of the grow step at 2, while this schedule reaches
-full distance d for supported bent and branched PPM layouts at d = 3 and 5.
+horizontal or vertical logical path. This supports the bent and branched
+rotated-surface PPM layouts whose logical representatives do not remain on one
+axis; the verified layouts reach full distance at d = 3 and 5.
 
 Slot assignment: the FIXED compact-7 table of K&F Fig 4 — no dynamic search.
 

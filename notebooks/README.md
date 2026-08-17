@@ -47,7 +47,7 @@ notebooks/
 | `state_injection.ipynb` | `protocols/state_injection.py` | Non-FT magic-state injection (rotated SC) |
 | `two_patch_LS.ipynb` | `protocols/two_patch_ls.py` | Two-patch ZZ lattice surgery coupler |
 | `multi_patch_LS.ipynb` | *(in-progress)* | Multi-patch lattice surgery; unrotated SC N-patch coupler |
-| `ppm_lowering.ipynb` | `protocols/ppm/` | Two-step PPM sequence, built via the lowering kernel API and via the sequential driver; full-circuit detector slices |
+| `rotated_surface_ppm.ipynb` | `qec_code/surface_code/rotated/ppm/` + `protocols/rotated_surface_ppm.py` | Two-step explicit-route PPM sequence, built via the lowering API and the sequential experiment driver; full-circuit detector slices |
 
 ### Memory/
 

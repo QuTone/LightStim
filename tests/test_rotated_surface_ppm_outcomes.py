@@ -13,9 +13,13 @@ import io
 import numpy as np
 import pytest
 
-from lightstim.protocols.ppm.spec import PatchSpec, PPMStep, origin_of
-from lightstim.protocols.ppm.sequential import (
-    SequentialPPMExperiment,
+from lightstim.qec_code.surface_code.rotated.ppm import (
+    RotatedSurfacePatchPlacement,
+    origin_of,
+)
+from lightstim.protocols.rotated_surface_ppm import (
+    RotatedSurfacePPMExperiment,
+    RotatedSurfacePPMStep,
     UnsupportedPPMExperimentError,
 )
 
@@ -23,7 +27,7 @@ D = 3
 
 
 def _spec(nm, a, b, o):
-    return PatchSpec(nm, origin_of(a, b, D, seam=True), D, o)
+    return RotatedSurfacePatchPlacement(nm, origin_of(a, b, D, seam=True), D, o)
 
 
 def _build(exp):
@@ -44,10 +48,10 @@ def test_commuting_repeat_outcome_is_reproducible():
     # records exist), and the two protocol outputs agree shot by shot — a
     # deterministic correlation between two protocol outputs.
     px = [_spec("A", 0, 0, "X_horizontal"), _spec("B", 2, 0, "X_horizontal")]
-    seq = [PPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0)]),
-           PPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0)])]
+    seq = [RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0)]),
+           RotatedSurfacePPMStep([("A", "Z"), ("B", "Z")], route=[(1, 0)])]
     st = {"A": "Z", "B": "Z"}
-    exp = SequentialPPMExperiment(px, seq, initial_states=st,
+    exp = RotatedSurfacePPMExperiment(px, seq, initial_states=st,
                                   final_measure_states=st, rounds=D,
                                   rounds_init=1)
     c = _build(exp)
@@ -71,13 +75,13 @@ def test_anticommuting_sequence_is_rejected_explicitly():
     # observables) stays silent at p=0.
     px = [_spec("A", 0, 0, "X_vertical"), _spec("B", 1, 0, "X_vertical"),
           _spec("C", 0, 1, "X_vertical")]
-    seq = [PPMStep([("A", "X"), ("B", "X")], route=[]),
-           PPMStep([("A", "Z"), ("C", "Z")], route=[])]
+    seq = [RotatedSurfacePPMStep([("A", "X"), ("B", "X")], route=[]),
+           RotatedSurfacePPMStep([("A", "Z"), ("C", "Z")], route=[])]
     with pytest.raises(
         UnsupportedPPMExperimentError,
         match="anti-commutes.*commuting sequences only",
     ):
-        SequentialPPMExperiment(
+        RotatedSurfacePPMExperiment(
             px, seq, initial_states={"A": "X", "B": "X", "C": "Z"},
             final_measure_states={"A": "Z", "B": "X", "C": "Z"},
             rounds=D, rounds_init=1)
@@ -91,7 +95,7 @@ def test_record_parity_excludes_sentinel_rows():
     import numpy as np
     from lightstim.ir.tracker import (SyndromeTracker,
                                       UNMEASURED_STAB_RECORD)
-    from lightstim.protocols.ppm.lowering import record_parity
+    from lightstim.qec_code.surface_code.rotated.ppm.lowering import record_parity
 
     n = 4
     tracker = SyndromeTracker(n, 0)

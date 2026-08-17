@@ -1,19 +1,8 @@
-# protocols/ppm/sequential.py
-#
-# Copied from https://github.com/John-YuehanZhang/CircLS @ 8802a5b — the
-# author's own repository (John Yuehan Zhang).  Source: circls/
-# sequential_ppm_ls.py (``SequentialPPMExperiment``), distilled to the
-# minimal explicit-route driver.
-#
-# Intentionally NOT copied: liveness / first-use init, auto-rotation
-# planning, snake steps, Y initial states (Gidney births), joint-parity
-# record capture and program-bit observable assembly.  Every ``PPMStep``
-# must carry an explicit ``route`` (``[]`` for cell-adjacent targets);
-# ``colour_swapped`` is kept (rule-table rows 2/3 depend on patch types).
+"""Runnable sequential PPM experiments for rotated surface-code patches.
 
-"""Sequential PPM driver — run a sequence of joint Pauli-product measurements
-on rotated routed surface-code patches; between PPMs measure out ONLY the bus
-(corridor), target patches persist with state.
+Adapted from John Yuehan Zhang's CircLS repository at commit ``8802a5b``.
+Every step carries an explicit coarse-grid route; this driver does not perform
+logical placement or routing.
 
 Cell-adjacent two-patch steps are classified live by the four-row rule table.
 The lowering layer can describe all four rows, but this initial experiment
@@ -21,8 +10,8 @@ driver executes only rows 1/4 (plain/recoloured merge). Rows 2/3 require a
 mixed-measurement wall lifecycle that is not yet part of the tracker contract
 and are rejected explicitly. Distant targets use the explicit-route corridor.
 """
-from dataclasses import replace
-from typing import Dict, List
+from dataclasses import dataclass, replace
+from typing import Dict, List, Optional, Tuple
 
 from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.tracker import SyndromeTracker
@@ -31,12 +20,25 @@ from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
 from lightstim.qec_code.surface_code.rotated.bent_joint_se import se_round_chunk
 from lightstim.qec_code.surface_code.rotated.diagonal_se import (
     DiagonalSurfaceCodeExtractionBlock)
+from lightstim.qec_code.surface_code.rotated.ppm.lowering import (
+    PPMOutcome,
+    RotatedSurfacePPMRequest,
+    apply_ppm_plan,
+    joint_pauli_vector,
+    lower_ppm,
+    record_parity,
+)
+from lightstim.qec_code.surface_code.rotated.ppm.placement import (
+    RotatedSurfacePatchPlacement,
+    conjugate_patch_records,
+)
 
-from .spec import PPMStep, conjugate_patch_records
-from .lowering import (PPMOutcome, PPMRequest, apply_plan,
-                       joint_pauli_vector, lower_ppm, record_parity)
-
-__all__ = ["SequentialPPMExperiment", "UnsupportedPPMExperimentError"]
+__all__ = [
+    "PPMOutcome",
+    "RotatedSurfacePPMExperiment",
+    "RotatedSurfacePPMStep",
+    "UnsupportedPPMExperimentError",
+]
 
 _FLIP_O = {'X_horizontal': 'X_vertical', 'X_vertical': 'X_horizontal'}
 
@@ -45,18 +47,47 @@ class UnsupportedPPMExperimentError(NotImplementedError):
     """A valid lowering plan that this experiment driver cannot execute."""
 
 
+@dataclass(frozen=True)
+class RotatedSurfacePPMStep:
+    """One explicit-route PPM in a rotated-surface experiment.
+
+    ``targets`` contains ``(patch_name, Pauli)`` pairs with Pauli ``X`` or
+    ``Z``. ``route`` contains the exact coarse-grid corridor cells, or is
+    empty for a cell-adjacent pair.
+    """
+
+    targets: Tuple[Tuple[str, str], ...]
+    route: Tuple[Tuple[int, int], ...]
+    construction: str = 'auto'
+    schedule: Optional[str] = None
+
+    def __post_init__(self):
+        object.__setattr__(
+            self,
+            'targets',
+            tuple((name, pauli) for name, pauli in self.targets),
+        )
+        if self.route is not None:
+            object.__setattr__(
+                self,
+                'route',
+                tuple(tuple(cell) for cell in self.route),
+            )
+
+
 def _steps_commute(a, b):
     """Whether two logical Pauli products commute on their shared patches."""
-    pa = dict(a.interaction_type)
-    pb = dict(b.interaction_type)
+    pa = dict(a.targets)
+    pb = dict(b.targets)
     anti = sum(pa[name] != pb[name] for name in pa.keys() & pb.keys())
     return anti % 2 == 0
 
 
-class SequentialPPMExperiment:
-    """Run ``ppm_sequence`` (a list of :class:`~.spec.PPMStep`) on the
-    patches declared by ``patches`` (a list of :class:`~.spec.PatchSpec`
-    on the seam-column coarse grid, pitch ``2d+2``).
+class RotatedSurfacePPMExperiment:
+    """Run PPM steps on rotated patches placed on the seam-column grid.
+
+    ``patches`` is a sequence of :class:`RotatedSurfacePatchPlacement` and
+    ``ppm_sequence`` is a sequence of :class:`RotatedSurfacePPMStep`.
 
     All patches are allocated and initialised up front; each PPM lowers and
     registers its coupler immediately before use, runs ``rounds`` merged SE
@@ -90,10 +121,12 @@ class SequentialPPMExperiment:
         if bad:
             raise ValueError(
                 f"final_measure_states letters must be 'X' or 'Z'; got {bad}")
-        assert rounds_init >= 1, (
-            f"rounds_init must be >= 1 (a freshly initialised patch needs at "
-            f"least one standalone SE round to establish its stabilizers "
-            f"before the merge); got {rounds_init}")
+        if rounds_init < 1:
+            raise ValueError(
+                "rounds_init must be >= 1 (a freshly initialised patch needs "
+                "at least one standalone SE round to establish its "
+                f"stabilizers before the merge); got {rounds_init}"
+            )
         self.rounds = rounds
         self.rounds_init = rounds_init
         self.idle_rounds = idle_rounds
@@ -101,8 +134,8 @@ class SequentialPPMExperiment:
         self.noise_model = noise_model
         for i, step in enumerate(self.ppm_sequence):
             try:
-                PPMRequest(
-                    targets=tuple(step.interaction_type),
+                RotatedSurfacePPMRequest(
+                    targets=step.targets,
                     route=(None if step.route is None else
                            tuple(tuple(c) for c in step.route)),
                     construction=step.construction,
@@ -150,9 +183,9 @@ class SequentialPPMExperiment:
 
     def _conj(self, step):
         """The conj-registered (colour-swapped) subset of the step's targets —
-        reaches route_and_build as ``conj_names`` so the seam table is
+        reaches the layout builder as ``conj_names`` so the seam table is
         classified against the REAL registrations."""
-        return frozenset(nm for nm, _ in step.interaction_type
+        return frozenset(nm for nm, _ in step.targets
                          if nm in self.colour_swapped)
 
     def _specs(self):
@@ -163,11 +196,19 @@ class SequentialPPMExperiment:
                 for s in self.patches]
 
     def _request(self, step):
-        """Bridge a PPMStep to the kernel's declarative request."""
-        return PPMRequest(targets=tuple(step.interaction_type),
-                          route=tuple(tuple(c) for c in step.route),
-                          construction=step.construction,
-                          schedule=step.schedule)
+        """Bridge a RotatedSurfacePPMStep to the kernel's declarative request."""
+        return RotatedSurfacePPMRequest(
+            targets=step.targets,
+            route=step.route,
+            construction=step.construction,
+            schedule=step.schedule,
+        )
+
+    @property
+    def plans(self):
+        """Lowering plans from the most recent build, in sequence order."""
+        plans = getattr(self, '_plans', {})
+        return tuple(plans[i] for i in range(len(plans)))
 
     def _register_step(self, i, step):
         """Lower PPM ``i`` through the kernel and register its plan.  All
@@ -178,17 +219,15 @@ class SequentialPPMExperiment:
             plan = lower_ppm(self._specs(), self._request(step),
                              system=self.system, conj_names=self._conj(step),
                              schedule_policy=self.schedule)
-        except ValueError as e:
-            if 'route_and_build failed' in str(e):
-                raise ValueError(f'PPM {i}: {e}') from None
-            raise
+        except ValueError as exc:
+            raise type(exc)(f'PPM {i}: {exc}') from exc
         if plan.kind == 'wall':
             raise UnsupportedPPMExperimentError(
                 f"PPM {i} lowers to a stretched-stabilizer wall. The lowering "
-                "plan is available, but SequentialPPMExperiment does not yet "
+                "plan is available, but RotatedSurfacePPMExperiment does not yet "
                 "execute wall rounds because they mix disposable syndrome "
                 "measurements with retained data measurements.")
-        apply_plan(self.system, plan, f'ppm_{i}')
+        apply_ppm_plan(self.system, plan, f'ppm_{i}')
         self._plans[i] = plan
         self._sched[i] = plan.schedule
         self._routes[i] = plan.route_result
@@ -258,9 +297,9 @@ class SequentialPPMExperiment:
         before the merge (None = free coin) and after the split."""
         post = record_parity(
             self.tracker, joint_pauli_vector(self.system,
-                                             step.interaction_type))
+                                             step.targets))
         self.ppm_outcomes[i] = PPMOutcome(
-            step=i, targets=tuple(step.interaction_type),
+            step=i, targets=step.targets,
             records_pre_merge=tuple(pre) if pre is not None else None,
             records_post_split=tuple(post) if post is not None else None)
 
@@ -269,7 +308,7 @@ class SequentialPPMExperiment:
         cname = f'ppm_{i}'
         pre = record_parity(
             self.tracker, joint_pauli_vector(self.system,
-                                             step.interaction_type))
+                                             step.targets))
         # idle standalone SE between PPMs (debug knob; default 0)
         if self.idle_rounds:
             self._standalone_se(self.idle_rounds)

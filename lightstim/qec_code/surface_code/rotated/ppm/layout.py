@@ -1,16 +1,9 @@
-# protocols/ppm/coupler.py
-#
-# Copied from https://github.com/John-YuehanZhang/CircLS @ 8802a5b — the
-# author's own repository (John Yuehan Zhang).  Source: circls/
-# multi_patch_coupler.py, the EXPLICIT-ROUTE branch of ``route_and_build``
-# and its transitive closure only (deterministic rule constructor, physics
-# oracle ``MultiPatchLayout.verify``, seam-table wall dispatch,
-# ``RotatedRoutedMultiPatchCoupler``).
-#
-# Intentionally NOT copied: the automatic router (corridor graph, Steiner /
-# EMV candidate search, geometry caches) — in this LightStim variant
-# ``route`` is REQUIRED (pass ``[]`` for cell-adjacent targets) and
-# ``route=None`` raises ``BentLayoutError``.
+"""Explicit-route layout construction for rotated-surface-code PPMs.
+
+Adapted from John Yuehan Zhang's CircLS repository at commit ``8802a5b``.
+The automatic router from CircLS is intentionally out of scope: callers must
+provide the exact coarse-grid corridor, using ``[]`` for adjacent targets.
+"""
 
 from dataclasses import dataclass, field
 import itertools
@@ -18,15 +11,21 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from lightstim.ir.coupler import LogicalCouplerProtocol as _LCP
 from lightstim.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
 
-from .spec import (BentLayoutError, PatchSpec, _FLIP, _pitch, cell,
-                       cell_index, origin_of, place_patch)
+from .placement import (
+    RotatedSurfacePPMLayoutError,
+    RotatedSurfacePatchPlacement,
+    _FLIP,
+    _pitch,
+    cell,
+    cell_index,
+    origin_of,
+    place_patch,
+)
 
-__all__ = ["route_and_build", "SubsetRoute", "MultiPatchLayout",
-           "RotatedRoutedMultiPatchCoupler", "rule_based_joint_checks",
-           "path_to_corridor"]
+__all__ = ["build_explicit_ppm_layout", "SubsetRoute", "MultiPatchLayout",
+           "rule_based_joint_checks", "path_to_corridor"]
 
 
 
@@ -220,7 +219,7 @@ def _logical_direction(pauli, orientation):
 def _patch_rep(patch, pauli, direction, F, sv, n):
     """A patch-spanning ``pauli`` string **in the requested ``direction``** commuting with bulk ``F``.
 
-    The orientation declared on the ``PatchSpec`` is honoured: an ``X_horizontal`` X-logical is
+    The orientation declared on the ``RotatedSurfacePatchPlacement`` is honoured: an ``X_horizontal`` X-logical is
     represented by a horizontal string, an ``X_vertical`` X-logical by a vertical one (and Z̄
     perpendicular).  Returns the support, or ``None`` if no string in that direction commutes — the
     caller tries the other parity phase, and if both fail the placement is rejected rather than the
@@ -294,11 +293,11 @@ class MultiPatchLayout:
         bus layout is ill-posed (a single measurement flip would flip the observable
         undetected).
 
-        WARNING: standalone builder (wraps ``RotatedBentJointMeasurement.circuit``);
-        its observable is a single bus-basis logical, NOT the ``SyndromeTracker``
-        joint m.  Good for single-patch memory + determinism/collision checks, but
-        its MULTI-PATCH graphlike distance is NOT the real joint distance -- use
-        :class:`RoutedMultiPatchLSExperiment` for joint distance / LER."""
+        WARNING: this standalone diagnostic wraps
+        ``RotatedBentJointMeasurement.circuit``. Its observable is one
+        bus-basis representative, not the tracked multi-patch product. Use
+        ``RotatedSurfacePPMExperiment`` for joint distance and logical error
+        rate evaluation."""
         from lightstim.qec_code.surface_code.rotated.bent_joint_se import RotatedBentJointMeasurement
         if rounds is None:
             rounds = self.distance
@@ -930,7 +929,7 @@ def _construct_phase(placed, target, orient, dset, retype, phase, forbidden=froz
     return ("ok", checks, logicals, x_obs, frozenset(applied_cuts))
 
 
-def rule_based_joint_checks(placed, target, orient, data, retype, d, max_cut=4,
+def rule_based_joint_checks(placed, target, orient, data, retype, d,
                             forbidden=frozenset(), native_lock=False, bus=None,
                             conj_names=None, extra_forced_fn=None,
                             retire_lobes=frozenset()):
@@ -972,10 +971,8 @@ def rule_based_joint_checks(placed, target, orient, data, retype, d, max_cut=4,
         reasons.append(f"phase {phase}: {res[1]}")
         return None
 
-    # phases 0/1 with the native lock HARD (an unsatisfiable lock is a
-    # failed build); corner cuts happen LOCALLY inside the attempt, so no
-    # cut ladder exists any more.  ``max_cut`` is kept in the signature
-    # for API compatibility only.
+    # Phases 0/1 keep the native lock hard. Corner cuts happen locally inside
+    # each attempt, so there is no retry ladder or search-budget API here.
     lock = bool(native_lock)
     for phase in (0, 1):
         out = attempt(phase, lock=lock)
@@ -1002,27 +999,27 @@ def _seam_qubits(occupied, d):
     return out
 
 
-def _specs_to_cells(patches, target=None, seam=False):
-    """Map the user-facing :class:`PatchSpec` list onto the internal coarse-cell model.
+def _placements_to_cells(patches, target=None, seam=False):
+    """Map the user-facing :class:`RotatedSurfacePatchPlacement` list onto the internal coarse-cell model.
 
     Returns ``(patch_at, orient, d)`` where ``patch_at[name] = (a, b)`` is the coarse cell whose
     ``d×d`` footprint equals the patch's placed data qubits, ``orient[name]`` is the declared
     orientation, and ``d`` is the (shared) code distance.  This is the single adapter every public
-    entry point runs first, so the whole subset API speaks ``PatchSpec`` while the routing internals
+    entry point runs first, so the whole subset API speaks ``RotatedSurfacePatchPlacement`` while the routing internals
     keep working in coarse cells.
 
     Raises ``TypeError`` / ``ValueError`` with a concrete reason when the specs can't be placed on the
-    coarse grid — a non-``PatchSpec`` element (e.g. the old ``{name:(a,b)}`` cell dict), mixed
+    coarse grid — a non-``RotatedSurfacePatchPlacement`` element (e.g. the old ``{name:(a,b)}`` cell dict), mixed
     distances, duplicate names, an origin off the pitch-``2d`` grid, or a bad orientation — or when
     ``target`` names an unknown patch, repeats one, or uses a non-``X``/``Z`` Pauli.
     """
     patches = list(patches)
     if not patches:
-        raise ValueError("need at least one PatchSpec")
-    if not all(isinstance(s, PatchSpec) for s in patches):
-        raise TypeError("patches must be a list of PatchSpec(name, origin, distance, "
+        raise ValueError("need at least one RotatedSurfacePatchPlacement")
+    if not all(isinstance(s, RotatedSurfacePatchPlacement) for s in patches):
+        raise TypeError("patches must be a list of RotatedSurfacePatchPlacement(name, origin, distance, "
                         "orientation); the old {name: (a, b)} cell-dict form is no "
-                        "longer accepted — build a PatchSpec per patch (origin_of(a, b, d) places "
+                        "longer accepted — build a RotatedSurfacePatchPlacement per patch (origin_of(a, b, d) places "
                         "one on coarse cell (a, b)).")
     d = patches[0].distance
     if any(s.distance != d for s in patches):
@@ -1163,29 +1160,51 @@ def path_to_corridor(tree_cells, placed, target, d, seam=False, patch_at=None, b
 # physics-layer reuse: a routed (data, retype) region -> a verified MultiPatchLayout
 # -----------------------------------------------------------------------------
 
-def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials=5000, max_cut=4,
-                     forbidden=frozenset(), native_lock=False, bus=None, conj_names=None,
-                     extra_forced_fn=None, extra_connect=frozenset(),
-                     retyped_bus=frozenset(), retire_lobes=frozenset()):
+def _assemble_region(
+    placed,
+    target,
+    orient,
+    data,
+    retype,
+    d,
+    forbidden=frozenset(),
+    native_lock=False,
+    bus=None,
+    conj_names=None,
+    extra_forced_fn=None,
+    extra_connect=frozenset(),
+    retyped_bus=frozenset(),
+    retire_lobes=frozenset(),
+):
     """Hand a routed region to the **deterministic rule-based** physics layer.
 
     The stabilizers are constructed by :func:`.deterministic_checks.rule_based_joint_checks`
     (the documented Handbook §10.4 / Fig 33-34 rules: forced bulk, alternating-spacing
     boundary, concave/convex corner rules with rule-driven corner cuts) — no randomized
-    search.  ``seed`` / ``max_trials`` are accepted for backward compatibility and ignored.
-    Returns a :class:`.MultiPatchLayout` (whose ``data`` may be smaller than the input when
-    the convex-corner rule cut bus-corner qubits), or ``None`` if the rules cannot host this
-    geometry.  The oracle decision itself is ``MultiPatchLayout.verify()``.
+    search. Returns a :class:`.MultiPatchLayout` (whose ``data`` may be smaller than the input when
+    the convex-corner rule cut bus-corner qubits), or ``None`` if the rules
+    cannot host this geometry. The oracle decision is
+    :meth:`MultiPatchLayout.verify`.
     """
     data = sorted(data)
     # a walled junction leaves a data gap; its would-be seam qubits are handed
     # in as extra_connect so the two segments count as one region
     if not _connected(set(data) | set(extra_connect)):
         return None
-    rb = rule_based_joint_checks(placed, target, orient, data, set(retype), d, max_cut=max_cut,
-                                 forbidden=forbidden, native_lock=native_lock, bus=bus,
-                                 conj_names=conj_names, extra_forced_fn=extra_forced_fn,
-                                 retire_lobes=retire_lobes)
+    rb = rule_based_joint_checks(
+        placed,
+        target,
+        orient,
+        data,
+        set(retype),
+        d,
+        forbidden=forbidden,
+        native_lock=native_lock,
+        bus=bus,
+        conj_names=conj_names,
+        extra_forced_fn=extra_forced_fn,
+        retire_lobes=retire_lobes,
+    )
     if rb["checks"] is None:
         return None
     log_pairs = [(P, sup) for _, P, sup in rb["logicals"]]
@@ -1215,7 +1234,9 @@ def _assemble_region(placed, target, orient, data, retype, d, seed=0, max_trials
 
 @dataclass
 class SubsetRoute:
-    """Result of :func:`route_and_build`.  ``status == "ok"`` iff ``layout`` is a verified joint.
+    """Result of :func:`build_explicit_ppm_layout`.
+
+    ``status == "ok"`` iff ``layout`` is a verified joint.
 
     On a **failure** an obstacle-free corridor may still exist but be un-hostable by the physics
     layer — ``attempted`` / ``attempted_arms`` carry the shortest such corridor (empty only when
@@ -1237,7 +1258,7 @@ class SubsetRoute:
     obstacle_fp: set = field(default_factory=set)     # non-target patch data qubits
     corridor: set = field(default_factory=set)        # all corridor-eligible cells
     tried: int = 0
-    how: str = "standard"                             # "standard" | "corner-cut" (route_and_build)
+    how: str = "standard"                             # "standard" | "corner-cut"
     cut: tuple = ()                                   # convex-corner qubits removed (corner-cut only)
     n_walls: int = 0                                  # stretched (kf) seam walls in the layout - band
                                                       # apparatus is real cost, chargeable like cells
@@ -1414,18 +1435,27 @@ def _table_wall_dispatch(patch_at, target, orient, tree, conj_names, bus,
     return aw, conj_eff, snake_vertical
 
 
-def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, max_cut=4,
-                    keepout=0, seed=0, max_trials=5000, route=None, seam=False, bus=None,
-                    conj_names=None, flip_cells=None, no_stitch=None, wall_junction=None,
-                    arm_walls=None, probe=False, geom_cache=None):
-    """Fully-automatic route **and** build: no hand-written corridor needed.
+def build_explicit_ppm_layout(
+    patches,
+    target,
+    *,
+    route,
+    seam=True,
+    keepout=0,
+    bus=None,
+    conj_names=None,
+    flip_cells=None,
+    no_stitch=None,
+    wall_junction=None,
+    arm_walls=None,
+    probe=False,
+):
+    """Build and verify a rotated-surface PPM on an explicit corridor.
 
-    ``route`` (optional): an **explicit corridor** — a list of coarse cells ``[(a, b), …]``.
-    When given, NO automatic routing happens: the joint code is built on exactly these
-    cells by the deterministic rule constructor and gated by the full oracle.  The cells
-    must not overlap any patch; the obstacle **keep-out margin is NOT enforced** for an
-    explicit route (you are overriding the router), so check ``collision_report`` if
-    obstacles sit next to your corridor.  Omit ``route`` (default) for auto-routing.
+    ``route`` is the exact list of coarse corridor cells. Pass ``[]`` for a
+    cell-adjacent pair. This backend performs no automatic routing. The
+    deterministic rule constructor builds stabilizers on exactly these cells,
+    and :meth:`MultiPatchLayout.verify` gates the result.
 
     ``conj_names`` (optional): the target patches whose LIVE construction is the
     colour-conjugate registration (see :func:`path_to_corridor`).  ``None`` keeps the
@@ -1443,30 +1473,16 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
     a colour-swapped and a standard patch closes with zero rotations and NO mixed
     checks anywhere.
 
-    Propose-and-verify with retry: (1) candidate arms leave the X-anchor from **any** face (not just
-    its X-faces), so clean below-/side-attach corridors are found; (2) arm-product unions are
-    augmented with greedy **Steiner** candidates (:func:`_steiner_trees`) whose arms share a common
-    trunk; (3) a candidate whose corridor is **disconnected** (its arms meet only through a target
-    patch — two separate buses) is illegal and never tried; if *every* candidate is disconnected the
-    result is an honest ``no_path``; (4) each surviving candidate is built by the **deterministic
-    rule constructor** (:mod:`.deterministic_checks` — cut-free first, then rule-driven convex-corner
-    cuts up to ``max_cut``) and gated by the full oracle.  Candidates are tried
-    **fewest-corridor-cells first**, so the smallest *valid* bus wins — a shared straight trunk is
-    preferred over fat multi-arm unions.  ``per_z`` / ``max_std`` / ``keepout`` shape the candidate
-    pool; ``cut_budget`` / ``seed`` / ``max_trials`` are accepted for backward compatibility and
-    ignored (there is no randomized search any more).  This is the routine the demo notebook calls
-    instead of pasting cells.
-
     Returns a :class:`SubsetRoute` with ``status == "ok"`` and ``.layout`` / ``.tree`` (route cells) /
     ``.how`` (``"standard"`` | ``"corner-cut"``) / ``.cut`` set, or a failure ``SubsetRoute`` with
     status ``target_obstacle_conflict`` / ``no_path`` / ``no_verified_route``.
     """
     if route is None:
-        raise BentLayoutError(
+        raise RotatedSurfacePPMLayoutError(
             "this LightStim variant has no auto-router: pass an explicit "
             "route (the coarse corridor cells, in order; [] for "
             "cell-adjacent targets)")
-    patch_at, orient, d = _specs_to_cells(patches, target, seam=seam)
+    patch_at, orient, d = _placements_to_cells(patches, target, seam=seam)
     tnames = [nm for nm, _ in target]
     # no_stitch: adjacencies that stay UNSTITCHED — the two boundaries sit next
     # to each other without merging (no seam qubits, no seam-orientation rule;
@@ -1604,8 +1620,8 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                 pb = tuple(patch_at[nm2])
                 if nm2 != nm and abs(pb[0] - pa[0]) + abs(pb[1] - pa[1]) == 1:
                     _link(pa, pb)
-        seed = next(iter(tset_c), tuple(patch_at[tnames[0]]))
-        seen_c, frontier = {seed}, [seed]
+        root_cell = next(iter(tset_c), tuple(patch_at[tnames[0]]))
+        seen_c, frontier = {root_cell}, [root_cell]
         while frontier:
             n = frontier.pop()
             for m in adj[n]:
@@ -1637,10 +1653,7 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
     n_z = sum(1 for _, P in target if P == "Z")
     bus_basis = bus if bus is not None else ("X" if n_x >= n_z else "Z")
     root0 = next((nm for nm, P in target if P == bus_basis), tnames[0])
-    if wall_junction is not None and route is None:
-        raise ValueError("wall_junction needs an explicit route")
-
-    if route is not None:                  # explicit corridor: build on EXACTLY these cells
+    if route is not None:                  # route was validated above
         tree = {tuple(c) for c in route}
         occupied_cells = set(patch_at.values())
         bad = sorted(tree & occupied_cells)
@@ -1653,8 +1666,8 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
         # (a stretched wall ON a target's attach seam — the production device
         # for rows #4/#6 of the seam table; the closed form is the VERIFIED
         # patch|patch spec, the corridor cell simply takes the far-patch role)
-        # post-path seam-table dispatch (same rule as the auto branch): a
-        # GIVEN route is still a routed path — when the caller assigned no
+        # Post-path seam-table dispatch. A given route is still a routed
+        # path; when the caller assigned no
         # walls, classify the attach seams and assign the minority-type
         # targets' walls here
         if probe:
@@ -1699,11 +1712,8 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                 # swallow-and-fall-to-plain masked the real error as a
                 # misleading 'no parallel-law-legal seam')
                 aw2, conj_eff2, vertical2 = disp
-                return route_and_build(
-                    patches, target, pad=pad, per_z=per_z,
-                    max_std=max_std, cut_budget=cut_budget,
-                    max_cut=max_cut, keepout=keepout, seed=seed,
-                    max_trials=max_trials, route=sorted(tree),
+                return build_explicit_ppm_layout(
+                    patches, target, keepout=keepout, route=sorted(tree),
                     seam=True, bus=bus, conj_names=conj_eff2,
                     flip_cells=(sorted(tree) if vertical2
                                 else flip_cells),
@@ -1750,7 +1760,7 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                     bus_eff2 = "X" if n_x2 >= len(target) - n_x2 else "Z"
                 if (dict(target)[wnm] == bus_eff2
                         and wnm not in (conj_names or frozenset())):
-                    raise BentLayoutError(
+                    raise RotatedSurfacePPMLayoutError(
                         f"arm wall {wnm}|{c2}: the target is same-type with "
                         f"the corridor (rule-table row 1 = plain merge, no "
                         f"wall is due); register it in the recolour "
@@ -1788,7 +1798,7 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                 elif 'high' not in blocked:
                     end_row = a0 + 2 * (d - 1)
                 else:
-                    raise BentLayoutError(
+                    raise RotatedSurfacePPMLayoutError(
                         f"arm wall {wnm}|{c2}: both band ends sit next to the "
                         f"patch's own weight-2 lobes — no legal end for the "
                         f"stretched lobe")
@@ -1807,7 +1817,7 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
         if seam:
             stitch_skip, viol = _auto_stitch(tree, wall_pairs=wall_pairs)
             if viol:
-                raise BentLayoutError(viol)
+                raise RotatedSurfacePPMLayoutError(viol)
         else:
             stitch_skip = ns_pairs
         data, retype = path_to_corridor(tree, placed_all, target, d, seam=seam,
@@ -1930,13 +1940,22 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
         # rule: path finding is construction-free; this was also pure waste
         # on every probe — the probe branch cannot reach this point)
         forbidden = _obstacle_ancillas(patches, tnames)
-        layout = _assemble_region(placed_all, target, orient, data, retype, d, seed,
-                                  max_trials, max_cut=max_cut, forbidden=forbidden,
-                                  native_lock=True, bus=bus, conj_names=conj_names,
-                                  extra_forced_fn=wall_fn,
-                                  extra_connect=frozenset(extra_connect),
-                                  retyped_bus=retyped_bus,
-                                  retire_lobes=frozenset(retire_lobes))
+        layout = _assemble_region(
+            placed_all,
+            target,
+            orient,
+            data,
+            retype,
+            d,
+            forbidden=forbidden,
+            native_lock=True,
+            bus=bus,
+            conj_names=conj_names,
+            extra_forced_fn=wall_fn,
+            extra_connect=frozenset(extra_connect),
+            retyped_bus=retyped_bus,
+            retire_lobes=frozenset(retire_lobes),
+        )
         cert = layout.verify() if layout is not None else None
         if cert is not None and all(cert.values()):
             cutq = tuple(sorted(set(data) - set(layout.data)))
@@ -1951,99 +1970,3 @@ def route_and_build(patches, target, pad=1, per_z=6, max_std=48, cut_budget=4, m
                            message=("the EXPLICIT route does not pass the rule-based "
                                     "construction; the physics layer cannot host this "
                                     "corridor"), **base0)
-
-
-class RotatedRoutedMultiPatchCoupler(_LCP):
-    """Routed multi-patch coupler for ROTATED patches (seam-column design)."""
-
-    EXPECTED_PATCH_COUNT = None
-    _FLIP_O = {'X_horizontal': 'X_vertical', 'X_vertical': 'X_horizontal'}
-
-    @staticmethod
-    def _key(ch):
-        return (tuple(ch['syn']),
-                frozenset((tuple(q), P) for q, P in ch['pauli'].items()))
-
-    def _build_coupler_geometry(self, coupler_patch, patches, *, specs, target,
-                                subset_route=None, seam=True, route=None,
-                                minority_names=frozenset()):
-        from types import SimpleNamespace
-        r = subset_route
-        if r is None:
-            r = route_and_build(specs, target, seam=seam, route=route)
-        if r.status != 'ok':
-            raise ValueError(f'route_and_build failed: {r.status} — {r.message}')
-        lay = r.layout
-        tnames = {nm for nm, _ in target}
-        coupler_patch.conflicting_stabilizer_coords = set()
-
-        merged_keys = {self._key(ch) for ch in lay.checks}
-        kept, native_syns, patch_cells = set(), set(), set()
-        for s in specs:
-            if s.name not in tnames:
-                continue
-            patch_cells |= {(s.origin[0] + 2 * i, s.origin[1] + 2 * j)
-                            for i in range(s.distance) for j in range(s.distance)}
-            # the construction the patch REGISTERED in the system; minority
-            # patches register the conjugate-convention construction
-            # (transposed geometry, records typeswapped)
-            reg_orient = self._FLIP_O[s.orientation] if s.name in minority_names \
-                else s.orientation
-            reg = place_patch(SimpleNamespace(origin=s.origin, distance=s.distance,
-                                              orientation=reg_orient))['checks']
-            if s.name in minority_names:
-                reg = [dict(ch, type=_FLIP[ch['type']],
-                            pauli={q: _FLIP[P] for q, P in ch['pauli'].items()})
-                       for ch in reg]
-            for ch in reg:
-                native_syns.add(tuple(ch['syn']))
-                key = self._key(ch)
-                if key not in merged_keys:
-                    coupler_patch.conflicting_stabilizer_coords.add(tuple(ch['syn']))
-                else:
-                    kept.add(key)
-
-        # new data qubits: corridor + seam columns
-        for q in sorted(set(map(tuple, lay.data)) - patch_cells):
-            coupler_patch.add_qubit(q[0], q[1], role='data')
-        # coupler-owned checks + any genuinely new ancilla positions
-        added = set()
-        for ch in lay.checks:
-            if self._key(ch) in kept:
-                continue
-            syn = tuple(ch['syn'])
-            typ = ch.get('type') or next(iter(set(ch['pauli'].values())))
-            kf = ch.get('kf')
-            if kf is not None:
-                # stretched (kf) record: B reads out in X, flag A and the
-                # shared relay S in Z (same apparatus convention as
-                # RotatedSeamWallCoupler)
-                if syn not in native_syns and syn not in added:
-                    coupler_patch.add_qubit(syn[0], syn[1], role='syndrome_x')
-                    added.add(syn)
-                for coord, role in ((tuple(kf['flag']), 'syndrome_z'),
-                                    (tuple(kf['shared']), 'syndrome_z')):
-                    if coord not in native_syns and coord not in added:
-                        coupler_patch.add_qubit(coord[0], coord[1], role=role)
-                        added.add(coord)
-                coupler_patch.stabilizers.append({
-                    'pauli': {tuple(q): P for q, P in ch['pauli'].items()},
-                    'type': 'MIXED',
-                    'syn_coord': syn,
-                    'kf': {'flag': tuple(kf['flag']),
-                           'shared': tuple(kf['shared']),
-                           'orient': kf['orient']},
-                })
-                continue
-            if syn not in native_syns and syn not in added:
-                coupler_patch.add_qubit(syn[0], syn[1],
-                                        role=('syndrome_z' if typ == 'Z'
-                                              else 'syndrome_x'))
-                added.add(syn)
-            coupler_patch.stabilizers.append({
-                'pauli': {tuple(q): P for q, P in ch['pauli'].items()},
-                'type': typ if typ in ('X', 'Z') else 'MIXED',
-                'syn_coord': syn,
-            })
-        coupler_patch.routed_layout = lay          # introspection for the protocol layer
-        coupler_patch.subset_route = r

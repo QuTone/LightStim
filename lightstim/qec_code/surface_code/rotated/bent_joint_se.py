@@ -49,8 +49,8 @@ _NE, _NW, _SE, _SW = (1, 1), (-1, 1), (1, -1), (-1, -1)
 #: their corners in an order whose hook (the last-coupled corner pair) lies
 #: PERPENDICULAR to the same-type logical it could shorten (X hook ⊥ X̄, Z hook
 #: ⊥ Z̄).  ``X_horizontal`` is the exact transpose (X/Z swap) of ``X_vertical``.
-#: Full circuit distance on single-patch memory in both bases; the routed
-#: pipeline (``RoutedMultiPatchLSExperiment``) reaches full joint distance with it.
+#: Full circuit distance on single-patch memory in both bases; the tracked
+#: rotated-surface PPM experiment reaches full joint distance with it.
 BENIGN_TABLES = {
     'X_vertical':   {'X': (_NE, _NW, _SE, _SW), 'Z': (_NE, _SE, _NW, _SW)},
     'X_horizontal': {'X': (_NE, _SE, _NW, _SW), 'Z': (_NE, _NW, _SE, _SW)},
@@ -304,8 +304,8 @@ class RotatedBentJointMeasurement:
         (``x_logical``), NOT the ``SyndromeTracker`` joint m.  It is correct for
         single-patch memory and for checking a round's determinism / collision-
         freedom, but on a MULTI-PATCH joint its graphlike distance is NOT the real
-        joint distance -- use :class:`RoutedMultiPatchLSExperiment` to measure joint
-        distance / LER."""
+        joint distance. Use the tracked rotated-surface PPM experiment to
+        measure joint distance and logical error rate."""
         se_round = lambda cc, pp: self._se_round_hook_benign(cc, pp)
         di, AID, CHECKS = self.di, self.aid, self.checks
         nq, NST = self.nq, self.nst
