@@ -46,13 +46,13 @@ class _MeasurementBlockAnalysis:
 
 class CircuitBuilder:
     """
-    Constructs the Stim circuit for QEC experiments. 
+    Constructs the Stim circuit for QEC experiments.
     SyndromeTracker automatically generates detectors and logical observables.
     NoiseInjector automatically injects noise to appropriate places according to the given noise model.
     """
 
-    def __init__(self, 
-                 tracker: SyndromeTracker, 
+    def __init__(self,
+                 tracker: SyndromeTracker,
                  system_config: Any,
                  if_detector: bool = True):
         """
@@ -140,7 +140,7 @@ class CircuitBuilder:
             self.circuit.append("R", qubit_indices_z, tag=tag)
         if qubit_indices_y:
             self.circuit.append("RY", qubit_indices_y, tag=tag)
-        
+
         init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
 
         self.tracker.process_initialization(init_tableau)
@@ -171,6 +171,214 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # B. Syndrome Extraction
     # --------------------------------------------------------------------------
+    def apply_syndrome_extraction(self,
+                                  circuit_chunk: stim.Circuit,
+                                  rounds: int = 1,
+                                  noiseless: bool = False,
+                                  z_only: bool = False,
+                                  measurement_blocks: Optional[Tuple[stim.Circuit, ...]] = None):
+        """
+        Applies syndrome extraction with automated Tracker integration.
+
+        Args:
+            circuit_chunk: A Stim circuit representing ONE round of stabilizer measurement.
+                           Only includes circuit operations. The last instruction has to be syndrome qubit measurement.
+            rounds: Number of times to repeat.
+            noiseless: If True, tag all gate instructions in circuit_chunk as 'noiseless'
+                so the noise injector skips them. Useful for injection-stabilization rounds.
+            z_only: If True, only Z-ancilla measurements emit DETECTOR instructions.
+                X-ancilla are still measured (so the tableau update is correct) but
+                suppressed from the DEM. State is stored for apply_data_readout(z_only=True).
+        """
+        # ONE engine: every round goes through the measurement-block path
+        # (the engine on main).  A call without explicit blocks treats the
+        # whole chunk as a single block; the legacy single-block engine is
+        # gone (review: do not maintain two syndrome-extraction engines).
+        return self._apply_syndrome_extraction_blocks(
+            circuit_chunk, rounds=rounds, noiseless=noiseless,
+            z_only=z_only,
+            measurement_blocks=tuple(measurement_blocks or (circuit_chunk,)))
+
+    def _apply_syndrome_extraction_blocks(self,
+                                  circuit_chunk: stim.Circuit,
+                                  rounds: int = 1,
+                                  noiseless: bool = False,
+                                  z_only: bool = False,
+                                  measurement_blocks: Optional[Tuple[stim.Circuit, ...]] = None):
+        """
+        Applies syndrome extraction with automated Tracker integration.
+
+        Args:
+            circuit_chunk: The complete physical circuit for one SE round.
+            measurement_blocks: Explicit tracker boundaries within the round.
+                Each block starts from its input preparation and ends in one
+                contiguous readout layer. When omitted, ``circuit_chunk`` is
+                treated as one measurement block.
+            rounds: Number of times to repeat.
+            noiseless: If True, tag all gate instructions in circuit_chunk as 'noiseless'
+                so the noise injector skips them. Useful for injection-stabilization rounds.
+            z_only: If True, only Z-ancilla measurements emit DETECTOR instructions.
+                X-ancilla are still measured (so the tableau update is correct) but
+                suppressed from the DEM. State is stored for apply_data_readout(z_only=True).
+        """
+        if rounds < 1:
+            return
+
+        blocks = tuple(measurement_blocks or (circuit_chunk,))
+        if not blocks:
+            raise ValueError("measurement_blocks must not be empty.")
+        if noiseless:
+            blocks = tuple(_make_noiseless(block) for block in blocks)
+        circuit_chunk = self._join_measurement_blocks(blocks)
+
+        if not self.if_detector:
+            self.circuit += circuit_chunk
+            if rounds > 1:
+                steady_round_body = stim.Circuit()
+                steady_round_body.append("TICK")
+                steady_round_body += circuit_chunk
+                self.circuit += steady_round_body
+                if rounds > 2:
+                    self.circuit.append(stim.CircuitRepeatBlock(
+                        rounds - 2,
+                        steady_round_body,
+                    ))
+            return
+
+        analyses = tuple(
+            self._analyze_measurement_block(block, z_only=z_only)
+            for block in blocks
+        )
+        if z_only:
+            if len(analyses) != 1:
+                raise ValueError(
+                    "z_only readout currently supports one measurement block per SE round."
+                )
+            analysis = analyses[0]
+            self._z_only_syn_qubit_indices = (
+                analysis.measurement_qubit_indices
+            )
+            self._z_only_no_detector_mask = analysis.no_detector_mask
+            self._z_only_n_meas_per_round = len(
+                analysis.measurement_qubit_indices
+            )
+
+        _log.debug("Applying first round of syndrome extraction...")
+        self._process_measurement_blocks(
+            output_circuit=self.circuit,
+            analyses=analyses,
+            shift_round=True,
+        )
+
+        if rounds <= 1:
+            return
+
+        _log.debug("Applying second syndrome-extraction round...")
+        first_round_logical_components = set(
+            self.tracker.stabilizer_with_logical_components
+        )
+        steady_round_body = stim.Circuit()
+        steady_round_body.append("TICK")
+        self._process_measurement_blocks(
+            output_circuit=steady_round_body,
+            analyses=analyses,
+            shift_round=True,
+        )
+        self.tracker.stabilizer_with_logical_components.update(
+            first_round_logical_components
+        )
+        self.circuit += steady_round_body
+
+        if rounds <= 2:
+            return
+
+        repeated_round_body = self._try_compress_steady_rounds(
+            repetitions=rounds - 2,
+            analyses=analyses,
+        )
+        if repeated_round_body is not None:
+            self.circuit.append(stim.CircuitRepeatBlock(
+                rounds - 2,
+                repeated_round_body,
+            ))
+            return
+
+        if not self._uses_disposable_syndrome_readout(analyses):
+            persistent_logical_components = set(
+                self.tracker.stabilizer_with_logical_components
+            )
+            for _ in range(rounds - 2):
+                explicit_round_body = stim.Circuit()
+                explicit_round_body.append("TICK")
+                self._process_measurement_blocks(
+                    output_circuit=explicit_round_body,
+                    analyses=analyses,
+                    shift_round=True,
+                )
+                self.circuit += explicit_round_body
+                self.tracker.stabilizer_with_logical_components.update(
+                    persistent_logical_components
+                )
+                persistent_logical_components.update(
+                    self.tracker.stabilizer_with_logical_components
+                )
+            return
+
+        self.circuit.append(stim.CircuitRepeatBlock(
+            rounds - 2,
+            steady_round_body,
+        ))
+
+        persistent_logical_components = set(
+            self.tracker.stabilizer_with_logical_components
+        )
+        for _ in range(rounds - 2):
+            promotable_stabilizer_rows = []
+            for analysis in analyses:
+                repeated_base_idx = self.tracker.total_measurements
+                self.tracker.meas_rec_to_idx_map.update({
+                    repeated_base_idx + i: qubit
+                    for i, qubit in enumerate(
+                        analysis.measurement_qubit_indices
+                    )
+                })
+                promotable_stabilizer_rows.append(
+                    self.tracker.process_mid_measurement(
+                        circuit=stim.Circuit(),
+                        forward_symplectic_matrix=(
+                            analysis.forward_symplectic_matrix
+                        ),
+                        back_propagated_paulis=(
+                            analysis.back_propagated_paulis
+                        ),
+                        reset_paulis=analysis.reset_paulis,
+                        measurement_qubit_indices=(
+                            analysis.measurement_qubit_indices
+                        ),
+                        measurement_bases=analysis.measurement_bases,
+                        measurement_coords=analysis.measurement_coords,
+                        discarded_measurement_qubit_indices=(
+                            analysis.discarded_measurement_qubit_indices
+                        ),
+                        no_detector_mask=np.ones(
+                            len(analysis.measurement_qubit_indices),
+                            dtype=bool,
+                        ),
+                    )
+                )
+            self._finish_measurement_block_group(
+                analyses,
+                promotable_stabilizer_rows=tuple(
+                    promotable_stabilizer_rows
+                ),
+            )
+            self.tracker.stabilizer_with_logical_components.update(
+                persistent_logical_components
+            )
+            persistent_logical_components.update(
+                self.tracker.stabilizer_with_logical_components
+            )
+
     @staticmethod
     def _join_measurement_blocks(
         measurement_blocks: Tuple[stim.Circuit, ...],
@@ -189,27 +397,6 @@ class CircuitBuilder:
             == set(analysis.measurement_qubit_indices)
             for analysis in analyses
         )
-
-    def _finish_measurement_block_group(
-        self,
-        analyses: Tuple[_MeasurementBlockAnalysis, ...],
-        *,
-        promotable_stabilizer_rows: Tuple[Set[int], ...],
-        tracker: Optional[SyndromeTracker] = None,
-    ) -> None:
-        """Apply Builder-owned state classification at an SE-round boundary."""
-        tracker = self.tracker if tracker is None else tracker
-        if self._uses_disposable_syndrome_readout(analyses):
-            if len(analyses) == 1:
-                tracker.promote_stabilizer_rows_to_logicals(
-                    promotable_stabilizer_rows[0]
-                )
-            else:
-                tracker.rebase_stabilizers_onto_code_basis(self.system)
-        else:
-            tracker.validate_logical_count(
-                context="syndrome-extraction round"
-            )
 
     def _analyze_measurement_block(
         self,
@@ -397,184 +584,25 @@ class CircuitBuilder:
             tracker=tracker,
         )
 
-    def apply_syndrome_extraction(self,
-                                  circuit_chunk: stim.Circuit,
-                                  rounds: int = 1,
-                                  noiseless: bool = False,
-                                  z_only: bool = False,
-                                  measurement_blocks: Optional[Tuple[stim.Circuit, ...]] = None):
-        """
-        Applies syndrome extraction with automated Tracker integration.
-
-        Args:
-            circuit_chunk: The complete physical circuit for one SE round.
-            measurement_blocks: Explicit tracker boundaries within the round.
-                Each block starts from its input preparation and ends in one
-                contiguous readout layer. When omitted, ``circuit_chunk`` is
-                treated as one measurement block.
-            rounds: Number of times to repeat.
-            noiseless: If True, tag all gate instructions in circuit_chunk as 'noiseless'
-                so the noise injector skips them. Useful for injection-stabilization rounds.
-            z_only: If True, only Z-ancilla measurements emit DETECTOR instructions.
-                X-ancilla are still measured (so the tableau update is correct) but
-                suppressed from the DEM. State is stored for apply_data_readout(z_only=True).
-        """
-        if rounds < 1:
-            return
-
-        blocks = tuple(measurement_blocks or (circuit_chunk,))
-        if not blocks:
-            raise ValueError("measurement_blocks must not be empty.")
-        if noiseless:
-            blocks = tuple(_make_noiseless(block) for block in blocks)
-        circuit_chunk = self._join_measurement_blocks(blocks)
-
-        if not self.if_detector:
-            self.circuit += circuit_chunk
-            if rounds > 1:
-                steady_round_body = stim.Circuit()
-                steady_round_body.append("TICK")
-                steady_round_body += circuit_chunk
-                self.circuit += steady_round_body
-                if rounds > 2:
-                    self.circuit.append(stim.CircuitRepeatBlock(
-                        rounds - 2,
-                        steady_round_body,
-                    ))
-            return
-
-        analyses = tuple(
-            self._analyze_measurement_block(block, z_only=z_only)
-            for block in blocks
-        )
-        if z_only:
-            if len(analyses) != 1:
-                raise ValueError(
-                    "z_only readout currently supports one measurement block per SE round."
+    def _finish_measurement_block_group(
+        self,
+        analyses: Tuple[_MeasurementBlockAnalysis, ...],
+        *,
+        promotable_stabilizer_rows: Tuple[Set[int], ...],
+        tracker: Optional[SyndromeTracker] = None,
+    ) -> None:
+        """Apply Builder-owned state classification at an SE-round boundary."""
+        tracker = self.tracker if tracker is None else tracker
+        if self._uses_disposable_syndrome_readout(analyses):
+            if len(analyses) == 1:
+                tracker.promote_stabilizer_rows_to_logicals(
+                    promotable_stabilizer_rows[0]
                 )
-            analysis = analyses[0]
-            self._z_only_syn_qubit_indices = (
-                analysis.measurement_qubit_indices
-            )
-            self._z_only_no_detector_mask = analysis.no_detector_mask
-            self._z_only_n_meas_per_round = len(
-                analysis.measurement_qubit_indices
-            )
-
-        _log.debug("Applying first round of syndrome extraction...")
-        self._process_measurement_blocks(
-            output_circuit=self.circuit,
-            analyses=analyses,
-            shift_round=True,
-        )
-
-        if rounds <= 1:
-            return
-
-        _log.debug("Applying second syndrome-extraction round...")
-        first_round_logical_components = set(
-            self.tracker.stabilizer_with_logical_components
-        )
-        steady_round_body = stim.Circuit()
-        steady_round_body.append("TICK")
-        self._process_measurement_blocks(
-            output_circuit=steady_round_body,
-            analyses=analyses,
-            shift_round=True,
-        )
-        self.tracker.stabilizer_with_logical_components.update(
-            first_round_logical_components
-        )
-        self.circuit += steady_round_body
-
-        if rounds <= 2:
-            return
-
-        repeated_round_body = self._try_compress_steady_rounds(
-            repetitions=rounds - 2,
-            analyses=analyses,
-        )
-        if repeated_round_body is not None:
-            self.circuit.append(stim.CircuitRepeatBlock(
-                rounds - 2,
-                repeated_round_body,
-            ))
-            return
-
-        if not self._uses_disposable_syndrome_readout(analyses):
-            persistent_logical_components = set(
-                self.tracker.stabilizer_with_logical_components
-            )
-            for _ in range(rounds - 2):
-                explicit_round_body = stim.Circuit()
-                explicit_round_body.append("TICK")
-                self._process_measurement_blocks(
-                    output_circuit=explicit_round_body,
-                    analyses=analyses,
-                    shift_round=True,
-                )
-                self.circuit += explicit_round_body
-                self.tracker.stabilizer_with_logical_components.update(
-                    persistent_logical_components
-                )
-                persistent_logical_components.update(
-                    self.tracker.stabilizer_with_logical_components
-                )
-            return
-
-        self.circuit.append(stim.CircuitRepeatBlock(
-            rounds - 2,
-            steady_round_body,
-        ))
-
-        persistent_logical_components = set(
-            self.tracker.stabilizer_with_logical_components
-        )
-        for _ in range(rounds - 2):
-            promotable_stabilizer_rows = []
-            for analysis in analyses:
-                repeated_base_idx = self.tracker.total_measurements
-                self.tracker.meas_rec_to_idx_map.update({
-                    repeated_base_idx + i: qubit
-                    for i, qubit in enumerate(
-                        analysis.measurement_qubit_indices
-                    )
-                })
-                promotable_stabilizer_rows.append(
-                    self.tracker.process_mid_measurement(
-                        circuit=stim.Circuit(),
-                        forward_symplectic_matrix=(
-                            analysis.forward_symplectic_matrix
-                        ),
-                        back_propagated_paulis=(
-                            analysis.back_propagated_paulis
-                        ),
-                        reset_paulis=analysis.reset_paulis,
-                        measurement_qubit_indices=(
-                            analysis.measurement_qubit_indices
-                        ),
-                        measurement_bases=analysis.measurement_bases,
-                        measurement_coords=analysis.measurement_coords,
-                        discarded_measurement_qubit_indices=(
-                            analysis.discarded_measurement_qubit_indices
-                        ),
-                        no_detector_mask=np.ones(
-                            len(analysis.measurement_qubit_indices),
-                            dtype=bool,
-                        ),
-                    )
-                )
-            self._finish_measurement_block_group(
-                analyses,
-                promotable_stabilizer_rows=tuple(
-                    promotable_stabilizer_rows
-                ),
-            )
-            self.tracker.stabilizer_with_logical_components.update(
-                persistent_logical_components
-            )
-            persistent_logical_components.update(
-                self.tracker.stabilizer_with_logical_components
+            else:
+                tracker.rebase_stabilizers_onto_code_basis(self.system)
+        else:
+            tracker.validate_logical_count(
+                context="syndrome-extraction round"
             )
 
     def _try_compress_steady_rounds(
@@ -597,9 +625,10 @@ class CircuitBuilder:
             or tracker.expected_num_logicals != 1
             or tracker.stabilizer_with_logical_components
             or tracker._gauge_logical_vectors
-            or tracker._absorbed_logical_dofs
+            or tracker.absorbed_ops.count
             or tracker.post_select_row_indices
             or self.circuit.num_observables > 0
+            or tracker.total_observables > 0
         ):
             return None
 
@@ -716,6 +745,13 @@ class CircuitBuilder:
             return None
 
         if first_logical_delta:
+            # Accumulation into ID 0 (the observable the terminal readout
+            # allocates for this same logical) — the legal exception spelled
+            # out in tracker.allocate_observable, not a second allocation.
+            # Sound only because the guard above refused compression when
+            # tracker.total_observables > 0: with no reservation ahead of
+            # it, the sole logical's terminal readout is guaranteed to
+            # allocate ID 0.
             repeated_round_body.append(
                 "OBSERVABLE_INCLUDE",
                 [stim.target_rec(offset) for offset in first_logical_delta],
@@ -808,246 +844,6 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # C. Unitary Block (Logical Gates, Unitary Encoding, etc.)
     # --------------------------------------------------------------------------
-    def apply_unitary_block(self, unitary_block: stim.Circuit, noiseless: bool = False):
-        """
-        Applies a unitary circuit block and updates the tracker's tableau.
-
-        This method is used for logical operations (e.g., transversal CNOT) that
-        need to update the stabilizer tableau to reflect the unitary transformation.
-
-        Args:
-            unitary_block: A Stim circuit containing only unitary operations (no measurements/resets).
-            noiseless: If True, tag all gate instructions with 'noiseless' so that
-                       noise injection rules skip them.
-        """
-        # Append the unitary block to the circuit
-        if self.circuit[-1].name != "TICK":
-            self.circuit.append("TICK")
-
-        if noiseless:
-            # Re-emit each instruction with the noiseless tag
-            for inst in unitary_block:
-                if isinstance(inst, stim.CircuitInstruction):
-                    self.circuit.append(
-                        inst.name, inst.targets_copy(), inst.gate_args_copy(),
-                        tag="noiseless",
-                    )
-        else:
-            self.circuit += unitary_block
-
-        # Update the tracker's tableau to reflect the unitary transformation
-        self.tracker.process_unitary_block(unitary_block)
-
-    # --------------------------------------------------------------------------
-    # D. Logical Coupler Activity, Stabilizer Masking/Unmasking
-    # --------------------------------------------------------------------------
-    def activate_coupler(self, name: str):
-        """
-        Turn on the logical coupler. A wrapper for QECSystem.activate_coupler.
-        This changes the active stabilizer set for the NEXT round of extraction.
-        """
-        # Call the system's state manager
-        self.system.activate_coupler(name)
-
-    def deactivate_coupler(self, name: str):
-        """
-        Turn off the logical coupler and restore original patch boundaries.
-        A wrapper for QECSystem.deactivate_coupler.
-        """
-        self.system.deactivate_coupler(name)
-
-    def mask_stabilizers(self, ids: Set[int]):
-        """
-        Mask (Deactivate) the stabilizers with the given ids.
-        To be implemented.
-        """
-        pass
-
-    def unmask_stabilizers(self, ids: Set[int]):
-        """
-        Unmask (Activate) the stabilizers with the given ids.
-        To be implemented.
-        """
-        pass
-
-
-    # --------------------------------------------------------------------------
-    # E. Data Qubit Measurement
-    # --------------------------------------------------------------------------
-    def apply_data_readout(self, final_measurements: Dict[int, str] = None, noiseless: bool = False,
-                           z_only: bool = False):
-        """
-        Applies destructive measurement on data qubits and calls Tracker to
-        resolve remaining stabilizers into Detectors/Observables.
-
-        Args:
-            final_measurements: Dict mapping qubit index to measurement basis ('X', 'Y', 'Z').
-            noiseless: If True, tag measurement instructions with 'noiseless' so that
-                       noise injection rules skip them.
-            z_only: If True, bypass tracker.process_data_measurement and construct
-                DETECTOR / OBSERVABLE_INCLUDE manually from Z-stabilizers and Z-logicals.
-                Requires apply_syndrome_extraction to have been called with z_only=True.
-        """
-        if final_measurements is None:
-            final_measurements = {q: 'Z' for q in self.system.data_indices}
-
-        # Final destructive data readout must start in a fresh moment. Some
-        # extraction blocks, such as middle-out color-code circuits, end with
-        # data-qubit gauge measurements instead of a trailing TICK.
-        if len(self.circuit) > 0 and self.circuit[-1].name != "TICK":
-            self.circuit.append("TICK")
-
-        xs = [q for q, b in final_measurements.items() if b == 'X']
-        ys = [q for q, b in final_measurements.items() if b == 'Y']
-        zs = [q for q, b in final_measurements.items() if b == 'Z']
-
-        tag = "noiseless" if noiseless else ""
-
-        # Append gates (No manual noise here)
-        if xs: self.circuit.append("MX", xs, tag=tag)
-        if ys: self.circuit.append("MY", ys, tag=tag)
-        if zs: self.circuit.append("M", zs, tag=tag)
-
-        # Prepare Basis for Tracker (order matches circuit: X then Y then Z)
-        sorted_indices = xs + ys + zs
-        n = self.tracker.num_qubits
-        final_paulis = np.zeros((len(sorted_indices), 2 * n), dtype=np.uint8)
-
-        for i, q in enumerate(sorted_indices):
-            basis = final_measurements[q]
-            if basis == 'X':
-                final_paulis[i, q] = 1
-            elif basis == 'Y':
-                final_paulis[i, q] = 1
-                final_paulis[i, n + q] = 1
-            else:
-                final_paulis[i, n + q] = 1
-
-        # Call Tracker — or, for z_only, build DETECTORs/OBSERVABLEs manually
-        if self.if_detector:
-            if z_only:
-                syn_qubit_indices = self._z_only_syn_qubit_indices
-                no_detector_mask  = self._z_only_no_detector_mask
-                n_meas_per_round  = self._z_only_n_meas_per_round
-                x_anc_set = {q for q, masked in zip(syn_qubit_indices, no_detector_mask) if masked}
-
-                data_indices = sorted_indices  # already M'd above in Z basis
-                data_pos     = {q: i for i, q in enumerate(data_indices)}
-                n_data       = len(data_indices)
-                z_anc_pos    = {q: i for i, q in enumerate(syn_qubit_indices) if q not in x_anc_set}
-
-                for stab in self.system.active_stabilizers_z:
-                    recs = [stim.target_rec(-n_data + data_pos[q]) for q in stab['data_indices']]
-                    recs.append(stim.target_rec(-n_data - n_meas_per_round + z_anc_pos[stab['syn_idx']]))
-                    self.circuit.append("DETECTOR", recs)
-
-                # Delegate observable generation to the tracker so it handles
-                # periodic-boundary codes (e.g. toric) correctly. We snapshot
-                # the circuit length, let the tracker append both DETECTORs and
-                # OBSERVABLE_INCLUDEs, then keep only the OBSERVABLE_INCLUDEs.
-                n_before = len(self.circuit)
-                self.tracker.process_data_measurement(
-                    circuit=self.circuit,
-                    final_paulis=final_paulis,
-                    idx_to_coord_map=self.system.qubit_coords,
-                    syndrome_qubit_indices=self.system.syndrome_indices,
-                )
-                obs_insts = [
-                    inst for inst in list(self.circuit)[n_before:]
-                    if not isinstance(inst, stim.CircuitRepeatBlock)
-                    and inst.name == "OBSERVABLE_INCLUDE"
-                ]
-                self.circuit = self.circuit[:n_before]
-                for inst in obs_insts:
-                    self.circuit.append(inst.name, inst.targets_copy(), inst.gate_args_copy())
-            else:
-                self.tracker.process_data_measurement(
-                    circuit=self.circuit,
-                    final_paulis=final_paulis,
-                    idx_to_coord_map=self.system.qubit_coords,
-                    syndrome_qubit_indices=self.system.syndrome_indices,
-                )
-
-        # Remove measured qubits from active set (ready for reuse)
-        self.system.active_qubit_indices.difference_update(final_measurements.keys())
-
-    # --------------------------------------------------------------------------
-    # F. Final Build & Noise Injection
-    # --------------------------------------------------------------------------
-    def build_noisy_circuit(
-        self, 
-        noise_params: NoiseConfig,
-        noise_model: str = 'circuit_level'
-    ) -> stim.Circuit:
-        """
-        Consumes the clean circuit and applies noise using the specified model strategy.
-        
-        Args:
-            noise_params: Noise parameters (NoiseConfig).
-            noise_model: The name of the factory method in NoiseInjector to use.
-                         e.g., 'circuit_level' -> calls NoiseInjector.from_circuit_level(...)
-                         e.g., 'custom_test'   -> calls NoiseInjector.from_custom_test(...)
-        """
-        # 1. Construct the expected factory method name
-        method_name = f"from_{noise_model}"
-        
-        # 2. Dynamically retrieve the method from the NoiseInjector class
-        if not hasattr(NoiseInjector, method_name):
-            # Fallback or nice error message showing available options
-            valid_methods = [m.replace("from_", "") for m in dir(NoiseInjector) if m.startswith("from_")]
-            raise ValueError(f"Unknown noise model '{noise_model}'. "
-                             f"Expected one of: {valid_methods}")
-        
-        factory_method = getattr(NoiseInjector, method_name)
-        
-        # 3. Inject noise
-        # Assumptions: All factory methods must accept (config, data_qubits)
-        data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
-        injector = factory_method(noise_params, data_indices)
-        noisy_circuit = injector.inject_noise(self.circuit)
-
-        return noisy_circuit
-
-    # --------------------------------------------------------------------------
-    # G. Helpers
-    # --------------------------------------------------------------------------
-    @staticmethod
-    def _get_initialization_tableau(qubit_indices_x: List[int], qubit_indices_z: List[int], qubit_indices_y: List[int], n: int):
-        """
-        Generates the tableau for the given qubit indices in X, Z, Y basis.
-        Args:
-            qubit_indices_x: List[int]
-            qubit_indices_z: List[int]
-            qubit_indices_y: List[int]
-            n: int
-        Returns:
-            initialized_tableau: np.ndarray
-        """
-        # 1. X Basis: (X=1, Z=0)
-        # Shape is (len, 2n). If len=0, it's safe.
-        t_x = np.zeros((len(qubit_indices_x), 2 * n), dtype=int)
-        if qubit_indices_x:
-            t_x[np.arange(len(qubit_indices_x)), qubit_indices_x] = 1
-
-        # 2. Z Basis: (X=0, Z=1)
-        t_z = np.zeros((len(qubit_indices_z), 2 * n), dtype=int)
-        if qubit_indices_z:
-            # Use list comprehension or numpy add to shift index by n
-            cols = [i + n for i in qubit_indices_z]
-            t_z[np.arange(len(qubit_indices_z)), cols] = 1
-
-        # 3. Y Basis: (X=1, Z=1) -> Critical Fix here
-        t_y = np.zeros((len(qubit_indices_y), 2 * n), dtype=int)
-        if qubit_indices_y:
-            # Set X part
-            t_y[np.arange(len(qubit_indices_y)), qubit_indices_y] = 1
-            # Set Z part (same row!)
-            cols_z = [i + n for i in qubit_indices_y]
-            t_y[np.arange(len(qubit_indices_y)), cols_z] = 1
-
-        # 4. Stack
-        # Since all sub-matrices have 2*n columns, vstack works even if some have 0 rows.
-        return np.vstack([t_x, t_z, t_y])
 
     @staticmethod
     def _get_terminal_reset_paulis(
@@ -1169,10 +965,10 @@ class CircuitBuilder:
         # We ignore measurement/reset to treat the circuit as a unitary operation for analysis.
         se_tableau = stim.Tableau.from_circuit(circuit_chunk, ignore_noise=True, ignore_measurement=True, ignore_reset=True)
         se_tableau_inverse = se_tableau.inverse()
-        
+
         # 6 outputs: x2x, x2z, z2x, z2z, x_signs, z_signs
         x2x, x2z, z2x, z2z, _, _ = se_tableau_inverse.to_numpy()
-        
+
         # Convert to int
         x2x_int = x2x.astype(int)
         x2z_int = x2z.astype(int)
@@ -1252,7 +1048,7 @@ class CircuitBuilder:
 
         # Padding the back-propagated Pauli string to the full size of the system
         current_size = back_pauli_x.shape[1]
-        
+
         if current_size < num_qubits:
             pad_width = num_qubits - current_size
             # Pad indices: ((top, bottom), (left, right))
@@ -1264,7 +1060,7 @@ class CircuitBuilder:
 
         # stack x_part and z_part to get the full 2n-bitstring
         back_pauli = np.hstack([back_pauli_x, back_pauli_z])
-        
+
         if include_measurement_bases:
             return (
                 back_pauli,
@@ -1272,6 +1068,251 @@ class CircuitBuilder:
                 measurement_bases,
             )
         return back_pauli, measurement_qubit_indices
+
+
+    def apply_unitary_block(self, unitary_block: stim.Circuit, noiseless: bool = False):
+        """
+        Applies a unitary circuit block and updates the tracker's tableau.
+
+        This method is used for logical operations (e.g., transversal CNOT) that
+        need to update the stabilizer tableau to reflect the unitary transformation.
+
+        Args:
+            unitary_block: A Stim circuit containing only unitary operations (no measurements/resets).
+            noiseless: If True, tag all gate instructions with 'noiseless' so that
+                       noise injection rules skip them.
+        """
+        # Append the unitary block to the circuit
+        if self.circuit[-1].name != "TICK":
+            self.circuit.append("TICK")
+
+        if noiseless:
+            # Re-emit each instruction with the noiseless tag
+            for inst in unitary_block:
+                if isinstance(inst, stim.CircuitInstruction):
+                    self.circuit.append(
+                        inst.name, inst.targets_copy(), inst.gate_args_copy(),
+                        tag="noiseless",
+                    )
+        else:
+            self.circuit += unitary_block
+
+        # Update the tracker's tableau to reflect the unitary transformation
+        self.tracker.process_unitary_block(unitary_block)
+
+    # --------------------------------------------------------------------------
+    # D. Logical Coupler Activity, Stabilizer Masking/Unmasking
+    # --------------------------------------------------------------------------
+    def activate_coupler(self, name: str):
+        """
+        Turn on the logical coupler. A wrapper for QECSystem.activate_coupler.
+        This changes the active stabilizer set for the NEXT round of extraction.
+        """
+        # Call the system's state manager
+        self.system.activate_coupler(name)
+
+    def deactivate_coupler(self, name: str):
+        """
+        Turn off the logical coupler and restore original patch boundaries.
+        A wrapper for QECSystem.deactivate_coupler.
+        """
+        self.system.deactivate_coupler(name)
+
+    def mask_stabilizers(self, ids: Set[int]):
+        """
+        Mask (Deactivate) the stabilizers with the given ids.
+        To be implemented.
+        """
+        pass
+
+    def unmask_stabilizers(self, ids: Set[int]):
+        """
+        Unmask (Activate) the stabilizers with the given ids.
+        To be implemented.
+        """
+        pass
+
+
+    # --------------------------------------------------------------------------
+    # E. Data Qubit Measurement
+    # --------------------------------------------------------------------------
+    def apply_data_readout(self, final_measurements: Dict[int, str] = None, noiseless: bool = False,
+                           z_only: bool = False, resolve_absorbed: bool = True):
+        """
+        Applies destructive measurement on data qubits and calls Tracker to
+        resolve remaining stabilizers into Detectors/Observables.
+
+        Args:
+            final_measurements: Dict mapping qubit index to measurement basis ('X', 'Y', 'Z').
+            noiseless: If True, tag measurement instructions with 'noiseless' so that
+                       noise injection rules skip them.
+            z_only: If True, bypass tracker.process_data_measurement and construct
+                DETECTOR / OBSERVABLE_INCLUDE manually from Z-stabilizers and Z-logicals.
+                Requires apply_syndrome_extraction to have been called with z_only=True.
+        """
+        if final_measurements is None:
+            final_measurements = {q: 'Z' for q in self.system.data_indices}
+
+        # Final destructive data readout must start in a fresh moment. Some
+        # extraction blocks, such as middle-out color-code circuits, end with
+        # data-qubit gauge measurements instead of a trailing TICK.
+        if len(self.circuit) > 0 and self.circuit[-1].name != "TICK":
+            self.circuit.append("TICK")
+
+        xs = [q for q, b in final_measurements.items() if b == 'X']
+        ys = [q for q, b in final_measurements.items() if b == 'Y']
+        zs = [q for q, b in final_measurements.items() if b == 'Z']
+
+        tag = "noiseless" if noiseless else ""
+
+        # Append gates (No manual noise here)
+        if xs: self.circuit.append("MX", xs, tag=tag)
+        if ys: self.circuit.append("MY", ys, tag=tag)
+        if zs: self.circuit.append("M", zs, tag=tag)
+
+        # Prepare Basis for Tracker (order matches circuit: X then Y then Z)
+        sorted_indices = xs + ys + zs
+        n = self.tracker.num_qubits
+        final_paulis = np.zeros((len(sorted_indices), 2 * n), dtype=np.uint8)
+
+        for i, q in enumerate(sorted_indices):
+            basis = final_measurements[q]
+            if basis == 'X':
+                final_paulis[i, q] = 1
+            elif basis == 'Y':
+                final_paulis[i, q] = 1
+                final_paulis[i, n + q] = 1
+            else:
+                final_paulis[i, n + q] = 1
+
+        # Call Tracker — or, for z_only, build DETECTORs/OBSERVABLEs manually
+        if self.if_detector:
+            if z_only:
+                syn_qubit_indices = self._z_only_syn_qubit_indices
+                no_detector_mask  = self._z_only_no_detector_mask
+                n_meas_per_round  = self._z_only_n_meas_per_round
+                x_anc_set = {q for q, masked in zip(syn_qubit_indices, no_detector_mask) if masked}
+
+                data_indices = sorted_indices  # already M'd above in Z basis
+                data_pos     = {q: i for i, q in enumerate(data_indices)}
+                n_data       = len(data_indices)
+                z_anc_pos    = {q: i for i, q in enumerate(syn_qubit_indices) if q not in x_anc_set}
+
+                for stab in self.system.active_stabilizers_z:
+                    recs = [stim.target_rec(-n_data + data_pos[q]) for q in stab['data_indices']]
+                    recs.append(stim.target_rec(-n_data - n_meas_per_round + z_anc_pos[stab['syn_idx']]))
+                    self.circuit.append("DETECTOR", recs)
+
+                # Delegate observable generation to the tracker so it handles
+                # periodic-boundary codes (e.g. toric) correctly. We snapshot
+                # the circuit length, let the tracker append both DETECTORs and
+                # OBSERVABLE_INCLUDEs, then keep only the OBSERVABLE_INCLUDEs.
+                n_before = len(self.circuit)
+                self.tracker.process_data_measurement(
+                    circuit=self.circuit,
+                    final_paulis=final_paulis,
+                    idx_to_coord_map=self.system.qubit_coords,
+                    syndrome_qubit_indices=self.system.syndrome_indices,
+                    resolve_absorbed=resolve_absorbed,
+                )
+                obs_insts = [
+                    inst for inst in list(self.circuit)[n_before:]
+                    if not isinstance(inst, stim.CircuitRepeatBlock)
+                    and inst.name == "OBSERVABLE_INCLUDE"
+                ]
+                self.circuit = self.circuit[:n_before]
+                for inst in obs_insts:
+                    self.circuit.append(inst.name, inst.targets_copy(), inst.gate_args_copy())
+            else:
+                self.tracker.process_data_measurement(
+                    circuit=self.circuit,
+                    final_paulis=final_paulis,
+                    idx_to_coord_map=self.system.qubit_coords,
+                    syndrome_qubit_indices=self.system.syndrome_indices,
+                    resolve_absorbed=resolve_absorbed,
+                )
+
+        # Remove measured qubits from active set (ready for reuse)
+        self.system.active_qubit_indices.difference_update(final_measurements.keys())
+
+    # --------------------------------------------------------------------------
+    # F. Final Build & Noise Injection
+    # --------------------------------------------------------------------------
+    def build_noisy_circuit(
+        self,
+        noise_params: NoiseConfig,
+        noise_model: str = 'circuit_level'
+    ) -> stim.Circuit:
+        """
+        Consumes the clean circuit and applies noise using the specified model strategy.
+
+        Args:
+            noise_params: Noise parameters (NoiseConfig).
+            noise_model: The name of the factory method in NoiseInjector to use.
+                         e.g., 'circuit_level' -> calls NoiseInjector.from_circuit_level(...)
+                         e.g., 'custom_test'   -> calls NoiseInjector.from_custom_test(...)
+        """
+        # 1. Construct the expected factory method name
+        method_name = f"from_{noise_model}"
+
+        # 2. Dynamically retrieve the method from the NoiseInjector class
+        if not hasattr(NoiseInjector, method_name):
+            # Fallback or nice error message showing available options
+            valid_methods = [m.replace("from_", "") for m in dir(NoiseInjector) if m.startswith("from_")]
+            raise ValueError(f"Unknown noise model '{noise_model}'. "
+                             f"Expected one of: {valid_methods}")
+
+        factory_method = getattr(NoiseInjector, method_name)
+
+        # 3. Inject noise
+        # Assumptions: All factory methods must accept (config, data_qubits)
+        data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
+        injector = factory_method(noise_params, data_indices)
+        noisy_circuit = injector.inject_noise(self.circuit)
+
+        return noisy_circuit
+
+    # --------------------------------------------------------------------------
+    # G. Helpers
+    # --------------------------------------------------------------------------
+    @staticmethod
+    def _get_initialization_tableau(qubit_indices_x: List[int], qubit_indices_z: List[int], qubit_indices_y: List[int], n: int):
+        """
+        Generates the tableau for the given qubit indices in X, Z, Y basis.
+        Args:
+            qubit_indices_x: List[int]
+            qubit_indices_z: List[int]
+            qubit_indices_y: List[int]
+            n: int
+        Returns:
+            initialized_tableau: np.ndarray
+        """
+        # 1. X Basis: (X=1, Z=0)
+        # Shape is (len, 2n). If len=0, it's safe.
+        t_x = np.zeros((len(qubit_indices_x), 2 * n), dtype=int)
+        if qubit_indices_x:
+            t_x[np.arange(len(qubit_indices_x)), qubit_indices_x] = 1
+
+        # 2. Z Basis: (X=0, Z=1)
+        t_z = np.zeros((len(qubit_indices_z), 2 * n), dtype=int)
+        if qubit_indices_z:
+            # Use list comprehension or numpy add to shift index by n
+            cols = [i + n for i in qubit_indices_z]
+            t_z[np.arange(len(qubit_indices_z)), cols] = 1
+
+        # 3. Y Basis: (X=1, Z=1) -> Critical Fix here
+        t_y = np.zeros((len(qubit_indices_y), 2 * n), dtype=int)
+        if qubit_indices_y:
+            # Set X part
+            t_y[np.arange(len(qubit_indices_y)), qubit_indices_y] = 1
+            # Set Z part (same row!)
+            cols_z = [i + n for i in qubit_indices_y]
+            t_y[np.arange(len(qubit_indices_y)), cols_z] = 1
+
+        # 4. Stack
+        # Since all sub-matrices have 2*n columns, vstack works even if some have 0 rows.
+        return np.vstack([t_x, t_z, t_y])
+
 
     def to_stim_circuit(self) -> stim.Circuit:
         return self.circuit

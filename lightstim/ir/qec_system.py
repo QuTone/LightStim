@@ -182,7 +182,8 @@ class QECSystem:
             name = f"patch_{len(self.patches)+ len(self.coupler_patches)}"
 
         n_old = self.next_index  # for define-by-run: new qubits will be n_old, n_old+1, ...
-        
+        n_log_old = self.num_logicals  # define-by-run: budget grows by THIS patch's logicals
+
         # 1. Store reference
         patch = copy.deepcopy(patch)
         patch.shift_coords(offset[0], offset[1])
@@ -322,12 +323,18 @@ class QECSystem:
                 if coord in self.index_map:
                     stabilizer['syn_idx'] = self.index_map[coord]
 
-        # Define-by-run: auto-expand tracker, sync expected_num_logicals, append QUBIT_COORDS for new qubits
+        # Define-by-run: auto-expand tracker, GROW the logical budget by exactly this
+        # patch's logicals, append QUBIT_COORDS for new qubits.
         if self._tracker is not None:
             n_new = self.num_qubits
             if n_new > self._tracker.num_qubits:
                 self._tracker.expand(n_new - self._tracker.num_qubits)
-            self._tracker.expected_num_logicals = self.num_logicals
+            # Increment, do NOT reset to self.num_logicals: a mid-sequence registration
+            # (after an earlier PPM already consumed logical DOF) must not clobber the
+            # reduced budget back up to the stale static total. For registration before
+            # any consumption this equals the old `expected := num_logicals` (they match
+            # then); a coupler adds 0 logicals, so it leaves the budget untouched.
+            self._tracker.expected_num_logicals += self.num_logicals - n_log_old
         if self._builder is not None and n_old < self.num_qubits:
             self._builder.append_coordinates_for_new_qubits(n_old)
 

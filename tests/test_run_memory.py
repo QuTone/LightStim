@@ -19,7 +19,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 RUNNER = REPO / "benchmarks" / "memory" / "run_memory.py"
-PYTHON = REPO / "venv" / "bin" / "python"
+PYTHON = Path(sys.executable)              # the running interpreter, not a hardcoded venv
 
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "benchmarks" / "memory"))
