@@ -628,6 +628,7 @@ class CircuitBuilder:
             or tracker.absorbed_ops.count
             or tracker.post_select_row_indices
             or self.circuit.num_observables > 0
+            or tracker.total_observables > 0
         ):
             return None
 
@@ -747,6 +748,10 @@ class CircuitBuilder:
             # Accumulation into ID 0 (the observable the terminal readout
             # allocates for this same logical) — the legal exception spelled
             # out in tracker.allocate_observable, not a second allocation.
+            # Sound only because the guard above refused compression when
+            # tracker.total_observables > 0: with no reservation ahead of
+            # it, the sole logical's terminal readout is guaranteed to
+            # allocate ID 0.
             repeated_round_body.append(
                 "OBSERVABLE_INCLUDE",
                 [stim.target_rec(offset) for offset in first_logical_delta],

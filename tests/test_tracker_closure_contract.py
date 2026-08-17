@@ -149,3 +149,81 @@ def test_terminal_observable_uses_the_central_allocator():
         f"got {obs_ids} - id 0 would mean circuit.num_observables leaked "
         f"back in as an allocation source")
     assert tracker.total_observables == 3
+
+
+def _build_bell_flagging_memory(reserved_ids: int, rounds: int = 5):
+    """Color-code Bell-flagging memory via the raw builder, with
+    `reserved_ids` observable IDs pre-reserved on the tracker before any
+    circuit is emitted (the review's compression-collision reproduction)."""
+    from lightstim.ir.builder import CircuitBuilder
+    from lightstim.ir.qec_system import QECSystem
+    from lightstim.ir.tracker import SyndromeTracker
+    from lightstim.qec_code.color_code import (
+        ColorCode, ColorCodeBellFlaggingBlock)
+
+    system = QECSystem()
+    system.add_patch(ColorCode(distance=3), name="memory")
+    num_qubits = len(system.qubit_coords)
+    tracker = SyndromeTracker(num_qubits=num_qubits,
+                              expected_num_logicals=system.num_logicals)
+    for expected in range(reserved_ids):
+        assert tracker.allocate_observable() == expected
+    builder = CircuitBuilder(tracker=tracker, system_config=system,
+                             if_detector=True)
+    builder.write_coordinates()
+    se_block = ColorCodeBellFlaggingBlock(system)
+    data_indices = [system.index_map[c] for c in system.data_coords]
+    data_basis = {q: "Z" for q in data_indices}
+    block_init = set(getattr(se_block, "data_qubits_initialized_by_block",
+                             ()))
+    builder.initialize(
+        init_dict={q: b for q, b in data_basis.items()
+                   if q not in block_init},
+        n=num_qubits)
+    system.active_qubit_indices.update(data_indices)
+    builder.apply_syndrome_extraction(
+        circuit_chunk=se_block.circuit,
+        rounds=rounds,
+        z_only=False,
+        measurement_blocks=getattr(se_block, "measurement_blocks", None),
+    )
+    builder.apply_data_readout(final_measurements=dict(data_basis),
+                               z_only=False)
+    return builder.circuit
+
+
+def test_steady_round_compression_respects_reserved_observables():
+    """Review round 3 merge blocker: _try_compress_steady_rounds guarded on
+    circuit.num_observables only, so with tracker IDs pre-reserved (and the
+    circuit still observable-free) the compressed body accumulated into the
+    hardcoded ID 0 — an already-reserved observable — while the terminal
+    readout correctly allocated ID 2.  No generated OBSERVABLE_INCLUDE may
+    target a reserved ID, and the built circuit must stay deterministic."""
+    circuit = _build_bell_flagging_memory(reserved_ids=2)
+
+    obs_ids = [int(i.gate_args_copy()[0]) for i in circuit.flattened()
+               if i.name == 'OBSERVABLE_INCLUDE']
+    assert obs_ids and all(i == 2 for i in obs_ids), (
+        f"OBSERVABLE_INCLUDE ids {sorted(set(obs_ids))}: contributions to a "
+        f"reserved ID silently fold a second logical result into someone "
+        f"else's observable (invisible to p=0 sampling)")
+
+    det, obs = circuit.compile_detector_sampler(seed=0).sample(
+        64, separate_observables=True)
+    assert not det.any(), "declined compression must stay deterministic"
+    assert not obs.any()
+
+
+def test_steady_round_compression_still_fires_without_reservations():
+    """The guard must not over-trigger: with no tracker-side reservations
+    the compression keeps firing (REPEAT block present) and every
+    OBSERVABLE_INCLUDE legally targets the sole logical's ID 0."""
+    import stim
+
+    circuit = _build_bell_flagging_memory(reserved_ids=0)
+    assert any(isinstance(i, stim.CircuitRepeatBlock) for i in circuit), (
+        "compression stopped firing for the reservation-free path — the "
+        "guard is broader than the review's minimal fix")
+    obs_ids = [int(i.gate_args_copy()[0]) for i in circuit.flattened()
+               if i.name == 'OBSERVABLE_INCLUDE']
+    assert obs_ids and all(i == 0 for i in obs_ids)
