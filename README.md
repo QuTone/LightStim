@@ -37,6 +37,7 @@ LightStim/
 │   ├── extend-new-decoder/     # Add a new decoder backend
 │   └── gotchas/                # Known pitfalls and debugging patterns
 ├── notebooks/                  # Jupyter notebooks by topic
+├── examples/                   # Executable cross-project integration examples
 ├── benchmarks/                 # Simulation scripts and paper artifacts
 ├── requirements.txt
 └── Dockerfile
@@ -142,6 +143,14 @@ print(f"LER: {stats.logical_error_rate:.3e} ± {stats.ler_error_bar():.3e}")
 | Repetition | `RepetitionCode` | Classical benchmark |
 
 All codes are in `lightstim/qec_code/`.
+
+### Integrate a logical compiler
+
+The [rotated-surface PPM integration example](examples/integrations/logical_compiler_rotated_surface_ppm/)
+maps a small caller-owned logical program to explicit LightStim patch
+placements and PPM steps, then emits the physical Stim circuit, detector error
+model, lowering summary, and PPM result records. It also includes sequential,
+weight-3, and 3x3 mixed-Pauli examples plus a visualization notebook.
 
 ## Interactive web UI (optional)
 

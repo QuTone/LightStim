@@ -1,6 +1,5 @@
 """Patch placement helpers for rotated-surface-code PPM lowering.
 
-Adapted from John Yuehan Zhang's CircLS repository at commit ``8802a5b``.
 This module describes physical rotated-surface-code placement only. Protocol
 sequence objects live in :mod:`lightstim.protocols.rotated_surface_ppm`.
 """

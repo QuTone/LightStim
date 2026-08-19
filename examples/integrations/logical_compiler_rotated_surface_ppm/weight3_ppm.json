@@ -1,0 +1,15 @@
+{
+  "patches": {
+    "q1": {"cell": [0, 0], "orientation": "X_horizontal"},
+    "q2": {"cell": [4, 0], "orientation": "X_horizontal"},
+    "q3": {"cell": [2, 1], "orientation": "X_vertical"}
+  },
+  "operations": [
+    {"prepare": {"q1": "Z", "q2": "Z", "q3": "Z"}},
+    {
+      "ppm": [["q1", "Z"], ["q2", "Z"], ["q3", "Z"]],
+      "route": [[1, 0], [2, 0], [3, 0]]
+    },
+    {"measure": {"q1": "Z", "q2": "Z", "q3": "Z"}}
+  ]
+}

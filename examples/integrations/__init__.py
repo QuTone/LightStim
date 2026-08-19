@@ -1,0 +1,1 @@
+"""Cross-project integration examples."""

@@ -1,0 +1,19 @@
+{
+  "patches": {
+    "A": {"cell": [0, 0], "orientation": "X_horizontal"},
+    "B": {"cell": [2, 0], "orientation": "X_horizontal"},
+    "C": {"cell": [4, 0], "orientation": "X_horizontal"}
+  },
+  "operations": [
+    {"prepare": {"A": "Z", "B": "Z", "C": "Z"}},
+    {
+      "ppm": [["A", "Z"], ["B", "Z"]],
+      "route": [[1, 0]]
+    },
+    {
+      "ppm": [["B", "Z"], ["C", "Z"]],
+      "route": [[3, 0]]
+    },
+    {"measure": {"A": "Z", "B": "Z", "C": "Z"}}
+  ]
+}

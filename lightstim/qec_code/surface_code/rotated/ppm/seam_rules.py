@@ -1,6 +1,5 @@
 """The four-row merge rule table as production code (single-seam Phase 1).
 
-Adapted from John Yuehan Zhang's CircLS repository at commit ``8802a5b``.
 Includes the Handbook Sec. 10.4 alternating-spacing end-cap rule in
 ``wall_spec``.
 
@@ -20,13 +19,13 @@ row   measured    types      seam construction
                              stretched stabilizer (corridor mechanism)
 ====  ==========  =========  =============================================
 
-VOCABULARY (the author's, non-negotiable): **textbook/conjugate = the weight-2
+VOCABULARY: **textbook/conjugate = the weight-2
 lobe POSITIONS** of a patch — colours never enter the type.  The red/blue
 **colours** (checkerboard phase) are a separate fact; ``rotate_90`` swaps
 colours and keeps positions, ``litinski`` moves positions and keeps colours.
 
-THE UNIFIED WALL LAW (machine-verified byte-identical to all four legacy
-hand specs at d = 3 and 5, both axes): the wall's dominoes, orient
+THE UNIFIED WALL LAW (machine-verified byte-identical to all four enumerated
+wall cases at d = 3 and 5, both axes): the wall's dominoes, orient
 alternation, relay side and end lobe are ONE closed form of (seam axis, the
 two patches' checkerboard phases, d, origin) — see ``_wall_checks``.  A
 domino's feet on each side carry that side's outward virtual-plaquette
@@ -284,9 +283,8 @@ def _wall_checks(d, phi_near, phi_far, x0, y0, axis, sgn_override=None):
     ``axis`` = 'horizontal' when the seam line runs horizontally (patches
     stacked, dominoes vertical) — matching :func:`_seam_axis`'s naming.
 
-    Byte-identical to the four legacy hand specs (same_type_wall_spec,
-    mirror_mixed_wall_spec, test_mixed_wall.wall_spec and its horizontal
-    twin) at d = 3 and 5.  Returns the legacy record list
+    Byte-identical to the four hand-specified wall cases at d = 3 and 5.
+    Returns records in the form
     [(B, {foot: Pauli}, {'flag': A, 'shared': S, 'orient': '+'|'-'})]."""
     # P maps (along, normal) -> (x, y); for a horizontal seam the normal is y
     P = (lambda a, n: (a, n)) if axis == 'horizontal' else (lambda a, n: (n, a))
