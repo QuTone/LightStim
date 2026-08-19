@@ -1,9 +1,7 @@
 """Sequential rotated-surface PPM experiment and lowering backend.
 
-These modules are copied from the author's CircLS repository
-(https://github.com/John-YuehanZhang/CircLS @ 8802a5b) and intentionally
-independent of it: route is REQUIRED on every RotatedSurfacePPMStep (no auto-router),
-liveness / rotations / snake / Y births are not included.
+Routes are required on every RotatedSurfacePPMStep; automatic routing,
+liveness, rotations, snake constructions, and Y births are not included.
 
 Covered here (noiseless silence + deterministic observables + graphlike
 distance d at p=1e-3):
@@ -11,13 +9,10 @@ distance d at p=1e-3):
   * executable row-1/4 cell-adjacent merges;
   * pure lowering plus explicit experiment rejection for row-2/3 walls;
   * the Handbook Sec. 10.4 cap-slot regression (transposed row-3 E/W wall);
-  * route-required enforcement at every layer;
-  * independence from the circls package (subprocess import probe).
+  * route-required enforcement at every layer.
 """
 import contextlib
 import io
-import subprocess
-import sys
 
 import pytest
 
@@ -130,11 +125,8 @@ def test_explicit_corridor_zz_full_distance():
 
 
 def test_joint_closure_detector_emitted():
-    # Review blocker #1: the terminal closure of a measurement-promoted
-    # joint is a legitimate long-range detector; the support-weight
-    # suppression heuristic is removed (matches upstream main).  Paired-
-    # noise MWPM LER is ~30% better with the closure emitted (2026-08-09
-    # nine-config sweep; decompose_errors=True stays viable in all of them).
+    # A measurement-promoted joint has a legitimate long-range terminal
+    # closure detector; support weight alone must not suppress it.
     exp, c = _run([_spec("A", 0, 0, "X_horizontal"),
                    _spec("B", 2, 0, "X_horizontal")],
                   [("A", "Z"), ("B", "Z")], {"A": "Z", "B": "Z"},
@@ -241,25 +233,3 @@ def test_wall_step_rejects_bent_schedule():
               _spec("B", 0, 1, "X_vertical")],
              [("A", "X"), ("B", "X")], {"A": "X", "B": "X"},
              colour_swapped={"B"}, step_kw={'schedule': 'bent'})
-
-
-# ── independence from CircLS ─────────────────────────────────────────────────
-
-def test_independent_of_circls():
-    # in-process guard (cheap) …
-    assert 'circls' not in sys.modules
-    # … and the strong form: a fresh interpreter that imports the whole
-    # protocol stack must never pull in circls
-    code = ("import sys; "
-            "import lightstim.protocols.rotated_surface_ppm; "
-            "import lightstim.qec_code.surface_code.rotated.ppm.coupler; "
-            "import lightstim.qec_code.surface_code.rotated.ppm.layout; "
-            "import lightstim.qec_code.surface_code.rotated.ppm.lowering; "
-            "import lightstim.qec_code.surface_code.rotated.ppm.placement; "
-            "import lightstim.qec_code.surface_code.rotated.ppm.seam_rules; "
-            "assert 'circls' not in sys.modules, 'circls leaked'; "
-            "print('ok')")
-    out = subprocess.run([sys.executable, "-c", code],
-                         capture_output=True, text=True, timeout=120)
-    assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == 'ok'

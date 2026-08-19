@@ -1,0 +1,45 @@
+{
+  "patches": {
+    "q00": {"cell": [0, 0], "orientation": "X_horizontal"},
+    "q01": {"cell": [2, 0], "orientation": "X_horizontal"},
+    "q02": {"cell": [4, 0], "orientation": "X_horizontal"},
+    "q10": {"cell": [0, 2], "orientation": "X_horizontal"},
+    "q11": {"cell": [2, 2], "orientation": "X_horizontal"},
+    "q12": {"cell": [4, 2], "orientation": "X_horizontal"},
+    "q20": {
+      "cell": [0, 4],
+      "orientation": "X_horizontal",
+      "stabilizer_frame": "conjugate"
+    },
+    "q21": {"cell": [2, 4], "orientation": "X_horizontal"},
+    "q22": {"cell": [4, 4], "orientation": "X_horizontal"}
+  },
+  "operations": [
+    {
+      "prepare": {
+        "q00": "Z", "q01": "X", "q02": "Z",
+        "q10": "Z", "q11": "X", "q12": "X",
+        "q20": "Z", "q21": "Z", "q22": "X"
+      }
+    },
+    {
+      "ppm": [["q00", "Z"], ["q02", "Z"]],
+      "route": [[1, 0], [1, -1], [2, -1], [3, -1], [3, 0]]
+    },
+    {
+      "ppm": [["q01", "X"], ["q12", "X"]],
+      "route": [[2, 1], [3, 1], [4, 1]]
+    },
+    {
+      "ppm": [["q11", "X"], ["q20", "Z"], ["q22", "X"]],
+      "route": [[0, 3], [1, 3], [2, 3], [3, 3], [4, 3]]
+    },
+    {
+      "measure": {
+        "q00": "Z", "q01": "X", "q02": "Z",
+        "q10": "Z", "q11": "X", "q12": "X",
+        "q20": "Z", "q21": "Z", "q22": "X"
+      }
+    }
+  ]
+}

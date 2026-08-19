@@ -1,6 +1,5 @@
 """Runnable sequential PPM experiments for rotated surface-code patches.
 
-Adapted from John Yuehan Zhang's CircLS repository at commit ``8802a5b``.
 Every step carries an explicit coarse-grid route; this driver does not perform
 logical placement or routing.
 

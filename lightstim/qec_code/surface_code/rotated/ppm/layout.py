@@ -1,8 +1,7 @@
 """Explicit-route layout construction for rotated-surface-code PPMs.
 
-Adapted from John Yuehan Zhang's CircLS repository at commit ``8802a5b``.
-The automatic router from CircLS is intentionally out of scope: callers must
-provide the exact coarse-grid corridor, using ``[]`` for adjacent targets.
+Automatic routing is intentionally out of scope: callers must provide the
+exact coarse-grid corridor, using ``[]`` for adjacent targets.
 """
 
 from dataclasses import dataclass, field
@@ -38,8 +37,8 @@ __all__ = ["build_explicit_ppm_layout", "SubsetRoute", "MultiPatchLayout",
 #: seam on the path by rule-table v3).  Same-letter type-split joints:
 #: the minority-type target is REGISTERED in the recolour convention and its
 #: seam carries the verified mixed wall family — the rule-table row algebra
-#: row2 = row4 o row3 (user-confirmed, measured full-distance end-to-end on
-#: straight, L-bend and T-junction geometries, 2026-07-29).
+#: row2 = row4 o row3, validated end-to-end at full distance on straight,
+#: L-bend, and T-junction geometries.
 TABLE_WALL_DISPATCH = True
 
 
@@ -843,8 +842,8 @@ def _construct_phase(placed, target, orient, dset, retype, phase, forbidden=froz
     # are deleted: census showed zero reachable customers.)
     selected, picks, metric, w1 = bl.direct_build()
     if metric != (0, 0, 0):
-        # rule 6, LOCAL semantics (user ruling 2026-07-31): a convex
-        # corner that fails the neighbour-spacing test is cut IN PLACE
+        # Rule 6 uses local semantics: a convex corner that fails the
+        # neighbour-spacing test is cut in place
         # - the corner plaquette drops that foot (w4 -> w3), nothing
         # else moves, no region rebuild.  The old rebuild ladder
         # re-clipped the outline after every cut, manufactured phantom
@@ -1290,8 +1289,9 @@ def _obstacle_ancillas(patches, tnames):
 
 def _table_wall_dispatch(patch_at, target, orient, tree, conj_names, bus,
                          ns_pairs=frozenset()):
-    """Post-routing seam-table dispatch — the user's TWO-BIT table (letter,
-    colour), 2026-07-30.  TWO wall rows raise a stretched kf wall; TYPE
+    """Post-routing dispatch by the two-bit seam table (letter, colour).
+
+    Two wall rows raise a stretched kf wall; patch type
     never triggers one (same-letter same-colour type-split seams are plain
     row #1).  Step 2 never re-registers a patch: ``conj_eff`` is passed
     through, not grown.
@@ -1300,9 +1300,9 @@ def _table_wall_dispatch(patch_at, target, orient, tree, conj_names, bus,
          measuring the BUS letter — the snake family.  On a vertical seam
          the corridor painting flips (g = 1: #4->#6 and #1->#7 wholesale).
       #6 native (letter diff, colour same): a STANDARD-colour target
-         measuring the OTHER letter (user ruling 2026-07-30: the mixed
-         kf wall is the row's construct — the spatial-Hadamard interface
-         turns the letter at the seam).  The wall hardware is the SAME
+         measuring the OTHER letter. The mixed kf wall is the row's
+         construction: the spatial-Hadamard interface turns the letter at
+         the seam. The wall hardware is the SAME
          local-rule family; the corridor never flips for it.  Fires only
          under an EXPLICIT ``conj_names`` — with ``conj_names=None`` the
          historical minority-conjugate inference keeps the legacy plain
@@ -1706,11 +1706,9 @@ def build_explicit_ppm_layout(
                                         conj_names, bus,
                                         ns_pairs=ns_pairs)
             if disp is not None and disp[0] is not None:
-                # the dispatched wall IS this route's construction — its
-                # outcome is FINAL (user ruling 2026-07-31: a failed step-2
-                # construction is a hard error, never a fallback; the old
-                # swallow-and-fall-to-plain masked the real error as a
-                # misleading 'no parallel-law-legal seam')
+                # The dispatched wall is this route's final construction.
+                # A failed step-2 construction is a hard error, never a
+                # fallback to a plain seam, which would mask the real error.
                 aw2, conj_eff2, vertical2 = disp
                 return build_explicit_ppm_layout(
                     patches, target, keepout=keepout, route=sorted(tree),

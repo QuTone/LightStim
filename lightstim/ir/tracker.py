@@ -1769,9 +1769,8 @@ class SyndromeTracker:
             # 3. Output:
             if k < num_stabs and k not in self.stabilizer_with_logical_components:
                 # Measurement-promoted joint closures (support > check weight)
-                # are emitted like every other row, matching upstream main:
-                # the long-range parity is real syndrome information (paired-
-                # noise MWPM LER is ~30% better with it; review blocker #1).
+                # are emitted like every other row because their long-range
+                # parity is real syndrome information.
                 if -1 in full_records[k]:
                     # An UNWATCHED gauge direction's close-out (sentinel-
                     # tagged row = WriteBack's no-slot gauge branch).  Its
@@ -1781,7 +1780,7 @@ class SyndromeTracker:
                     # error along the string is already a 2-symptom event
                     # on neighbouring checks, and this global parity would
                     # attach an extra, irreducible symptom to every one of
-                    # them.  Same user ruling as above.
+                    # them. The same gauge-branch rule applies here.
                     continue
                 _used_final_coords.add(det_coord)
                 coords = list(det_coord) + [1]

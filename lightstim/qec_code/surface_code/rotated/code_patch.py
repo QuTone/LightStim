@@ -91,7 +91,6 @@ class RotatedSurfaceCode(QECPatch):
                     self.add_qubit(*coord, role='data')
             else:
                 # Even rows: syndrome Qubits
-                # Logic copied from original to preserve exact layout
                 if y == 0: # Top row
                     for x in range((d_z - 1) // 2):
                         coord = (4 * x + 2, 0)

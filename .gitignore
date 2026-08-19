@@ -57,6 +57,7 @@ Thumbs.db
 *.csv
 *.json
 !requirements.txt
+!examples/**/*.json
 
 # Canonical reference data committed by authors
 # (reviewers compare their local results/ run against these)
