@@ -43,6 +43,16 @@ class TestMemory:
         c = self._run(RotatedSurfaceCode(distance=3), RotatedSurfaceCodeExtractionBlock, basis)
         assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
 
+    def test_rotated_surface_code_with_data_defect(self):
+        from lightstim.protocols.rotated_surface_defect import (
+            RotatedSurfaceDefectMemoryExperiment,
+        )
+
+        c = build_quiet(
+            RotatedSurfaceDefectMemoryExperiment(distance=3).build
+        )
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
     @pytest.mark.parametrize("basis", ["Z", "X"])
     def test_unrotated_surface_code(self, basis):
         from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock

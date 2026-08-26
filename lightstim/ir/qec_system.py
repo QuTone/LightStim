@@ -1,5 +1,5 @@
 import stim
-from typing import Dict, List, Tuple, Set, Any, Optional
+from typing import Dict, List, Tuple, Set, Any, Optional, Iterable
 from dataclasses import dataclass
 from lightstim.ir.qec_patch import QECPatch
 import copy
@@ -56,6 +56,10 @@ class QECSystem:
         # Dormant qubits (measured, not yet re-initialized) can be reused by new couplers.
         self.active_qubit_indices: Set[int] = set()
 
+        # Data qubits removed from the effective code geometry after a defect
+        # event. Canonical patch and stabilizer records remain unchanged.
+        self.disabled_data_qubit_indices: Set[int] = set()
+
         # Owner Map: (x, y) -> patch_name, Determine the owner of the qubit.
         # Used for collision detection and debugging
         self.coord_to_owner_map: Dict[Tuple[float, float], str] = {}
@@ -97,15 +101,79 @@ class QECSystem:
     
     @property
     def active_stabilizers(self) -> List[Dict[str, Any]]:
-        return [self.stabilizers[idx] for idx in sorted(self.active_stabilizer_indices)]
+        return [
+            self.effective_stabilizer(idx)
+            for idx in sorted(self.active_stabilizer_indices)
+        ]
     
-    @ property
+    @property
     def active_stabilizers_x(self) -> List[Dict[str, Any]]:
-        return [self.stabilizers[idx] for idx in sorted(self.active_stabilizer_indices) if self.stabilizers[idx].get('type') == 'X']
+        return [
+            self.effective_stabilizer(idx)
+            for idx in sorted(self.active_stabilizer_indices)
+            if self.stabilizers[idx].get('type') == 'X'
+        ]
     
-    @ property
+    @property
     def active_stabilizers_z(self) -> List[Dict[str, Any]]:
-        return [self.stabilizers[idx] for idx in sorted(self.active_stabilizer_indices) if self.stabilizers[idx].get('type') == 'Z']
+        return [
+            self.effective_stabilizer(idx)
+            for idx in sorted(self.active_stabilizer_indices)
+            if self.stabilizers[idx].get('type') == 'Z'
+        ]
+
+    def effective_stabilizer(self, uid: int) -> Dict[str, Any]:
+        """Return a stabilizer with disabled data qubits removed from support.
+
+        The stored stabilizer is returned directly when no projection is
+        needed. Otherwise a shallow copy is returned, preserving the
+        canonical patch definition in ``self.stabilizers``.
+        """
+        stabilizer = self.stabilizers[uid]
+        disabled = self.disabled_data_qubit_indices.intersection(
+            stabilizer.get('data_indices', ())
+        )
+        if not disabled:
+            return stabilizer
+
+        effective = stabilizer.copy()
+        effective['data_indices'] = [
+            qubit
+            for qubit in stabilizer.get('data_indices', ())
+            if qubit not in disabled
+        ]
+        effective['pauli'] = {
+            qubit: pauli
+            for qubit, pauli in stabilizer.get('pauli', {}).items()
+            if qubit not in disabled
+        }
+        return effective
+
+    def disable_data_qubits(self, qubits: Iterable[int]) -> Set[int]:
+        """Remove data qubits from subsequent effective check supports.
+
+        This is a system-local geometry update. It does not mutate the
+        canonical stabilizer records imported from a patch.
+
+        Returns:
+            Stabilizer UIDs whose support intersects the disabled qubits.
+        """
+        qubits = set(qubits)
+        unknown = qubits - self.data_indices
+        if unknown:
+            raise ValueError(
+                "Only registered data qubits can be disabled; got "
+                f"{sorted(unknown)}."
+            )
+
+        affected = {
+            uid
+            for uid, stabilizer in enumerate(self.stabilizers)
+            if qubits.intersection(stabilizer.get('data_indices', ()))
+        }
+        self.disabled_data_qubit_indices.update(qubits)
+        self.active_qubit_indices.difference_update(qubits)
+        return affected
 
     @property
     def active_syndrome_indices(self) -> List[int]:

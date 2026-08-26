@@ -54,6 +54,13 @@ class NoiseInjector:
                 noisy_circuit.append(item)
                 for inst in post_accum: noisy_circuit.append(inst)
 
+                # A destructive measurement ends the qubit's active lifetime.
+                # Measure-reset gates intentionally remain active.
+                if item.name in {"M", "MX", "MY", "MZ"}:
+                    for target in item.targets_copy():
+                        if target.is_qubit_target:
+                            active_qubits.discard(target.value)
+
                 # Concern about the order of rules applying to the same instruction, generating different noise sequences.
                 # Since we only consider Pauli error, changing the order of the noise sequence only potentially brings a -1 global phase,
                 # which is not physically observable.

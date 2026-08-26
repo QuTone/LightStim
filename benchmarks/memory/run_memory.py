@@ -7,7 +7,7 @@ Results are saved to CSV with per-task checkpointing (append-on-complete).
 Supported codes
 ---------------
 Topological (require --distances):
-    rotated_sc, unrotated_sc, toric, color, xzzx_sc
+    rotated_sc, rotated_sc_defect, unrotated_sc, toric, color, xzzx_sc
 BB codes (distance fixed by code, --distances ignored):
     bb_72_12_6, bb_108_8_10, bb_144_12_12, bb_288_12_18
 HGP codes (distance fixed by code, --distances ignored):
@@ -73,6 +73,9 @@ sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # repo root → lightstim import
 from lightstim.ir.qec_system import QECSystem
 from lightstim.noise.config import NoiseConfig
 from lightstim.protocols.memory import MemoryExperiment
+from lightstim.protocols.rotated_surface_defect import (
+    RotatedSurfaceDefectMemoryExperiment,
+)
 from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
 from lightstim.qec_code.HGP import (
     HGPProductColorationExtractionBlock,
@@ -128,7 +131,14 @@ _HGP_CONFIGS = {
     },
 }
 
-_TOPO_CODES = {"rotated_sc", "unrotated_sc", "toric", "color", "xzzx_sc"}
+_TOPO_CODES = {
+    "rotated_sc",
+    "rotated_sc_defect",
+    "unrotated_sc",
+    "toric",
+    "color",
+    "xzzx_sc",
+}
 _BB_CODES   = set(_BB_CONFIGS)
 _HGP_CODES  = set(_HGP_CONFIGS)
 ALL_CODES   = sorted(_TOPO_CODES | _BB_CODES | _HGP_CODES)
@@ -180,7 +190,7 @@ def _color_se_spec(se_circuit: str | None) -> ColorSECircuitSpec:
 
 
 def _make_code(code_name: str, distance: int, se_circuit: str | None = None):
-    if code_name == "rotated_sc":
+    if code_name in {"rotated_sc", "rotated_sc_defect"}:
         return RotatedSurfaceCode(distance=distance), RotatedSurfaceCodeExtractionBlock
     if code_name == "unrotated_sc":
         return UnrotatedSurfaceCode(distance=distance), UnrotatedSurfaceCodeExtractionBlock
@@ -273,7 +283,15 @@ def build_circuit(
     r = rounds if rounds is not None else distance
 
     with contextlib.redirect_stdout(io.StringIO()):
-        if code_name == "color":
+        if code_name == "rotated_sc_defect":
+            exp = RotatedSurfaceDefectMemoryExperiment(
+                distance=distance,
+                memory_basis=basis,
+                pre_defect_rounds=r,
+                noise_params=noise,
+                noise_model=noise_model,
+            )
+        elif code_name == "color":
             spec = _color_se_spec(se_circuit)
             if basis not in spec.supported_bases:
                 supported = ", ".join(sorted(spec.supported_bases))
@@ -432,6 +450,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
             color_spec = _color_se_spec(task["se_circuit"])
             layout = color_spec.layout
             block_class = color_spec.block_class.__name__
+        elif task["code"] == "rotated_sc_defect":
+            layout = "center_data_defect"
+            block_class = RotatedSurfaceDefectMemoryExperiment.__name__
         elif task["code"] in _HGP_CODES:
             layout = "canonical_interleaved_product"
             block_class = HGPProductColorationExtractionBlock.__name__
@@ -568,6 +589,8 @@ def main():
             se_circuits = args.color_se_circuits
         elif code in _HGP_CONFIGS:
             se_circuits = [_HGP_CONFIGS[code]["se_circuit"]]
+        elif code == "rotated_sc_defect":
+            se_circuits = ["alternating_defect_gauges"]
         else:
             se_circuits = ["default"]
         for d in distances:
