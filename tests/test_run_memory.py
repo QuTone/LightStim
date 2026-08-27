@@ -74,6 +74,7 @@ def _has_mwpf() -> bool:
 
 @pytest.mark.parametrize("code,dist", [
     ("rotated_sc",   3),
+    ("rotated_sc_defect", 3),
     ("unrotated_sc", 3),
     ("toric",        3),
     ("color",        3),
@@ -147,6 +148,21 @@ def test_build_circuit_xzzx_gets_checkerboard_basis():
     circuit, *_ = build_circuit("xzzx_sc", 3, p=1e-2)
     assert circuit.num_detectors == 24
     assert len(circuit.shortest_graphlike_error()) == 3
+
+
+def test_build_circuit_rotated_defect_is_pymatching_compatible():
+    circuit, n_data, n_total, k = build_circuit(
+        "rotated_sc_defect",
+        3,
+        p=1e-3,
+        se_circuit="alternating_defect_gauges",
+    )
+
+    assert n_data == 9
+    assert n_total == 17
+    assert k == 1
+    circuit.detector_error_model(decompose_errors=True)
+    assert len(circuit.shortest_graphlike_error()) == 2
 
 
 @pytest.mark.parametrize("noise_model", ["circuit_level", "phenomenological", "code_capacity"])

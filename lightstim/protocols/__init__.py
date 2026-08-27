@@ -14,6 +14,10 @@ from .rotated_surface_ppm import (
     RotatedSurfacePPMStep,
     UnsupportedPPMExperimentError,
 )
+from .rotated_surface_defect import (
+    DataQubitDefect,
+    RotatedSurfaceDefectMemoryExperiment,
+)
 from .tg_distillation import (
     build_distillation_circuit as build_tg_distillation_circuit,
     inject_noise as inject_tg_noise,

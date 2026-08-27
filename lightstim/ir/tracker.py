@@ -329,9 +329,16 @@ class SyndromeTracker:
         self._reject_pending_row_metadata("stabilizer_canonicalization")
         n = self.num_qubits
         if stabilizer_uids is not None:
-            stab_dicts = [system.stabilizers[i] for i in range(len(system.stabilizers)) if i in stabilizer_uids]
+            stab_dicts = [
+                system.effective_stabilizer(i)
+                for i in range(len(system.stabilizers))
+                if i in stabilizer_uids
+            ]
         else:
-            stab_dicts = [system.stabilizers[i] for i in sorted(system.active_stabilizer_indices)]
+            stab_dicts = [
+                system.effective_stabilizer(i)
+                for i in sorted(system.active_stabilizer_indices)
+            ]
         canonical_basis = stabilizers_to_symplectic(system, stab_dicts, n)
 
         if canonical_basis.shape[0] == 0:
@@ -1425,7 +1432,7 @@ class SyndromeTracker:
         if stabilizer_uids is None:
             stabilizer_uids = set(system.active_stabilizer_indices)
         stab_dicts = [
-            system.stabilizers[uid]
+            system.effective_stabilizer(uid)
             for uid in sorted(stabilizer_uids)
         ]
         canonical_basis = stabilizers_to_symplectic(system, stab_dicts, n)

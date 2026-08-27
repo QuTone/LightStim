@@ -57,6 +57,7 @@ They compare LER vs PER and show distance scaling for each code family.
 | Notebook | Code family |
 |---|---|
 | `memory_surface_family.ipynb` | Rotated SC, unrotated SC, toric code |
+| `defective_surface_code.ipynb` | Rotated SC with a mid-circuit data-qubit defect and alternating gauge checks |
 | `memory_xzzx.ipynb` | Rotated XZZX surface code |
 | `memory_HGP.ipynb` | HGP codes ([[13,1,3]], [[18,2,3]], [[225,9,4]]) |
 | `memory_BB.ipynb` | Bivariate Bicycle codes ([[72,12,6]] … [[288,12,18]]) |

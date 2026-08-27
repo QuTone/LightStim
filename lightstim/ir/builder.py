@@ -1136,6 +1136,85 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # E. Data Qubit Measurement
     # --------------------------------------------------------------------------
+    def apply_mid_data_readout(
+        self,
+        measurements: Dict[int, str],
+        *,
+        noiseless: bool = False,
+    ) -> None:
+        """Measure retained data qubits without closing the experiment.
+
+        Unlike :meth:`apply_data_readout`, this method updates the tracker and
+        leaves all surviving state available for later syndrome-extraction
+        rounds. The current measurement engine supports X- and Z-basis
+        retained-data readout. Measured qubits leave the active lifetime, but
+        stabilizer support is unchanged until the system geometry is updated.
+
+        Args:
+            measurements: Data-qubit index to measurement basis (``X`` or
+                ``Z``).
+            noiseless: Tag the physical measurements so noise injection skips
+                them.
+        """
+        if not measurements:
+            raise ValueError("measurements must not be empty.")
+
+        normalized = {
+            qubit: str(basis).upper()
+            for qubit, basis in measurements.items()
+        }
+        bad_bases = sorted(set(normalized.values()) - {"X", "Z"})
+        if bad_bases:
+            raise ValueError(
+                "Mid-circuit data readout supports only X and Z bases; got "
+                f"{bad_bases}."
+            )
+        non_data = set(normalized) - set(self.system.data_indices)
+        if non_data:
+            raise ValueError(
+                "Mid-circuit data readout requires registered data qubits; got "
+                f"{sorted(non_data)}."
+            )
+        inactive = set(normalized) - set(self.system.active_qubit_indices)
+        if inactive:
+            raise ValueError(
+                "Mid-circuit data readout requires active qubits; got inactive "
+                f"indices {sorted(inactive)}."
+            )
+
+        if len(self.circuit) > 0 and self.circuit[-1].name != "TICK":
+            self.circuit.append("TICK")
+
+        block = stim.Circuit()
+        tag = "noiseless" if noiseless else ""
+        x_qubits = sorted(
+            qubit for qubit, basis in normalized.items() if basis == "X"
+        )
+        z_qubits = sorted(
+            qubit for qubit, basis in normalized.items() if basis == "Z"
+        )
+        if x_qubits:
+            block.append("MX", x_qubits, tag=tag)
+        if z_qubits:
+            block.append("M", z_qubits, tag=tag)
+
+        if self.if_detector:
+            analysis = self._analyze_measurement_block(block, z_only=False)
+            if analysis.discarded_measurement_qubit_indices:
+                raise ValueError(
+                    "Mid-circuit data readout cannot discard syndrome ancillas."
+                )
+            self._process_measurement_blocks(
+                output_circuit=self.circuit,
+                analyses=(analysis,),
+                shift_round=True,
+            )
+        else:
+            self.circuit += block
+            self.circuit.append("SHIFT_COORDS", [], [0, 0, 1])
+
+        self.system.active_qubit_indices.difference_update(normalized)
+
     def apply_data_readout(self, final_measurements: Dict[int, str] = None, noiseless: bool = False,
                            z_only: bool = False, resolve_absorbed: bool = True):
         """

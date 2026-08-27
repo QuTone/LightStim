@@ -23,6 +23,7 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | Code | `--codes` name | Requires `--distances` |
 |------|---------------|----------------------|
 | Rotated Surface Code | `rotated_sc` | yes |
+| Rotated Surface Code with center data defect | `rotated_sc_defect` | yes |
 | Unrotated Surface Code | `unrotated_sc` | yes |
 | Toric Code | `toric` | yes |
 | Color Code (6-6-6) | `color` | yes |
@@ -95,6 +96,21 @@ Use `--decoder gpu_bposd --num-workers 1` for the GPU backend. The runner
 always uses exactly one worker for GPU decoding.
 
 ## Common Use Cases
+
+### Rotated surface code with a center data defect
+
+This target runs `d` pre-defect rounds, measures and disables the center data
+qubit, then runs `d` rounds alternating the affected Z and X gauge checks.
+Unaffected checks remain active throughout. Both Z- and X-memory experiments
+are supported.
+
+```bash
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes rotated_sc_defect \
+    --distances 3 5 7 \
+    --p-values 1e-3 2e-3 5e-3 \
+    --basis Z --decoder pymatching --num-workers 8
+```
 
 ### Surface code family comparison
 ```bash
