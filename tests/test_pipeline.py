@@ -80,7 +80,7 @@ def test_pipeline_two_patch_ls():
 
 @pytest.mark.smoke
 def test_pipeline_noise_models():
-    """Code-capacity and phenomenological models produce valid LER."""
+    """Non-default built-in noise models produce valid LER."""
     from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode, RotatedSurfaceCodeExtractionBlock
     from lightstim.ir.qec_system import QECSystem
     from lightstim.ir.tracker import SyndromeTracker
@@ -89,6 +89,16 @@ def test_pipeline_noise_models():
     for nm, noise in [
         ("code_capacity",    NoiseConfig(p_idle=0.05)),
         ("phenomenological", NoiseConfig(p_idle=0.05, p_meas=0.05)),
+        (
+            "uniform_circuit_level",
+            NoiseConfig(
+                p_1q=0.05,
+                p_2q=0.05,
+                p_meas=0.05,
+                p_reset=0.05,
+                p_idle=0.05,
+            ),
+        ),
     ]:
         system = QECSystem()
         system.add_patch(RotatedSurfaceCode(distance=3), name="main")

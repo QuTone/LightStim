@@ -6,7 +6,7 @@ LightStim is a modular Quantum Error Correction (QEC) framework built on [Stim](
 
 - Build QEC experiments from reusable abstractions (`QECPatch`, `QECSystem`, `CircuitBuilder`, `SyndromeTracker`)
 - Support multi-patch workflows (transversal gates, lattice surgery, state injection)
-- Inject standardized noise models (`code_capacity`, `phenomenological`, `circuit_level`, `XZ_biased`)
+- Inject standardized noise models (`code_capacity`, `phenomenological`, `circuit_level`, `uniform_circuit_level`, `XZ_biased`)
 - Decode with a unified backend (PyMatching, BP+OSD CPU/GPU, MWPF, Relay-BP, Tesseract)
 - Analyze and visualize logical error rates
 - Inspect circuits interactively in a browser (DEM 3D, Circuit Timeline, DetSlice animator)
