@@ -288,7 +288,7 @@ builder.logical_canonicalization(canonical_logicals)
 ```python
 noisy_circuit = builder.build_noisy_circuit(
     noise_params,        # NoiseConfig
-    noise_model,         # str — includes 'circuit_level' and 'uniform_circuit_level'
+    noise_model,         # str — includes 'circuit_level' and 'circuit_level_with_idling'
 )
 # Returns a new stim.Circuit with noise channels injected.
 # Does NOT modify builder.circuit in place.

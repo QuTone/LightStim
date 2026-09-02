@@ -12,7 +12,7 @@ from .rules import (
     FlipAfterResetFiltered,
     FlipAfterYResetFiltered,
     TaggedIdling,
-    UniformIdling,
+    MomentIdling,
 )
 
 
@@ -50,7 +50,7 @@ class NoiseInjector:
     def _moment_has_physical_operation(
         moment: List[stim.CircuitInstruction],
     ) -> bool:
-        return any(UniformIdling._operated_qubits(item) for item in moment)
+        return any(MomentIdling._operated_qubits(item) for item in moment)
 
     @classmethod
     def _repeat_boundary_shape(
@@ -63,7 +63,7 @@ class NoiseInjector:
         for index, item in enumerate(body):
             if isinstance(item, stim.CircuitRepeatBlock):
                 raise _UnsupportedMomentRepeat(
-                    "Uniform moment noise does not support nested REPEAT blocks"
+                    "Moment-aware idle noise does not support nested REPEAT blocks"
                 )
             if index == 0 and item.name == "TICK":
                 leading_tick = item
@@ -135,7 +135,7 @@ class NoiseInjector:
                     )
                 if leading_tick is None and has_physical_prefix:
                     raise _UnsupportedMomentRepeat(
-                        "Uniform moment noise requires a TICK between operations "
+                        "Moment-aware idle noise requires a TICK between operations "
                         "and a following REPEAT block"
                     )
                 if leading_tick is not None and not has_physical_suffix:
@@ -281,7 +281,7 @@ class NoiseInjector:
         return injector
 
     @classmethod
-    def from_uniform_circuit_level(
+    def from_circuit_level_with_idling(
         cls,
         config: NoiseConfig,
         qubit_indices: List[int],
@@ -295,17 +295,16 @@ class NoiseInjector:
         operations are left noiseless.
 
         Unlike :meth:`from_circuit_level`, this model does not add the older
-        ``SE_start``-tagged data-idle channel. ``uniform`` describes idle
-        coverage; the five rates remain independently configurable. Repeat
-        layouts whose moments cross iteration boundaries are flattened to
-        preserve exact semantics.
+        ``SE_start``-tagged data-idle channel. The five rates remain
+        independently configurable. Repeat layouts whose moments cross
+        iteration boundaries are flattened to preserve exact semantics.
         """
         injector = cls(config)
         # Keep p_idle=0 a strict drop-in replacement for the historical
         # circuit-level gate/SPAM rules. In particular, repeat blocks remain
         # compressed and do not need moment-boundary analysis in this case.
         if config.get("p_idle") > 0:
-            injector.add_moment_rule(UniformIdling(
+            injector.add_moment_rule(MomentIdling(
                 target_qubits=qubit_indices,
                 param_name="p_idle",
             ))

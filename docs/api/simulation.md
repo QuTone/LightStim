@@ -224,20 +224,20 @@ noise = NoiseConfig(
 ```
 
 Pass to `builder.build_noisy_circuit(noise, noise_model)` where `noise_model` is one of:
-`'circuit_level'`, `'uniform_circuit_level'`, `'phenomenological'`,
+`'circuit_level'`, `'circuit_level_with_idling'`, `'phenomenological'`,
 `'code_capacity'`, `'XZ_biased'`.
 
 `circuit_level` preserves LightStim's historical convention: `p_idle` is
 applied to active data qubits at each `TICK[SE_start]`. Use
-`uniform_circuit_level` when every `TICK`-delimited moment should apply
+`circuit_level_with_idling` when every `TICK`-delimited moment should apply
 `p_idle` to the complement of that moment's operated qubits. Empty, reset-only,
 and measurement-only moments count; a non-empty final moment without a trailing
 `TICK` also counts. Moments whose physical operations are all tagged
 `noiseless` do not. `TICK[noiseless]` suppresses an otherwise empty moment;
 it does not hide untagged physical operations in a mixed moment.
 
-Here, *uniform* describes idle-noise coverage, not equal error rates. To use
-the common paper convention with one physical error probability, explicitly
+The five error rates remain independently configurable. To use the common
+paper convention with one physical error probability, explicitly
 set `p_1q = p_2q = p_meas = p_reset = p_idle = p`. Gate and SPAM placement
 otherwise remains the same as LightStim's existing `circuit_level` model.
 
