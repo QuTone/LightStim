@@ -1,6 +1,6 @@
 import stim
 from abc import ABC, abstractmethod
-from typing import List, Tuple, Dict, Set
+from typing import Iterable, List, Optional, Tuple, Dict, Set
 from .config import NoiseConfig
 
 class NoiseRule(ABC):
@@ -16,6 +16,20 @@ class NoiseRule(ABC):
         - pre_noise: Instructions to insert BEFORE the target.
         - post_noise: Instructions to insert AFTER the target.
         """
+        pass
+
+
+class MomentNoiseRule(ABC):
+    """Base class for noise that depends on a complete TICK-delimited moment."""
+
+    @abstractmethod
+    def apply(
+        self,
+        instructions: List[stim.CircuitInstruction],
+        config: NoiseConfig,
+        boundary: Optional[stim.CircuitInstruction],
+    ) -> List[stim.CircuitInstruction]:
+        """Return noise at a moment end or before its TICK ``boundary``."""
         pass
 
 # --- Implementation ---
@@ -317,3 +331,89 @@ class TaggedIdling(NoiseRule):
                     return [], [noise]
                 
         return [], []
+
+
+class UniformIdling(MomentNoiseRule):
+    """Depolarize every target qubit not operated on during a circuit moment.
+
+    A moment is the group of instructions between two ``TICK`` instructions.
+    Initialization, measurement, and unitary operations all make a moment take
+    time. An idle channel is added once at each ``TICK`` boundary, including
+    for an empty moment, and after a non-empty final moment without a trailing
+    TICK. An entirely ``noiseless``-tagged moment remains noiseless; a
+    ``TICK[noiseless]`` suppresses an otherwise empty moment.
+
+    Eligibility comes from an explicit, static qubit universe instead of the
+    injecter's active-qubit heuristic.  This matters for circuits that measure
+    a qubit and later reuse its collapsed state without resetting it.
+    """
+
+    def __init__(
+        self,
+        target_qubits: Iterable[int],
+        param_name: str = "p_idle",
+        noise_op: str = "DEPOLARIZE1",
+    ):
+        self.target_qubits = frozenset(target_qubits)
+        self.param_name = param_name
+        self.noise_op = noise_op
+
+    @staticmethod
+    def _operated_qubits(
+        instruction: stim.CircuitInstruction,
+    ) -> Set[int]:
+        # MPAD produces synthetic measurement-record bits; its integer targets
+        # are not physical qubits. Heralded noise channels are already noise,
+        # not operations whose duration should create more idle noise.
+        if instruction.name == "MPAD" or instruction.name.startswith("HERALDED_"):
+            return set()
+
+        gate_data = stim.gate_data(instruction.name)
+        if not (
+            gate_data.is_unitary
+            or gate_data.is_reset
+            or gate_data.produces_measurements
+        ):
+            return set()
+
+        return {
+            target.value
+            for target in instruction.targets_copy()
+            if (
+                target.is_qubit_target
+                or target.is_x_target
+                or target.is_y_target
+                or target.is_z_target
+            )
+        }
+
+    def apply(
+        self,
+        instructions: List[stim.CircuitInstruction],
+        config: NoiseConfig,
+        boundary: Optional[stim.CircuitInstruction],
+    ) -> List[stim.CircuitInstruction]:
+        p = config.get(self.param_name)
+        if p <= 0:
+            return []
+
+        operated_qubits: Set[int] = set()
+        has_noisy_physical_operation = False
+        for instruction in instructions:
+            targets = self._operated_qubits(instruction)
+            if not targets:
+                continue
+            operated_qubits.update(targets)
+            if instruction.tag != "noiseless":
+                has_noisy_physical_operation = True
+
+        if operated_qubits:
+            if not has_noisy_physical_operation:
+                return []
+        elif boundary is None or boundary.tag == "noiseless":
+            return []
+
+        idle_qubits = sorted(self.target_qubits - operated_qubits)
+        if not idle_qubits:
+            return []
+        return [stim.CircuitInstruction(self.noise_op, idle_qubits, [p])]

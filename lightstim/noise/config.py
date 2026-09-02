@@ -12,7 +12,7 @@ class NoiseConfig:
     p_2q: float = 0.0        # Depolarizing noise after 2-qubit gates (CX, CZ, etc.)
     p_meas: float = 0.0      # Probability of measurement outcome flip (Readout error)
     p_reset: float = 0.0     # Probability of state prep flip (Reset error)
-    p_idle: float = 0.0      # Depolarizing noise applied to idle qubits (e.g., on data qubits before SE)
+    p_idle: float = 0.0      # Idle depolarization; placement depends on the selected noise model
     
     # --- Custom / Biased Parameters ---
     # Store specialized rates here (e.g., 'p_1q_x', 'p_1q_z', 'p_2q_zz')

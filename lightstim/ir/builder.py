@@ -1329,6 +1329,7 @@ class CircuitBuilder:
             noise_params: Noise parameters (NoiseConfig).
             noise_model: The name of the factory method in NoiseInjector to use.
                          e.g., 'circuit_level' -> calls NoiseInjector.from_circuit_level(...)
+                         e.g., 'uniform_circuit_level' -> adds idle noise every moment
                          e.g., 'custom_test'   -> calls NoiseInjector.from_custom_test(...)
         """
         # 1. Construct the expected factory method name
@@ -1344,9 +1345,16 @@ class CircuitBuilder:
         factory_method = getattr(NoiseInjector, method_name)
 
         # 3. Inject noise
-        # Assumptions: All factory methods must accept (config, data_qubits)
+        # Most models target data qubits for idle noise. The uniform model
+        # instead needs the complete physical-qubit universe so that it can
+        # take the complement of each moment's operated qubits.
         data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
-        injector = factory_method(noise_params, data_indices)
+        target_indices = (
+            list(range(self.circuit.num_qubits))
+            if noise_model == "uniform_circuit_level"
+            else data_indices
+        )
+        injector = factory_method(noise_params, target_indices)
         noisy_circuit = injector.inject_noise(self.circuit)
 
         return noisy_circuit

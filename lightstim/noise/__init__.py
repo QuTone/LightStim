@@ -4,9 +4,11 @@ from .config import NoiseConfig
 from .injector import NoiseInjector
 from .rules import (
     NoiseRule,
+    MomentNoiseRule,
     DepolarizeAfterGate,
     GeneralPauliAfterGate,
     FlipBeforeMeasurement,
     FlipAfterReset,
-    TaggedIdling
+    TaggedIdling,
+    UniformIdling,
 )
