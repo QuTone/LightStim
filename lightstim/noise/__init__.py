@@ -10,5 +10,5 @@ from .rules import (
     FlipBeforeMeasurement,
     FlipAfterReset,
     TaggedIdling,
-    UniformIdling,
+    MomentIdling,
 )

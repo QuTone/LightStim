@@ -333,7 +333,7 @@ class TaggedIdling(NoiseRule):
         return [], []
 
 
-class UniformIdling(MomentNoiseRule):
+class MomentIdling(MomentNoiseRule):
     """Depolarize every target qubit not operated on during a circuit moment.
 
     A moment is the group of instructions between two ``TICK`` instructions.

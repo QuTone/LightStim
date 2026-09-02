@@ -202,7 +202,7 @@ LightStim supports five noise models, each adding errors at different circuit lo
 | `code_capacity` | Pauli errors on data qubits only (before measurement) |
 | `phenomenological` | Data qubit errors + measurement errors |
 | `circuit_level` | Gate, measurement, and reset noise; data idle once per tagged SE round |
-| `uniform_circuit_level` | Circuit-level noise plus idle depolarization at every circuit moment |
+| `circuit_level_with_idling` | Circuit-level noise plus idle depolarization at every circuit moment |
 | `XZ_biased` | Circuit-level with asymmetric X/Z error rates |
 
 ### Detectors and Observables

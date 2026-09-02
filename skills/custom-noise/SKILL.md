@@ -3,7 +3,7 @@ name: custom-noise
 description: >
   Configure noise models and error rates for LightStim experiments. Use this
   skill whenever the user asks about noise models, setting physical error rates,
-  choosing between circuit_level / uniform_circuit_level / phenomenological /
+  choosing between circuit_level / circuit_level_with_idling / phenomenological /
   code_capacity / XZ_biased noise, biased noise for neutral atom or trapped ion
   hardware, or wants to understand how noise is applied to a circuit. Also
   trigger when the user asks "what p should I use?" or "how do I add noise to
@@ -49,7 +49,7 @@ Unused fields default to 0. Set only the fields the target noise model uses.
 | Strategy | Injects | Relevant params | Use for |
 |---|---|---|---|
 | `circuit_level` | Gate/SPAM noise plus active-data idle at `TICK[SE_start]` | `p_1q`, `p_2q`, `p_meas`, `p_reset`, `p_idle` | LightStim's historical circuit-level convention |
-| `uniform_circuit_level` | Same gate/SPAM noise plus idle depolarization on every unoperated qubit in each moment | `p_1q`, `p_2q`, `p_meas`, `p_reset`, `p_idle` | Paper models with uniform per-moment idle coverage |
+| `circuit_level_with_idling` | Same gate/SPAM noise plus idle depolarization on every unoperated qubit in each moment | `p_1q`, `p_2q`, `p_meas`, `p_reset`, `p_idle` | Paper models with per-moment idle coverage |
 | `phenomenological` | Data errors at SE_start tick + measurement flips | `p_idle`, `p_meas` | Fast threshold analysis, ignores gate structure |
 | `code_capacity` | Data errors only (no gate/meas noise) | `p_idle` | Ideal measurements, pure code distance study |
 | `XZ_biased` | Independent X and Z channels after each gate | See below | Biased noise (neutral atoms, trapped ions) |
@@ -57,7 +57,7 @@ Unused fields default to 0. Set only the fields the target noise model uses.
 ## Decision guide
 
 - **Superconducting hardware**: `circuit_level` with `p_2q ≈ 10× p_1q`, `p_meas ≈ p_2q`.
-- **Uniform per-moment idling**: `uniform_circuit_level`; set all five rates
+- **Per-moment idling**: `circuit_level_with_idling`; set all five rates
   equal to `p` only when the target paper defines one shared probability.
 - **Threshold plots (fast)**: `phenomenological` first, then cross-check key points with `circuit_level`.
 - **Code distance study only**: `code_capacity` — fastest, no gate noise.
@@ -97,7 +97,7 @@ builder.apply_unitary_block(gate, noiseless=True)           # same
 The noise injector skips all instructions tagged `'noiseless'`.
 This is how state-injection protocols avoid noising the unencoded region.
 
-For `uniform_circuit_level`, every `TICK`-delimited moment uses the complete
+For `circuit_level_with_idling`, every `TICK`-delimited moment uses the complete
 physical-qubit set. Resets, measurements, and unitary gates count as operations;
 all other target qubits receive one `DEPOLARIZE1(p_idle)` channel. Empty moments
 also receive idle noise. Moments containing only `noiseless` physical operations

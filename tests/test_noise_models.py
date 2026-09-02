@@ -44,7 +44,7 @@ def test_xz_biased_model_uses_z_dominant_gate_and_idle_channels():
     )
 
 
-def test_uniform_circuit_level_adds_idle_noise_to_each_operated_moment():
+def test_circuit_level_with_idling_adds_idle_noise_to_each_operated_moment():
     config = NoiseConfig(
         p_1q=0.01,
         p_2q=0.02,
@@ -68,7 +68,7 @@ def test_uniform_circuit_level_adds_idle_noise_to_each_operated_moment():
         """
     )
 
-    noisy = NoiseInjector.from_uniform_circuit_level(
+    noisy = NoiseInjector.from_circuit_level_with_idling(
         config,
         [0, 1, 2],
     ).inject_noise(clean)
@@ -100,7 +100,7 @@ def test_uniform_circuit_level_adds_idle_noise_to_each_operated_moment():
     assert noisy.without_noise() == clean
 
 
-def test_uniform_idling_uses_all_operations_in_a_moment():
+def test_moment_idling_uses_all_operations_in_a_moment():
     clean = stim.Circuit(
         """
         R 0 1 2
@@ -114,7 +114,7 @@ def test_uniform_idling_uses_all_operations_in_a_moment():
         MPAD 0
         """
     )
-    noisy = NoiseInjector.from_uniform_circuit_level(
+    noisy = NoiseInjector.from_circuit_level_with_idling(
         NoiseConfig(p_idle=0.125),
         [0, 1, 2],
     ).inject_noise(clean)
@@ -131,7 +131,7 @@ def test_uniform_idling_uses_all_operations_in_a_moment():
     assert noisy.without_noise() == clean
 
 
-def test_uniform_circuit_level_recurses_into_repeat_blocks():
+def test_circuit_level_with_idling_recurses_into_repeat_blocks():
     clean = stim.Circuit(
         """
         R 0 1
@@ -142,7 +142,7 @@ def test_uniform_circuit_level_recurses_into_repeat_blocks():
         }
         """
     )
-    noisy = NoiseInjector.from_uniform_circuit_level(
+    noisy = NoiseInjector.from_circuit_level_with_idling(
         NoiseConfig(p_idle=0.125),
         [0, 1],
     ).inject_noise(clean)
@@ -161,7 +161,7 @@ def test_uniform_circuit_level_recurses_into_repeat_blocks():
     assert noisy.without_noise() == clean
 
 
-def test_uniform_repeat_boundaries_match_flattened_circuit():
+def test_idling_repeat_boundaries_match_flattened_circuit():
     clean = stim.Circuit(
         """
         R 0 1 2
@@ -177,11 +177,11 @@ def test_uniform_repeat_boundaries_match_flattened_circuit():
     )
     config = NoiseConfig(p_idle=0.125)
 
-    repeated = NoiseInjector.from_uniform_circuit_level(
+    repeated = NoiseInjector.from_circuit_level_with_idling(
         config,
         [0, 1, 2],
     ).inject_noise(clean)
-    flattened = NoiseInjector.from_uniform_circuit_level(
+    flattened = NoiseInjector.from_circuit_level_with_idling(
         config,
         [0, 1, 2],
     ).inject_noise(clean.flattened())
@@ -189,7 +189,7 @@ def test_uniform_repeat_boundaries_match_flattened_circuit():
     assert repeated.flattened() == flattened
 
 
-def test_uniform_repeat_without_tick_falls_back_to_exact_flattened_semantics():
+def test_idling_repeat_without_tick_falls_back_to_exact_flattened_semantics():
     clean = stim.Circuit(
         """
         R 0 1
@@ -202,11 +202,11 @@ def test_uniform_repeat_without_tick_falls_back_to_exact_flattened_semantics():
     )
     config = NoiseConfig(p_idle=0.125)
 
-    repeated = NoiseInjector.from_uniform_circuit_level(
+    repeated = NoiseInjector.from_circuit_level_with_idling(
         config,
         [0, 1],
     ).inject_noise(clean)
-    flattened = NoiseInjector.from_uniform_circuit_level(
+    flattened = NoiseInjector.from_circuit_level_with_idling(
         config,
         [0, 1],
     ).inject_noise(clean.flattened())
@@ -218,7 +218,7 @@ def test_uniform_repeat_without_tick_falls_back_to_exact_flattened_semantics():
     ) == 1
 
 
-def test_uniform_zero_idle_preserves_nested_repeat_blocks():
+def test_idling_model_with_zero_idle_preserves_nested_repeat_blocks():
     clean = stim.Circuit(
         """
         REPEAT 2 {
@@ -230,7 +230,7 @@ def test_uniform_zero_idle_preserves_nested_repeat_blocks():
         """
     )
 
-    noisy = NoiseInjector.from_uniform_circuit_level(
+    noisy = NoiseInjector.from_circuit_level_with_idling(
         NoiseConfig(p_1q=0.125, p_idle=0),
         [0],
     ).inject_noise(clean)
@@ -241,7 +241,7 @@ def test_uniform_zero_idle_preserves_nested_repeat_blocks():
     assert noisy.without_noise() == clean
 
 
-def test_uniform_nested_repeat_falls_back_to_exact_flattened_semantics():
+def test_idling_nested_repeat_falls_back_to_exact_flattened_semantics():
     clean = stim.Circuit(
         """
         R 0 1
@@ -256,11 +256,11 @@ def test_uniform_nested_repeat_falls_back_to_exact_flattened_semantics():
     )
     config = NoiseConfig(p_idle=0.125)
 
-    nested = NoiseInjector.from_uniform_circuit_level(
+    nested = NoiseInjector.from_circuit_level_with_idling(
         config,
         [0, 1],
     ).inject_noise(clean)
-    flattened = NoiseInjector.from_uniform_circuit_level(
+    flattened = NoiseInjector.from_circuit_level_with_idling(
         config,
         [0, 1],
     ).inject_noise(clean.flattened())
@@ -269,7 +269,7 @@ def test_uniform_nested_repeat_falls_back_to_exact_flattened_semantics():
     assert nested.without_noise() == clean.flattened()
 
 
-def test_uniform_idling_includes_qubits_measured_in_an_earlier_moment():
+def test_moment_idling_includes_qubits_measured_in_an_earlier_moment():
     clean = stim.Circuit(
         """
         R 0 1
@@ -280,7 +280,7 @@ def test_uniform_idling_includes_qubits_measured_in_an_earlier_moment():
         """
     )
 
-    noisy = NoiseInjector.from_uniform_circuit_level(
+    noisy = NoiseInjector.from_circuit_level_with_idling(
         NoiseConfig(p_idle=0.125),
         [0, 1],
     ).inject_noise(clean)
@@ -296,7 +296,7 @@ def test_uniform_idling_includes_qubits_measured_in_an_earlier_moment():
     ] == [[1], [0]]
 
 
-def test_uniform_circuit_level_noises_empty_tick_moments():
+def test_circuit_level_with_idling_noises_empty_tick_moments():
     clean = stim.Circuit(
         """
         R 0 1
@@ -305,7 +305,7 @@ def test_uniform_circuit_level_noises_empty_tick_moments():
         TICK[noiseless]
         """
     )
-    noisy = NoiseInjector.from_uniform_circuit_level(
+    noisy = NoiseInjector.from_circuit_level_with_idling(
         NoiseConfig(p_idle=0.125),
         [0, 1],
     ).inject_noise(clean)
@@ -321,9 +321,9 @@ def test_uniform_circuit_level_noises_empty_tick_moments():
     )
 
 
-def test_builder_uniform_circuit_level_targets_non_data_qubits():
+def test_builder_circuit_level_with_idling_targets_non_data_qubits():
     # The builder's historical factory argument contains data qubits only.
-    # Uniform idling instead needs every physical qubit in the circuit.
+    # Per-moment idling instead needs every physical qubit in the circuit.
     system = SimpleNamespace(
         data_coords=[(0, 0)],
         index_map={(0, 0): 0},
@@ -339,7 +339,7 @@ def test_builder_uniform_circuit_level_targets_non_data_qubits():
 
     noisy = builder.build_noisy_circuit(
         NoiseConfig(p_idle=0.125),
-        noise_model="uniform_circuit_level",
+        noise_model="circuit_level_with_idling",
     )
 
     assert any(

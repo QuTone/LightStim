@@ -90,7 +90,7 @@ def test_pipeline_noise_models():
         ("code_capacity",    NoiseConfig(p_idle=0.05)),
         ("phenomenological", NoiseConfig(p_idle=0.05, p_meas=0.05)),
         (
-            "uniform_circuit_level",
+            "circuit_level_with_idling",
             NoiseConfig(
                 p_1q=0.05,
                 p_2q=0.05,
