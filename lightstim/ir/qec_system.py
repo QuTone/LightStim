@@ -41,12 +41,14 @@ class QECSystem:
         # The list index IS the stabilizer unique ID.
         self.stabilizers: List[Dict[str, Any]] = [] 
         self._stabilizer_signatures: Dict[str, Any] = {}
+        self.gauges: List[Dict[str, Any]] = []
         self.logical_ops: List[Dict[str, Any]] = [] 
         self.num_logicals: int = 0
 
         # 5. Dynamic Stabilizer Activities
         # Stores indices of self.stabilizers that are currently ON.
         self.active_stabilizer_indices: Set[int] = set()
+        self.active_gauge_indices: Set[int] = set()
         # coupler_name -> stabilizer_indices
         # The stabilizers indices that are paused because of the coupler's activation.
         self.paused_stabilizer_indices: Dict[str, Set[int]] = {}
@@ -122,6 +124,19 @@ class QECSystem:
             if self.stabilizers[idx].get('type') == 'Z'
         ]
 
+    @property
+    def active_gauges(self) -> List[Dict[str, Any]]:
+        """Declared gauges of active patches, independent of SE phase order."""
+        return [self.gauges[index] for index in sorted(self.active_gauge_indices)]
+
+    @property
+    def active_gauges_x(self) -> List[Dict[str, Any]]:
+        return [gauge for gauge in self.active_gauges if gauge.get("type") == "X"]
+
+    @property
+    def active_gauges_z(self) -> List[Dict[str, Any]]:
+        return [gauge for gauge in self.active_gauges if gauge.get("type") == "Z"]
+
     def effective_stabilizer(self, uid: int) -> Dict[str, Any]:
         """Return a stabilizer with disabled data qubits removed from support.
 
@@ -179,19 +194,22 @@ class QECSystem:
     def active_syndrome_indices(self) -> List[int]:
         """
         Returns the set of unique global indices for syndrome qubits 
-        that belong to CURRENTLY ACTIVE stabilizers.
+        that belong to currently active stabilizers or declared gauges.
         Used to generate 'R' and 'M' instructions only for relevant qubits.
         """
         return sorted({
             self.stabilizers[uid]['syn_idx']
             for uid in self.active_stabilizer_indices
             if self.stabilizers[uid].get('syn_idx') is not None
+        } | {
+            gauge['syn_idx'] for gauge in self.active_gauges
+            if gauge.get('syn_idx') is not None
         })
 
     @property
     def active_syndrome_indices_x(self) -> List[int]:
         """
-        Returns indices of syndrome qubits measuring active X-stabilizers.
+        Returns syndrome qubits measuring active X stabilizers or gauges.
         Used to determine where to apply Hadamard gates (or basis change).
         """
         return sorted({
@@ -201,12 +219,15 @@ class QECSystem:
                 self.stabilizers[uid].get('type') == 'X'
                 and self.stabilizers[uid].get('syn_idx') is not None
             )
+        } | {
+            gauge['syn_idx'] for gauge in self.active_gauges_x
+            if gauge.get('syn_idx') is not None
         })
 
     @property
     def active_syndrome_indices_z(self) -> List[int]:
         """
-        Returns indices of syndrome qubits measuring active Z-stabilizers.
+        Returns syndrome qubits measuring active Z stabilizers or gauges.
         """
         return sorted({
             self.stabilizers[uid]['syn_idx']
@@ -215,6 +236,9 @@ class QECSystem:
                 self.stabilizers[uid].get('type') == 'Z'
                 and self.stabilizers[uid].get('syn_idx') is not None
             )
+        } | {
+            gauge['syn_idx'] for gauge in self.active_gauges_z
+            if gauge.get('syn_idx') is not None
         })
 
     @property
@@ -246,6 +270,7 @@ class QECSystem:
         if name in self.patches:
             raise ValueError(f"Patch '{name}' already exists in the system.")
         
+        patch.validate_subsystem_declaration()
         if name is None:
             name = f"patch_{len(self.patches)+ len(self.coupler_patches)}"
 
@@ -307,8 +332,7 @@ class QECSystem:
             global_stab = self._translate_record(stab, local_to_global_map)
             global_stab['patch_name'] = name
             # Generate the stabilizer signature
-            pauli_indices = sorted(global_stab['data_indices'])
-            signature = (global_stab['type'], tuple(pauli_indices))
+            signature = (global_stab['type'], tuple(sorted(global_stab['pauli'].items())))
 
             if signature in self._stabilizer_signatures:
                 existing_uid = self._stabilizer_signatures[signature]
@@ -319,6 +343,15 @@ class QECSystem:
             self.stabilizers.append(global_stab)
             self._stabilizer_signatures[signature] = new_uid
             stabilizer_indices.append(new_uid)
+
+        gauge_indices = []
+        translated_gauges = []
+        for gauge in patch.gauges:
+            global_gauge = self._translate_record(gauge, local_to_global_map)
+            global_gauge['patch_name'] = name
+            gauge_indices.append(len(self.gauges))
+            self.gauges.append(global_gauge)
+            translated_gauges.append(global_gauge)
 
         for op in patch.logical_ops:
             global_op = self._translate_record(op, local_to_global_map)
@@ -331,14 +364,17 @@ class QECSystem:
 
         # 5. Store registered stabilizer UIDs on the patch (for coupler activate/deactivate)
         patch._registered_stabilizer_uids = set(stabilizer_indices)
+        patch._registered_gauge_uids = set(gauge_indices)
 
         # 6. Set Initial Active Stabilizers
         if is_active:
             self.active_stabilizer_indices.update(stabilizer_indices)
+            self.active_gauge_indices.update(gauge_indices)
 
         # 7. Create and return global patch view (with global indices)
         # This is a deep copy of the patch with all indices converted to global
         global_patch = copy.deepcopy(patch)
+        global_patch.gauges = copy.deepcopy(translated_gauges)
         
         # Convert data_indices from local to global
         global_patch.data_indices = {local_to_global_map[local_idx] for local_idx in patch.data_indices}
