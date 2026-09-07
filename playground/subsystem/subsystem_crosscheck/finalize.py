@@ -72,7 +72,8 @@ def validate():
 
 
 def archive():
-    parent=ROOT.parent/'LightStim-artifacts';parent.mkdir(exist_ok=True)
+    parent=ROOT/'playground'/'subsystem_artifacts'
+    parent.mkdir(parents=True,exist_ok=True)
     dest=parent/'subsystem_crosscheck_2026-09-06.tar.gz'
     temp=dest.with_suffix('.tar.gz.tmp')
     with tarfile.open(temp,'w:gz') as bundle:

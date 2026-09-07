@@ -28,8 +28,8 @@ import stim
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.qec_code.bacon_shor import BaconShorCode
 from lightstim.simulation.decoder_backend import get_decoder
-from benchmarks.memory.bacon_shor_schedule.run import select_basis_detectors
-from benchmarks.memory.subsystem_crosscheck.common import interval, reference_noise, save_json, sha256
+from playground.subsystem.bacon_shor_schedule.run import select_basis_detectors
+from playground.subsystem.subsystem_crosscheck.common import interval, reference_noise, save_json, sha256
 
 OUT = Path(__file__).resolve().parent / "results/2026-09-06-decoder-review"
 PARAMS = dict(max_iterations=100, osd_order=10, osd_method="osd_cs",

@@ -183,6 +183,63 @@ def test_build_circuit_custom_rounds():
     assert circuit.num_qubits > 0
 
 
+@pytest.mark.parametrize("basis", ["X", "Z"])
+@pytest.mark.parametrize("noise_model", ["circuit_level", "phenomenological", "code_capacity"])
+def test_bacon_shor_projection_preserves_physics_and_distance(basis, noise_model):
+    import stim
+    from lightstim.noise.config import NoiseConfig
+    from lightstim.protocols.memory import MemoryExperiment
+    from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtractionBlock
+
+    full, n_data, n_total, k = build_circuit(
+        "bacon_shor", 3, .001, basis=basis, noise_model=noise_model)
+    native = MemoryExperiment(
+        qec_patch=BaconShorCode(distance=3), extraction_block_class=BaconShorCodeExtractionBlock,
+        basis=basis, rounds=3, noise_model=noise_model,
+        noise_params=NoiseConfig(p_idle=.001, p_1q=.001, p_2q=.001, p_meas=.001, p_reset=.001),
+    ).build()
+    assert full == native
+    selected, *_ = build_circuit(
+        "bacon_shor", 3, .001, basis=basis, noise_model=noise_model, detector_basis=basis)
+    assert (n_data, n_total, k) == (9, 21, 1)
+    assert 0 < selected.num_detectors < full.num_detectors
+    physical = []
+    for circuit in (full, selected):
+        out = stim.Circuit()
+        for op in circuit.flattened():
+            if op.name != "DETECTOR":
+                out.append(op)
+        physical.append(out)
+    assert physical[0] == physical[1]
+    dem = selected.detector_error_model(decompose_errors=False)
+    assert all(sum(t.is_relative_detector_id() for t in op.targets_copy()) <= 2
+               for op in dem.flattened() if op.type == "error")
+    assert len(dem.shortest_graphlike_error(ignore_ungraphlike_errors=False)) == 3
+    assert not selected.without_noise().compile_detector_sampler(seed=71).sample(
+        32, append_observables=True).any()
+
+
+def test_bacon_shor_no_idle_baseline_matches_saved_circuit():
+    import hashlib
+    import json
+
+    summary = json.loads((REPO / "notebooks/Memory/assets/bacon_shor/summary.json").read_text())
+    for row in summary["results"]:
+        full, *_ = build_circuit("bacon_shor", row["d"], .001, p_idle=0, p_1q=0)
+        selected, *_ = build_circuit(
+            "bacon_shor", row["d"], .001, p_idle=0, p_1q=0, detector_basis="Z")
+        assert hashlib.sha256(str(full).encode()).hexdigest() == row["circuit_sha256"]
+        assert hashlib.sha256(str(selected).encode()).hexdigest() == row["selected_circuit_sha256"]
+
+
+@pytest.mark.parametrize("code,basis,detectors", [
+    ("bacon_shor", "X", "Z"), ("bacon_shor", "Z", "Y"), ("rotated_sc", "Z", "Z"),
+])
+def test_rejects_unsupported_detector_projection(code, basis, detectors):
+    with pytest.raises(ValueError, match="detector_basis"):
+        build_circuit(code, 3, .001, basis=basis, detector_basis=detectors)
+
+
 @pytest.mark.parametrize("se_circuit", list(COLOR_SE_CIRCUITS))
 def test_build_circuit_color_se_circuits(se_circuit):
     circuit, n_data, n_total, k = build_circuit(
@@ -404,6 +461,51 @@ def test_cli_checkpoint_resume(tmp_path):
 
     df = pd.read_csv(out)
     assert len(df) == 1  # no duplicates appended
+
+
+def test_cli_bacon_shor_uses_shared_checkpoint_and_explicit_noise(tmp_path):
+    out = tmp_path / "memory.csv"
+    args = ["--codes", "bacon_shor", "--distances", "3", "--basis", "Z", "X",
+            "--p-values", ".001", "--max-shots", "100", "--max-errors", "101",
+            "--batch-size", "100", "--num-workers", "1"]
+    for extra in ([], [], ["--p-idle", "0", "--p-1q", "0"]):
+        result = _run_cli(args + extra, out)
+        assert result.returncode == 0, result.stderr
+    rows = pd.read_csv(out)
+    assert len(rows) == 4
+    assert (rows.detector_basis == rows.basis).all()
+    assert set(rows.p_idle) == {0, .001}
+    assert set(rows.p_1q) == {0, .001}
+    assert (rows.shots == 100).all()
+    assert set(rows.se_circuit) == {"dedicated"}
+    assert set(rows.block_class) == {"BaconShorCodeExtractionBlock"}
+
+
+def test_legacy_checkpoint_keeps_uniform_noise_defaults(tmp_path):
+    from run_memory import _load_done_keys
+
+    row = dict(code="rotated_sc", distance=3, p=.001, basis="Z", rounds=3,
+               se_circuit="default", noise_model="circuit_level", decoder_name="pymatching")
+    out = tmp_path / "old.csv"
+    pd.DataFrame([row]).to_csv(out, index=False)
+    assert _task_key(row) in _load_done_keys(out)
+    assert _task_key({**row, "p_idle": 0}) not in _load_done_keys(out)
+    assert _task_key({**row, "detector_basis": "Z"}) not in _load_done_keys(out)
+
+
+def test_plot_keeps_idle_overrides_separate_across_p():
+    plt = pytest.importorskip("matplotlib.pyplot")
+    from plot_memory import plot_ler_vs_p
+
+    rows = [dict(code="bacon_shor", distance=3, p=p, p_idle=p if mode == "sweep" else .001,
+                 p_idle_mode=mode,
+                 detector_basis="Z", logical_error_rate=p)
+            for p in (.001, .002) for mode in ("sweep", "fixed")]
+    fig, ax = plt.subplots()
+    plot_ler_vs_p(pd.DataFrame(rows), ax)
+    assert len(ax.lines) == 2
+    assert all(len(line.get_xdata()) == 2 for line in ax.lines)
+    plt.close(fig)
 
 
 @pytest.mark.skipif(not _has_mwpf(), reason="mwpf decoder unavailable")

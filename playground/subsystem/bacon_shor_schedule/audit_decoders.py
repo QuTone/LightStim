@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 import numpy as np
 import stim
-from benchmarks.memory.bacon_shor_schedule.decoder_review import build, detector_rows, PARAMS, OUT
-from benchmarks.memory.bacon_shor_schedule.run import select_basis_detectors
-from benchmarks.memory.subsystem_crosscheck.common import save_json
+from playground.subsystem.bacon_shor_schedule.decoder_review import build, detector_rows, PARAMS, OUT
+from playground.subsystem.bacon_shor_schedule.run import select_basis_detectors
+from playground.subsystem.subsystem_crosscheck.common import save_json
 from lightstim.simulation.decoder_backend import get_decoder
 from lightstim.simulation.decoder_backend.dem_matrices import dem_to_matrices
 

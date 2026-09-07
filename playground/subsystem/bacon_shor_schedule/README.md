@@ -9,8 +9,8 @@ Run from the repository root with the LightStim environment:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=. \
-  python benchmarks/memory/bacon_shor_schedule/run.py
-python benchmarks/memory/bacon_shor_schedule/make_review.py
+  python playground/subsystem/bacon_shor_schedule/run.py
+python playground/subsystem/bacon_shor_schedule/make_review.py
 ```
 
 `--shots` sets fixed Z-memory MWPM shots per distance and schedule (default
@@ -48,9 +48,9 @@ their schedules after the public Bacon-Shor default changed.
 ## CPU decoder and literature review
 
 ```bash
-PYTHONPATH=. python benchmarks/memory/bacon_shor_schedule/decoder_review.py --workers 4
-PYTHONPATH=. python benchmarks/memory/bacon_shor_schedule/audit_decoders.py
-PYTHONPATH=. python benchmarks/memory/bacon_shor_schedule/make_decoder_review.py
+PYTHONPATH=. python playground/subsystem/bacon_shor_schedule/decoder_review.py --workers 4
+PYTHONPATH=. python playground/subsystem/bacon_shor_schedule/audit_decoders.py
+PYTHONPATH=. python playground/subsystem/bacon_shor_schedule/make_decoder_review.py
 ```
 
 The checkpointed sweep covers d=3,5,7,9 and p=0.0005,0.001,0.002 on the

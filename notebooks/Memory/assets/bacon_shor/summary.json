@@ -14,11 +14,14 @@
   "memory_basis": "Z",
   "metric": "logical failure per complete memory shot",
   "postselection": false,
+  "benchmark_csv": "benchmarks/memory/results/bacon_shor_unified_mwpm.csv",
+  "benchmark_csv_sha256": "cc4a017033b1b29c9039ee2dbcbc580f3f3cc611b751e83b4c6e677bcf3e1b47",
   "sampling": {
     "seed": 0,
     "batch_size": 10000,
     "workers": 1,
-    "stopping": "fixed shots"
+    "stopping": "fixed shots",
+    "source": "README reproduction command; these settings are not encoded in the input CSV"
   },
   "versions": {
     "stim": "1.15.0",
@@ -28,7 +31,8 @@
   },
   "python": "3.10.12",
   "source_sha256": {
-    "benchmarks/memory/bacon_shor/run.py": "078128e6a868f3f6fce05e3e5163a5dc65964d29e1804816a84015194a483bac",
+    "playground/subsystem/bacon_shor_memory/make_assets.py": "5a50b77561df86c0afcb308ed86fcdbf805e3b80a404af8f0618d04b2f268ace",
+    "benchmarks/memory/run_memory.py": "2fa47d87f0ee0ae905a97486556696d1c18fe4121726afcfa3abcc04dce65154",
     "lightstim/qec_code/bacon_shor/SE_block.py": "5b6325fd7d10bb269e0611bd17a0ed21c96e92d8888e3791598d0d7c67282c65",
     "lightstim/qec_code/bacon_shor/code_patch.py": "2e2eeb23d9e53903a836efa39658a5ee5610a330e843de07797a7b0b55a6bfa6",
     "lightstim/protocols/memory.py": "2a5b6256b93d7915ca21638e5f1ec23145e5da03e0727459d69089135865adde",

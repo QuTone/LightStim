@@ -7,16 +7,26 @@ for key in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 import json
+import hashlib
 import numpy as np
 import stim
 import nbformat
-from benchmarks.memory.bacon_shor_schedule.decoder_review import OUT, detector_rows
-from benchmarks.memory.bacon_shor_schedule.run import select_basis_detectors
-from benchmarks.memory.subsystem_crosscheck.common import interval, save_json, sha256, physical
+from playground.subsystem.bacon_shor_schedule.decoder_review import OUT, detector_rows
+from playground.subsystem.bacon_shor_schedule.run import select_basis_detectors
+from playground.subsystem.subsystem_crosscheck.common import interval, save_json, sha256, physical
 from lightstim.simulation.decoder_backend import get_decoder
 
 manifest = json.loads((OUT / 'manifest.json').read_text())
-assert all(sha256(ROOT / p) == value for p, value in manifest['source_sha256'].items())
+for path, expected in manifest['source_sha256'].items():
+    source = ROOT / path
+    if source.exists():
+        assert sha256(source) == expected, path
+    else:
+        # Preserve the historical manifest. Reverse only the directory/import
+        # relocation and require byte-for-byte equality with the old source.
+        source = ROOT / path.replace('benchmarks/memory/', 'playground/subsystem/', 1)
+        original = source.read_text().replace('playground.subsystem.', 'benchmarks.memory.')
+        assert hashlib.sha256(original.encode()).hexdigest() == expected, path
 verified = []
 for path in sorted(OUT.glob('d*.json')):
     if path.name.endswith('_config.json'):
@@ -55,7 +65,7 @@ for path in sorted(OUT.glob('d*.json')):
 nb = nbformat.read(ROOT / 'playground/subsystem/bacon_shor_decoder_review.ipynb', as_version=4)
 cells = [c for c in nb.cells if c.cell_type == 'code']
 assert len(cells) == 4 and all(c.execution_count and not any(o.output_type == 'error' for o in c.outputs) for c in cells)
-sources = ['benchmarks/memory/bacon_shor_schedule/' + name for name in
+sources = ['playground/subsystem/bacon_shor_schedule/' + name for name in
            ['decoder_review.py', 'audit_decoders.py', 'make_decoder_review.py', 'validate_decoder_review.py']]
 save_json(OUT / 'validation.json', dict(verified_jobs=verified, reproduced_first_batches=len(verified),
     verified_executed_notebook_cells=len(cells),

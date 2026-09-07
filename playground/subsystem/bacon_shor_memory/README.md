@@ -6,19 +6,31 @@ It uses `BaconShorCode`, `BaconShorCodeExtractionBlock`, `MemoryExperiment`,
 `NoiseConfig` and `SimulationPipeline(DecoderConfig("pymatching"))`.
 All detectors and the protected observable come from LightStim's tracker.
 
-Run from the repository root with the LightStim dependencies installed:
+## Reproduce through the shared runner
+
+From the repository root, run:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MPLBACKEND=Agg \
-  python -m benchmarks.memory.bacon_shor.run --shots 1000000
+  python benchmarks/memory/run_memory.py --codes bacon_shor --distances 3 5 7 9 \
+    --p-values 0.001 --p-idle 0 --p-1q 0 --basis Z --decoder pymatching \
+    --max-shots 1000000 --max-errors 1000001 --num-workers 1 --batch-size 10000
 ```
 
-The default output is `results/native_mwpm/`. It contains full and selected
-Stim circuits, undecomposed MWPM DEMs, a summary with counts, exact 95%
-Clopper–Pearson intervals, seeds, library versions and source/circuit hashes,
-plus the three notebook figures. `--output PATH` chooses another directory.
-`--shots` must be a positive multiple of the 10,000-shot pipeline batch size.
-The script always takes fixed shots; it does not stop early at an error target.
+The usual output is `benchmarks/memory/results/bacon_shor_pymatching.csv`.
+Existing rows are checkpointed; choose a fresh `--output` for a new run.
+To generate review figures and circuit-distance audits from that CSV:
+
+```bash
+python -m playground.subsystem.bacon_shor_memory.make_assets \
+    --input benchmarks/memory/results/bacon_shor_pymatching.csv
+```
+
+The asset generator performs no decoding. It rebuilds circuits with the shared
+`build_circuit` interface, checks them, reads counts from the CSV and writes
+figures, Stim/DEM files and `summary.json` under `results/native_mwpm/` here.
+`--output PATH` selects another asset directory. The CSV does not record seeds
+or workers; preserve the actual command alongside any new run when archiving.
 
 ## Committed baseline (2026-09-07)
 
@@ -33,8 +45,7 @@ The script always takes fixed shots; it does not stop early at an error target.
 - Select original pure Z-record detectors *after* building the full XZ memory.
   Every physical instruction, noise channel, readout and observable is retained.
   This drops complementary syndrome information; it is a decoding baseline.
-  `select_memory_detectors` is an experiment helper for M/MX CSS memories,
-  not a general detector-inference API.
+  The shared runner applies this selection only for Bacon–Shor MWPM.
 
 | d | Errors / shots | LER per shot |
 | --- | --- | --- |
@@ -43,15 +54,16 @@ The script always takes fixed shots; it does not stop early at an error target.
 | 7 | 102 / 1,000,000 | 1.02e-4 |
 | 9 | 63 / 1,000,000 | 6.30e-5 |
 
-[precompute/summary.json](precompute/summary.json) records the complete metadata
+[summary.json](../../../notebooks/Memory/assets/bacon_shor/summary.json) records the complete metadata
 and uncertainties. The notebook assets are in
 [`notebooks/Memory/assets/bacon_shor/`](../../../notebooks/Memory/assets/bacon_shor/).
 To update the committed baseline, rerun the command, review its output, then
-copy `summary.json` to `precompute/` and the three figures to the notebook
-asset directory. Keep the notebook table and this README consistent with the
-new counts. Do not overwrite the historical review results.
+copy only `summary.json` to the notebook asset directory. The notebook renders
+its Stim diagram and MWPM plot directly when executed; the extra schedule and
+exported figures remain here for research review. Keep this README consistent
+with the new counts. Do not overwrite historical review results.
 
-For each d, the runner verifies zero ideal detector/observable flips,
+For each d, the asset generator verifies zero ideal detector/observable flips,
 preservation of the physical circuit, and graphlikeness of the complete
 undecomposed selected DEM. The shortest error in that projection gives a
 lower bound on full-circuit distance; an undetected logical-fault witness in

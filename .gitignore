@@ -66,8 +66,9 @@ Thumbs.db
 
 # Local simulation outputs (not pushed; archived separately)
 benchmarks/*/results/
-benchmarks/memory/**/results/
-benchmarks/memory/**/literature/
-!benchmarks/memory/bacon_shor/precompute/summary.json
+playground/subsystem/**/results/
+playground/subsystem/**/literature/
+playground/subsystem_artifacts/
+!notebooks/Memory/assets/bacon_shor/summary.json
 paper_artifact/table/results/*.txt
 paper_artifact/table/results/*.log

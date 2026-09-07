@@ -100,14 +100,14 @@ export PYTHONPATH=.
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 export MPLCONFIGDIR=/tmp/lightstim-crosscheck-mpl MPLBACKEND=Agg
 PY=../LightStim/venv/bin/python
-$PY benchmarks/memory/subsystem_crosscheck/validate.py --part capacity
-$PY benchmarks/memory/subsystem_crosscheck/validate.py --part shyps3
-$PY benchmarks/memory/subsystem_crosscheck/validate.py --part shyps4
-$PY benchmarks/memory/subsystem_crosscheck/circuit_audit.py
-$PY benchmarks/memory/subsystem_crosscheck/run.py --suite initial --workers 8
-$PY benchmarks/memory/subsystem_crosscheck/run.py --suite alternatives --workers 4
-$PY benchmarks/memory/subsystem_crosscheck/prepare_comparisons.py --r 3
-$PY benchmarks/memory/subsystem_crosscheck/prepare_comparisons.py --r 4
+$PY playground/subsystem/subsystem_crosscheck/validate.py --part capacity
+$PY playground/subsystem/subsystem_crosscheck/validate.py --part shyps3
+$PY playground/subsystem/subsystem_crosscheck/validate.py --part shyps4
+$PY playground/subsystem/subsystem_crosscheck/circuit_audit.py
+$PY playground/subsystem/subsystem_crosscheck/run.py --suite initial --workers 8
+$PY playground/subsystem/subsystem_crosscheck/run.py --suite alternatives --workers 4
+$PY playground/subsystem/subsystem_crosscheck/prepare_comparisons.py --r 3
+$PY playground/subsystem/subsystem_crosscheck/prepare_comparisons.py --r 4
 ```
 
 Additional actual suites are saved as JSON in `results/2026-09-06/`:
@@ -123,8 +123,8 @@ variant/job ID and seed offset. A time-capped job needs an increased total budge
 to collect additional batches.
 
 ```bash
-$PY benchmarks/memory/subsystem_crosscheck/audit_mwpf.py --workers 8
-$PY benchmarks/memory/subsystem_crosscheck/analyze.py
+$PY playground/subsystem/subsystem_crosscheck/audit_mwpf.py --workers 8
+$PY playground/subsystem/subsystem_crosscheck/analyze.py
 ```
 
 `results.csv` contains aggregated counts; `comparison_to_paper.csv` adds the

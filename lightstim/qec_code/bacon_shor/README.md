@@ -81,7 +81,7 @@ circuits or logical error rates.
 
 Tests cover signed measurement/logical flows, transformed multi-patch geometry,
 compressed memory relations, and noisy DEM extraction. The review in
-[`benchmarks/memory/bacon_shor_schedule/`](../../../benchmarks/memory/bacon_shor_schedule/README.md)
+[`playground/subsystem/bacon_shor_schedule/`](../../../playground/subsystem/bacon_shor_schedule/README.md)
 also saves distance bounds and a decoding comparison for both schedules. Its
 distance checks apply to the specified X/Z memories and Pauli fault models;
 they do not establish a threshold or an atom-movement implementation.
@@ -108,5 +108,5 @@ a GPU. The full XZ BP+OSD configurations are reported separately. The public
 selection and detector projection are explicit choices at the experiment level.
 
 The regular [Bacon–Shor memory demo](../../../notebooks/Memory/memory_bacon_shor.ipynb)
-shows the dedicated schedule and a native-noise CPU MWPM result. Its final
+shows the dedicated memory circuit diagram and runs a native-noise CPU MWPM baseline. Its final
 data readout is noisy; the historical review above uses ideal final readout.

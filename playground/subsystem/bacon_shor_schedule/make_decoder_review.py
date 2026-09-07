@@ -17,8 +17,8 @@ from scipy.stats import binomtest
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.utils.capture import capture_output
 from nbconvert import HTMLExporter
-from benchmarks.memory.bacon_shor_schedule.decoder_review import OUT
-from benchmarks.memory.subsystem_crosscheck.common import save_json
+from playground.subsystem.bacon_shor_schedule.decoder_review import OUT
+from playground.subsystem.subsystem_crosscheck.common import save_json
 
 jobs = [json.loads(p.read_text()) for p in sorted(OUT.glob('d*.json')) if not p.name.endswith('_config.json')]
 assert len(jobs) == 18 and all(j['status'] in {'error_target', 'shot_cap', 'time_cap'} for j in jobs)
@@ -136,8 +136,8 @@ Z memory，d 个 XZ pairs，reset/ancilla readout flips p，CX depolarization p�
 import sys, json
 ROOT = next(p for p in (Path.cwd(), *Path.cwd().parents) if (p / "lightstim").is_dir())
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
-from benchmarks.memory.bacon_shor_schedule.decoder_review import build, detector_rows, OUT, PARAMS
-from benchmarks.memory.bacon_shor_schedule.run import select_basis_detectors
+from playground.subsystem.bacon_shor_schedule.decoder_review import build, detector_rows, OUT, PARAMS
+from playground.subsystem.bacon_shor_schedule.run import select_basis_detectors
 from lightstim.simulation.decoder_backend import get_decoder
 from IPython.display import Image, display
 import numpy as np
@@ -168,7 +168,7 @@ assert all(v["bad_count"] == 0 for r in audit for v in r["profiles"].values())
 print("Single-mechanism audit:", [(r["d"],r["error_mechanisms"]) for r in audit])'''),
     md('''## 继续运行的入口
 
-`benchmarks/memory/bacon_shor_schedule/decoder_review.py` 可按 checkpoint 续跑，`--max-seconds` 增加每 job 总时间预算；每个 job 的 max_shots 默认 2M。
+`playground/subsystem/bacon_shor_schedule/decoder_review.py` 可按 checkpoint 续跑，`--max-seconds` 增加每 job 总时间预算；每个 job 的 max_shots 默认 2M。
 配对 benchmark 直接使用 LightStim registry，以保存同样本的多 decoder predictions。常规非配对采样也可将 `selected` 交给 `SimulationPipeline(DecoderConfig("pymatching"), ...)`。
 正式 dedicated SE 与原生 noise / MWPM demo 见 [memory_bacon_shor.ipynb](../../notebooks/Memory/memory_bacon_shor.ipynb)。
 '''),

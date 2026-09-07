@@ -1,10 +1,9 @@
-"""Native Bacon-Shor memory demo: dedicated SE, automatic detectors, CPU MWPM.
+"""Build notebook figures and distance audits from the unified memory runner CSV.
 
 Run from the repository root:
-    python -m benchmarks.memory.bacon_shor.run --shots 1000000
+    python -m playground.subsystem.bacon_shor_memory.make_assets --input benchmarks/memory/results/bacon_shor_pymatching.csv
 
-Detector selection here is specific to this CSS memory experiment. It is not
-a general circuit transformation or a replacement for LightStim's tracker.
+This script does not run decoding. See README.md for the shared benchmark CLI.
 """
 from __future__ import annotations
 
@@ -20,42 +19,12 @@ import stim
 from scipy.stats import beta
 
 from lightstim.ir.qec_system import QECSystem
-from lightstim.noise.config import NoiseConfig
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtractionBlock
-from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeline
+from benchmarks.memory.run_memory import build_circuit
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[3]
-
-
-def select_memory_detectors(circuit: stim.Circuit, basis: str) -> stim.Circuit:
-    """Keep original detectors composed only of M or MX records of ``basis``.
-
-    Keep every physical operation, noise channel, measurement and observable.
-    Flatten repeats to resolve absolute records. Fail on other measurement
-    types rather than guessing their basis. This is a lossy syndrome selection;
-    graphlikeness must be checked on the resulting *undecomposed* DEM.
-    """
-    if basis not in {"X", "Z"}:
-        raise ValueError("Memory basis must be X or Z.")
-    selected = stim.Circuit()
-    record_bases = []
-    for instruction in circuit.flattened():
-        if instruction.name == "DETECTOR":
-            targets = instruction.targets_copy()
-            if not all(t.is_measurement_record_target for t in targets):
-                raise ValueError("Expected measurement-record detector targets.")
-            if all(record_bases[len(record_bases) + t.value] == basis for t in targets):
-                selected.append(instruction)
-        else:
-            selected.append(instruction)
-            one = stim.Circuit()
-            one.append(instruction)
-            if one.num_measurements:
-                if instruction.name not in {"M", "MX"}:
-                    raise ValueError(f"Unsupported memory measurement: {instruction.name}")
-                record_bases.extend(["X" if instruction.name == "MX" else "Z"] * one.num_measurements)
-    return selected
 
 
 def plot_schedule(patch, block):
@@ -131,44 +100,46 @@ def check_memory(full, selected, d):
     return dict(lower_bound=lower, upper_bound=len(witness)), dem
 
 
-def run(output: Path, shots: int):
+def make_assets(input_csv: Path, output: Path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    if shots < 1 or shots % 10000:
-        raise ValueError("Use a positive multiple of 10000 shots (fixed pipeline batch size).")
     output.mkdir(parents=True, exist_ok=True)
     p = .001
-    noise = NoiseConfig(p_2q=p, p_meas=p, p_reset=p)
+    data = pd.read_csv(input_csv)
+    if (len(data) != 4 or set(data.distance) != {3, 5, 7, 9}
+        or not (data.code == "bacon_shor").all()
+        or not (data.basis == "Z").all() or not (data.detector_basis == "Z").all()
+        or not (data.noise_model == "circuit_level").all()
+        or not (data.decoder_name == "pymatching").all()
+        or not (data.se_circuit == "dedicated").all()
+        or not (data.p == p).all() or not (data.p_idle == 0).all()
+        or not (data.p_1q == 0).all() or not (data.rounds == data.distance).all()):
+        raise ValueError("Use the four-distance unified-runner baseline documented in README.md.")
     rows = []
     for d in (3, 5, 7, 9):
-        full = MemoryExperiment(
-            qec_patch=BaconShorCode(distance=d),
-            extraction_block_class=BaconShorCodeExtractionBlock,
-            basis="Z", rounds=d, noise_params=noise, noise_model="circuit_level",
-        ).build()
-        selected = select_memory_detectors(full, "Z")
+        full, *_ = build_circuit("bacon_shor", d, p, p_idle=0, p_1q=0)
+        selected, *_ = build_circuit("bacon_shor", d, p, p_idle=0, p_1q=0, detector_basis="Z")
         bounds, dem = check_memory(full, selected, d)
         full.to_file(output / f"d{d}_full.stim")
         selected.to_file(output / f"d{d}_mwpm.stim")
         dem.to_file(output / f"d{d}_mwpm.dem")
-        stats = SimulationPipeline(
-            DecoderConfig("pymatching"), max_shots=shots, max_errors=shots + 1,
-            num_workers=1, batch_size=10000, print_progress=False,
-        ).run(selected)
-        assert stats.shots == stats.post_selected_shots == shots
-        errors = stats.errors
+        result = data[data.distance == d].iloc[0]
+        shots, errors = int(result.shots), int(result.errors)
+        assert shots > 0 and 0 <= errors <= shots
+        assert np.isclose(result.logical_error_rate, errors / shots)
         ci95 = [float(beta.ppf(.025, errors, shots - errors + 1)) if errors else 0.,
                 float(beta.ppf(.975, errors + 1, shots - errors)) if errors < shots else 1.]
         rows.append(dict(d=d, rounds=d, p=p, shots=shots, errors=errors,
-                         ler=stats.logical_error_rate, ci95=ci95,
+                         ler=errors / shots, ci95=ci95,
                          full_detectors=full.num_detectors, selected_detectors=selected.num_detectors,
                          circuit_distance=bounds,
                          circuit_sha256=hashlib.sha256(str(full).encode()).hexdigest(),
                          selected_circuit_sha256=hashlib.sha256(str(selected).encode()).hexdigest()))
-        print(f"d={d}: {errors}/{shots} = {stats.logical_error_rate:.6g}; distance={bounds}", flush=True)
+        print(f"d={d}: {errors}/{shots} = {errors / shots:.6g}; distance={bounds}", flush=True)
     sources = [Path(__file__).relative_to(ROOT),
+               Path("benchmarks/memory/run_memory.py"),
                Path("lightstim/qec_code/bacon_shor/SE_block.py"),
                Path("lightstim/qec_code/bacon_shor/code_patch.py"),
                Path("lightstim/protocols/memory.py"),
@@ -178,7 +149,10 @@ def run(output: Path, shots: int):
                    model="circuit_level", final_data_readout="noisy"),
         decoder="pymatching", backend="cpu", detector_basis="Z", memory_basis="Z",
         metric="logical failure per complete memory shot", postselection=False,
-        sampling=dict(seed=0, batch_size=10000, workers=1, stopping="fixed shots"),
+        benchmark_csv=str(input_csv.relative_to(ROOT)),
+        benchmark_csv_sha256=hashlib.sha256(input_csv.read_bytes()).hexdigest(),
+        sampling=dict(seed=0, batch_size=10000, workers=1, stopping="fixed shots",
+                      source="README reproduction command; these settings are not encoded in the input CSV"),
         versions={name: importlib.metadata.version(name) for name in ("stim", "pymatching", "numpy", "scipy")},
         python=platform.python_version(),
         source_sha256={str(path): hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in sources},
@@ -209,7 +183,7 @@ def run(output: Path, shots: int):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--shots", type=int, default=1000000)
+    parser.add_argument("--input", type=Path, required=True, help="CSV produced by benchmarks/memory/run_memory.py")
     parser.add_argument("--output", type=Path, default=Path(__file__).parent / "results/native_mwpm")
     args = parser.parse_args()
-    run(args.output, args.shots)
+    make_assets(args.input.resolve(), args.output)

@@ -103,7 +103,7 @@ from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtraction
 from lightstim.qec_code.generic_css import GenericCSSGaugeExtractionBlock
 from IPython.display import Image, SVG, display
 import pandas as pd
-ASSETS = ROOT / "benchmarks/memory/bacon_shor_schedule/results/2026-09-06"
+ASSETS = ROOT / "playground/subsystem/bacon_shor_schedule/results/2026-09-06"
 system = QECSystem()
 system.add_patch(BaconShorCode(distance=3), name="bs")
 dedicated = BaconShorCodeExtractionBlock(system)
@@ -144,7 +144,7 @@ generic_memory = MemoryExperiment(
 ).build()
 ```
 
-Source: `lightstim/qec_code/bacon_shor/SE_block.py`。完整实验脚本和原始数据在 `benchmarks/memory/bacon_shor_schedule/`。
+Source: `lightstim/qec_code/bacon_shor/SE_block.py`。完整实验脚本和原始数据在 `playground/subsystem/bacon_shor_schedule/`。
 """),
 ]
 nb.metadata["kernelspec"]={"display_name":"Python 3", "language":"python", "name":"python3"}

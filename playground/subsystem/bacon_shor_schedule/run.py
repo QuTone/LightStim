@@ -26,7 +26,7 @@ from lightstim.protocols.memory import MemoryExperiment
 from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtractionBlock
 from lightstim.qec_code.generic_css import GenericCSSGaugeExtractionBlock
 from lightstim.simulation.decoder_backend import get_decoder
-from benchmarks.memory.subsystem_crosscheck.common import (
+from playground.subsystem.subsystem_crosscheck.common import (
     annotation_rows, compare_spaces, interval, reference_noise, save_json, sha256,
 )
 

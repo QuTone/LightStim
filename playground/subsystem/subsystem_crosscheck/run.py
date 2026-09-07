@@ -1,6 +1,6 @@
 """Checkpointed per-configuration sampling using LightStim's decoder registry.
 
-    PYTHONPATH=. python benchmarks/memory/subsystem_crosscheck/run.py --suite initial --workers 8
+    PYTHONPATH=. python playground/subsystem/subsystem_crosscheck/run.py --suite initial --workers 8
 
 No circuit/detector is handwritten here. Stim supplies samples; LightStim supplies
 decoders and all annotations on generated circuits. Individual batches have fixed

@@ -242,7 +242,7 @@ MWPF 使用 cluster-node limit=50，也不作最优 ML 声明。
 def notebook():
     intro='''# Subsystem integration cross-check
 
-本 notebook 展示已保存的实验资产。报告位于 `benchmarks/memory/subsystem_crosscheck/results/2026-09-06/REPORT.md`。
+本 notebook 展示已保存的实验资产。报告位于 `playground/subsystem/subsystem_crosscheck/results/2026-09-06/REPORT.md`。
 
 Bacon–Shor：匹配 publication 的 capacity 检查 + native SE circuit noise。
 SHYPS：reference / regenerated / generic 分开比较。更多 detectors 不保证 BPOSD 更好。
@@ -255,7 +255,7 @@ import pandas as pd
 from IPython.display import display, Image, Markdown
 
 root = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "lightstim").is_dir())
-assets = root / "benchmarks/memory/subsystem_crosscheck/results/2026-09-06"
+assets = root / "playground/subsystem/subsystem_crosscheck/results/2026-09-06"
 rates = pd.read_csv(assets / "results.csv")
 paper_comparison = pd.read_csv(assets / "comparison_to_paper.csv")
 display(Markdown(f"已保存 {len(rates)} 个聚合点。完整方法、失败案例和限制见 REPORT.md。"))
