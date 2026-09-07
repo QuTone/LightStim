@@ -17,6 +17,10 @@ circuit-level noise:
 | `CNOT_trans` | Transversal CNOT | ZZ_ZZ, ZX_ZX, XZ_XX, XZ_ZZ, XX_XX (5) |
 | `CNOT_LS_ZZ_XX` | Lattice Surgery CNOT (ZZ-XX protocol) | same 5 sub-experiments |
 | `CNOT_LS_XX_ZZ` | Lattice Surgery CNOT (XX-ZZ protocol) | same 5 sub-experiments |
+| `TwoPatchLS_unrotated_XX` | Unrotated surface-code joint XX measurement | LS_XX (1) |
+| `TwoPatchLS_unrotated_ZZ` | Unrotated surface-code joint ZZ measurement | LS_ZZ (1) |
+| `TwoPatchLS_rotated_XX` | Rotated surface-code joint XX measurement | LS_XX (1, rounds=d) |
+| `TwoPatchLS_rotated_ZZ` | Rotated surface-code joint ZZ measurement | LS_ZZ (1, rounds=d) |
 | `memory` | Z-basis memory baseline (rounds=d) | memory_Z (1) |
 
 All results are written to a single combined CSV with per-task checkpointing —
@@ -30,6 +34,10 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py
 
 # Single gate:
 PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py --gate H
+
+# Rotated two-patch lattice surgery with PyMatching:
+PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \
+    --gate TwoPatchLS_rotated_XX TwoPatchLS_rotated_ZZ
 
 # Rotated-code logical S, production grid and historical BP+OSD settings:
 PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \
@@ -58,8 +66,8 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \
 | `--gate` | all | Gate(s) to run; use `--help` for the complete list |
 | `--distances` | `3 5 7` | Code distances |
 | `--p-values` | `5e-4 1e-3 2e-3 5e-3 1e-2` | Physical error rates |
-| `--rounds` | `2` | SE rounds for gate benchmarks (memory always uses rounds=d) |
-| `--decoder` | `pymatching` for memory/LS CNOT; `bposd` for other gates | Decoder |
+| `--rounds` | `2` | SE rounds for gate benchmarks (memory and rotated two-patch LS use rounds=d) |
+| `--decoder` | `pymatching` for memory and surface-code LS; `bposd` for other gates | Decoder |
 | `--max-shots` | `1e9` | Max shots per task |
 | `--max-errors` | `100` | Stop after this many errors |
 | `--num-workers` | `8` | Parallel workers |
