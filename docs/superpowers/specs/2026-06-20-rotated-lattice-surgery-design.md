@@ -83,7 +83,7 @@ Placement needs only translation (no rotate/transpose); patches keep `rotation_a
 | `lightstim/protocols/two_patch_ls.py` | `code_patch_class` / `coupler_protocol` / `extraction_block_class` params; `rotate_patch1=False` for rotated |
 | `lightstim/protocols/cnot_ls.py` | `code_patch_class` / `coupler_class` / `extraction_block_class` params; `rotate_patches=False` for rotated (already code-agnostic) |
 | `tests/test_rotated_lattice_surgery.py` | coupler geometry == `RotatedSurfaceCode(merged)` diff (XX & ZZ, d=3/5); circuit-level two-patch LS noiseless + DEM-valid |
-| `benchmarks/rotated_ls/run_and_plot.py` | LER-vs-p sweep with corrected offsets (`ZZ=(0,2d+2)`, `XX=(2d+2,0)`) |
+| `benchmarks/logical_ops/run_logical_ops.py` | LER-vs-p sweep via `TwoPatchLS_rotated_XX/ZZ`, with corrected offsets (`ZZ=(0,2d+2)`, `XX=(2d+2,0)`) |
 | `notebooks/LogicalOps/two_patch_LS_rotated.ipynb`, `two_patch_LS_unrotated.ipynb` | two-patch examples + `peek_observable_expectation` joint-operator verification |
 | `notebooks/LogicalOps/logical_CNOT_LS_rotated.ipynb` | **new** — rotated LS-CNOT, 5 sub-experiments, merge-joint / nobs / LER verification cells |
 
@@ -101,5 +101,5 @@ Defaults remain unrotated → existing behavior and precomputed data unaffected.
 ## Implementation phases (TDD) — complete
 
 1. ✅ `RotatedTwoPatchCoupler` + unit test (geometry diff, XX & ZZ, d=3 and d=5).
-2. ✅ Parameterize `TwoPatchLSExperiment`; circuit-level test; rotated LS LER (`benchmarks/rotated_ls/`).
+2. ✅ Parameterize `TwoPatchLSExperiment`; circuit-level test; rotated LS LER (`benchmarks/logical_ops/`).
 3. ✅ Parameterize `CNOTLSExperiment`; rotated LS-CNOT; LER + verification (`notebooks/LogicalOps/logical_CNOT_LS_rotated.ipynb`).
