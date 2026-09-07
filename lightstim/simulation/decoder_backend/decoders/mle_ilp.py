@@ -29,9 +29,8 @@ RPC cuts can settle additional fractional cases. ``max_rpc_rounds=0`` disables
 the RPC stage when its overhead is not useful for a particular code family.
 
 Both stages go through scipy -- ``linprog`` for the cuts, ``milp`` for the
-fallback. The deterministic benchmark in ``benchmarks/mle`` compares the
-optimised path with a direct SciPy MILP on identical surface-code and BB-code
-syndromes, checks objective agreement, and records the local environment.
+fallback. Exactness is regression-tested against direct SciPy MILP solutions
+on surface-code and BB-code syndromes in ``tests/test_mle_ilp_decoder.py``.
 
 Single-threaded is the right comparison throughout: :class:`SimulationPipeline`
 already parallelises across shots, so intra-solve threads only oversubscribe.
@@ -422,7 +421,8 @@ class MleIlpDecoder(ExternalDecoder):
 
         The LP shortcut skips mixed-integer machinery when the relaxation is
         already integral. Fractional shots reuse all generated cuts in the
-        exact MILP fallback. See ``benchmarks/mle`` for reproducible timings.
+        exact MILP fallback. The exactness tests compare both paths against
+        direct SciPy MILP solutions.
         """
         s = np.asarray(syndrome, dtype=np.uint8).ravel()
         deadline = (time.monotonic() + self._time_limit

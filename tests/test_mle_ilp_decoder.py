@@ -1,10 +1,14 @@
 """Tests for the exact most-likely-error (mle-ilp) decoder."""
 
+import contextlib
+import io
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
 import stim
 
+from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeline
 from lightstim.simulation.decoder_backend.dem_matrices import dem_to_matrices
 from lightstim.simulation.decoder_backend.registry import get_decoder, list_decoders
 
@@ -309,7 +313,7 @@ def test_rpc_cuts_never_exclude_a_valid_error(monkeypatch):
     assert checked > 0, "no RPC cuts generated; test proved nothing"
 
 
-def _bb_dem(rounds=2, p=1e-3):
+def _bb_memory_circuit(rounds=2, p=1e-3):
     from lightstim.ir.qec_system import QECSystem
     from lightstim.noise.config import NoiseConfig
     from lightstim.protocols.memory import MemoryExperiment
@@ -324,8 +328,93 @@ def _bb_dem(rounds=2, p=1e-3):
         rounds=rounds, noise_params=NoiseConfig(p_1q=p, p_2q=p, p_meas=p,
                                                 p_reset=p, p_idle=p),
         noise_model="circuit_level", basis="Z")
-    return experiment.build().detector_error_model(decompose_errors=False,
-                                                   flatten_loops=True)
+    return experiment.build()
+
+
+def _bb_dem(rounds=2, p=1e-3):
+    return _bb_memory_circuit(rounds, p).detector_error_model(
+        decompose_errors=False,
+        flatten_loops=True,
+    )
+
+
+def _state_injection_circuit():
+    from lightstim.noise.config import NoiseConfig
+    from lightstim.protocols.state_injection import StateInjectionExperiment
+    from lightstim.qec_code.surface_code.unrotated import (
+        UnrotatedSurfaceCode,
+        UnrotatedSurfaceCodeExtractionBlock,
+        UnrotatedSurfaceCodeLogicalOpSet,
+    )
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        return StateInjectionExperiment(
+            code_patch_class=UnrotatedSurfaceCode,
+            extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
+            op_set_class=UnrotatedSurfaceCodeLogicalOpSet,
+            distance=3,
+            inject_state="Z",
+            post_select_mode="full_postselection",
+            rounds=1,
+            protocol="corner",
+            noise_params=NoiseConfig(
+                p_1q=1e-3,
+                p_2q=1e-3,
+                p_meas=1e-3,
+                p_reset=1e-3,
+                p_idle=1e-3,
+            ),
+            noise_model="circuit_level",
+        ).build()
+
+
+def _cross_ls_circuit():
+    from lightstim.noise.config import NoiseConfig
+    from lightstim.protocols.cross_ls import CrossLSExperiment
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        return CrossLSExperiment(
+            PQRM_para=[1, 2, 4],
+            d_surf=3,
+            rounds=3,
+            PQRM_state="Z",
+            surf_state="X",
+            noise_params=NoiseConfig(
+                p_1q=1e-6,
+                p_2q=1e-3,
+                p_meas=1e-3,
+                p_reset=1e-3,
+            ),
+            if_detector=True,
+            post_select_hybrid=True,
+        ).build()
+
+
+@pytest.mark.parametrize(
+    "circuit_factory",
+    [_bb_memory_circuit, _state_injection_circuit, _cross_ls_circuit],
+    ids=["bb-memory", "state-injection", "cross-ls"],
+)
+def test_pipeline_runs_lightstim_protocols_with_mle(circuit_factory):
+    """A protocol circuit can select MLE through the generic pipeline API."""
+    circuit = circuit_factory()
+    stats = SimulationPipeline(
+        # Exactness is tested above; bound this stochastic integration smoke
+        # so an unusually hard sampled syndrome cannot stall CI.
+        decoder_config=DecoderConfig(
+            "mle-ilp", backend="cpu", params={"time_limit": 2.0}
+        ),
+        max_shots=1,
+        max_errors=1,
+        batch_size=1,
+        num_workers=1,
+        print_progress=False,
+    ).run(circuit)
+
+    assert circuit.num_detectors > 0
+    assert stats.decoder == "mle-ilp"
+    assert stats.shots == 1
+    assert 0 <= stats.post_selected_shots <= stats.shots
 
 
 def test_solves_bb_code_dem():
