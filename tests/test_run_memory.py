@@ -495,6 +495,7 @@ def test_legacy_checkpoint_keeps_uniform_noise_defaults(tmp_path):
 
 def test_plot_keeps_idle_overrides_separate_across_p():
     plt = pytest.importorskip("matplotlib.pyplot")
+    pytest.importorskip("seaborn")
     from plot_memory import plot_ler_vs_p
 
     rows = [dict(code="bacon_shor", distance=3, p=p, p_idle=p if mode == "sweep" else .001,
