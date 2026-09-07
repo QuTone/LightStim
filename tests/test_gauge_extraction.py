@@ -4,7 +4,7 @@ import pytest
 import stim
 
 from lightstim.ir.qec_system import QECSystem
-from lightstim.qec_code.bacon_shor import BaconShorCode
+from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtractionBlock
 from lightstim.qec_code.generic_css import GenericCSSGaugeExtractionBlock
 
 
@@ -23,9 +23,10 @@ def _pauli(record, n):
 
 @pytest.mark.parametrize("distance", [2, 3, 4])
 @pytest.mark.parametrize("order", [("X", "Z"), ("Z", "X"), ("Z", "Z", "X"), ("X",)])
-def test_gauge_extraction_measures_declared_generators_and_preserves_bare_logicals(distance, order):
+@pytest.mark.parametrize("block_class", [BaconShorCodeExtractionBlock, GenericCSSGaugeExtractionBlock])
+def test_gauge_extraction_measures_declared_generators_and_preserves_bare_logicals(distance, order, block_class):
     system = _system(distance)
-    block = GenericCSSGaugeExtractionBlock(system, basis_order=order)
+    block = block_class(system, basis_order=order)
     assert len(block.measurement_blocks) == len(order)
     assert sum(block.measurement_blocks, stim.Circuit()) == block.circuit
 

@@ -3,7 +3,7 @@
 from numbers import Integral
 
 from lightstim.ir.qec_patch import QECPatch
-from lightstim.qec_code.generic_css.gauge_SE_block import GenericCSSGaugeExtractionBlock
+from .SE_block import BaconShorCodeExtractionBlock
 
 
 class BaconShorCode(QECPatch):
@@ -15,7 +15,7 @@ class BaconShorCode(QECPatch):
     the default extraction circuit measures all X gauges, then all Z gauges.
     """
 
-    default_extraction_block_class = GenericCSSGaugeExtractionBlock
+    default_extraction_block_class = BaconShorCodeExtractionBlock
 
     def _process_params(self):
         distance = self.params.get("distance")
