@@ -1,0 +1,119 @@
+{
+  "noise": {
+    "p_2q": 0.001,
+    "p_reset": 0.001,
+    "p_meas": 0.001,
+    "p_idle": 0.0,
+    "p_1q": 0.0,
+    "model": "circuit_level",
+    "final_data_readout": "noisy"
+  },
+  "decoder": "pymatching",
+  "backend": "cpu",
+  "detector_basis": "Z",
+  "memory_basis": "Z",
+  "metric": "logical failure per complete memory shot",
+  "postselection": false,
+  "sampling": {
+    "seed": 0,
+    "batch_size": 10000,
+    "workers": 1,
+    "stopping": "fixed shots"
+  },
+  "versions": {
+    "stim": "1.15.0",
+    "pymatching": "2.3.1",
+    "numpy": "2.2.6",
+    "scipy": "1.15.3"
+  },
+  "python": "3.10.12",
+  "source_sha256": {
+    "benchmarks/memory/bacon_shor/run.py": "078128e6a868f3f6fce05e3e5163a5dc65964d29e1804816a84015194a483bac",
+    "lightstim/qec_code/bacon_shor/SE_block.py": "5b6325fd7d10bb269e0611bd17a0ed21c96e92d8888e3791598d0d7c67282c65",
+    "lightstim/qec_code/bacon_shor/code_patch.py": "2e2eeb23d9e53903a836efa39658a5ee5610a330e843de07797a7b0b55a6bfa6",
+    "lightstim/protocols/memory.py": "2a5b6256b93d7915ca21638e5f1ec23145e5da03e0727459d69089135865adde",
+    "lightstim/simulation/decoder_backend/pipeline.py": "948d68d4a0cfb3d419207dc12a3f3e9039226b3b951f48d0e0d76c44da3a2512"
+  },
+  "results": [
+    {
+      "d": 3,
+      "rounds": 3,
+      "p": 0.001,
+      "shots": 1000000,
+      "errors": 708,
+      "ler": 0.000708,
+      "ci95": [
+        0.0006568187561224911,
+        0.0007621080374451837
+      ],
+      "full_detectors": 16,
+      "selected_detectors": 12,
+      "circuit_distance": {
+        "lower_bound": 3,
+        "upper_bound": 3
+      },
+      "circuit_sha256": "5d1df24faa192f2900c7a433d84614531a1f34cb75f180f3d3397c43d160865c",
+      "selected_circuit_sha256": "b6d3b2938b3b7bc5b13ef0970d7f03d6cf356f71eb5edb0729df07f3a1fa98bf"
+    },
+    {
+      "d": 5,
+      "rounds": 5,
+      "p": 0.001,
+      "shots": 1000000,
+      "errors": 201,
+      "ler": 0.000201,
+      "ci95": [
+        0.00017417389481745092,
+        0.0002307876122702327
+      ],
+      "full_detectors": 56,
+      "selected_detectors": 40,
+      "circuit_distance": {
+        "lower_bound": 5,
+        "upper_bound": 5
+      },
+      "circuit_sha256": "c4f8e7084234965f7ec2a18e8bd5f864bd1c3f1504cd8bf8fec07b3a6e34b8c9",
+      "selected_circuit_sha256": "b8468770cc505478cf79c748a50c98a3e18473509ce94ff6fd7924ac716797c8"
+    },
+    {
+      "d": 7,
+      "rounds": 7,
+      "p": 0.001,
+      "shots": 1000000,
+      "errors": 102,
+      "ler": 0.000102,
+      "ci95": [
+        8.316955171703957e-05,
+        0.00012381968963397926
+      ],
+      "full_detectors": 120,
+      "selected_detectors": 84,
+      "circuit_distance": {
+        "lower_bound": 7,
+        "upper_bound": 7
+      },
+      "circuit_sha256": "5190686276a7b6e3da19716118254ecc49bc399f881f345ff9083644588fd7fb",
+      "selected_circuit_sha256": "52401279db189ec1579b6dd3230a7245dad7a6f51878bd5af0995225c4453a64"
+    },
+    {
+      "d": 9,
+      "rounds": 9,
+      "p": 0.001,
+      "shots": 1000000,
+      "errors": 63,
+      "ler": 6.3e-05,
+      "ci95": [
+        4.841125873208777e-05,
+        8.060365778585897e-05
+      ],
+      "full_detectors": 208,
+      "selected_detectors": 144,
+      "circuit_distance": {
+        "lower_bound": 9,
+        "upper_bound": 9
+      },
+      "circuit_sha256": "2ecb5ae16dcbe4ee1ed2821b6938491f20ce28a3b04e9f004b7c09aff3e85e1e",
+      "selected_circuit_sha256": "eed235a98de57971560e6c5c093cf19362c9b724f39b187ad5b93f83a3ee4bba"
+    }
+  ]
+}

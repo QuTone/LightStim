@@ -67,14 +67,18 @@ in the effective gauge span.
 `GenericCSSGaugeExtractionBlock` builds separate X/Z measurement blocks
 from the declared gauges, with bipartite edge coloring within each basis.
 `basis_order` accepts single, repeated and reversed bases. The existing
-`MemoryExperiment` discovers this default extractor for:
+`MemoryExperiment` discovers the patch's default extractor:
 
-- `BaconShorCode(distance=d)`, square nearest-neighbor XX/ZZ gauges;
+- `BaconShorCode(distance=d)` uses dedicated `BaconShorCodeExtractionBlock`
+  for its square nearest-neighbor XX/ZZ gauges. Its geometric schedule has
+  two CNOT layers per basis; generic edge coloring remains an explicit option.
 - `SHYPSCode(r=3)` and `SHYPSCode(r=4)`, subsystem hypergraph-product
-  simplex constructions. See the [construction reference](../../lightstim/qec_code/shyps/README.md).
+  simplex constructions, use `GenericCSSGaugeExtractionBlock`.
+  See the [construction reference](../../lightstim/qec_code/shyps/README.md).
 
-The executable [memory notebook](../../notebooks/Memory/memory_subsystem.ipynb)
-uses the public pipeline for both families. Regression tests cover declaration
+The executable [Bacon–Shor memory notebook](../../notebooks/Memory/memory_bacon_shor.ipynb)
+and [SHYPS memory notebook](../../notebooks/Memory/memory_subsystem.ipynb)
+use the public pipeline for both families. Regression tests cover declaration
 algebra, signed Stim flows for measured gauges and bare logicals, partial and
 omitted gauge rounds, preparation, both memory bases and phase orders,
 noiseless sampling, and noisy detector error models. Bacon–Shor repeated-round
