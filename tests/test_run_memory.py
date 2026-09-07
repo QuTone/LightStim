@@ -219,17 +219,22 @@ def test_bacon_shor_projection_preserves_physics_and_distance(basis, noise_model
         32, append_observables=True).any()
 
 
-def test_bacon_shor_no_idle_baseline_matches_saved_circuit():
-    import hashlib
-    import json
-
-    summary = json.loads((REPO / "notebooks/Memory/assets/bacon_shor/summary.json").read_text())
-    for row in summary["results"]:
-        full, *_ = build_circuit("bacon_shor", row["d"], .001, p_idle=0, p_1q=0)
+def test_bacon_shor_no_idle_memory_has_distance_d():
+    # Check the reference experiment's fault distance without requiring local
+    # benchmark assets. Projection gives a lower bound; a physical full-model
+    # logical-fault witness gives an upper bound.
+    for distance in (3, 5, 7, 9):
+        full, *_ = build_circuit("bacon_shor", distance, .001, p_idle=0, p_1q=0)
         selected, *_ = build_circuit(
-            "bacon_shor", row["d"], .001, p_idle=0, p_1q=0, detector_basis="Z")
-        assert hashlib.sha256(str(full).encode()).hexdigest() == row["circuit_sha256"]
-        assert hashlib.sha256(str(selected).encode()).hexdigest() == row["selected_circuit_sha256"]
+            "bacon_shor", distance, .001, p_idle=0, p_1q=0, detector_basis="Z")
+        dem = selected.detector_error_model(decompose_errors=False)
+        lower = len(dem.shortest_graphlike_error(ignore_ungraphlike_errors=False))
+        witness = full.detector_error_model().shortest_graphlike_error(
+            ignore_ungraphlike_errors=True)
+        physical = full.explain_detector_error_model_errors(
+            dem_filter=witness, reduce_to_one_representative_error=True)
+        assert lower == len(witness) == len(physical) == distance
+        assert all(error.circuit_error_locations for error in physical)
 
 
 @pytest.mark.parametrize("code,basis,detectors", [

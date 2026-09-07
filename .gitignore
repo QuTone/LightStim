@@ -69,6 +69,7 @@ benchmarks/*/results/
 playground/subsystem/**/results/
 playground/subsystem/**/literature/
 playground/subsystem_artifacts/
-!notebooks/Memory/assets/bacon_shor/summary.json
+notebooks/Memory/assets/
+archive/
 paper_artifact/table/results/*.txt
 paper_artifact/table/results/*.log

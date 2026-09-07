@@ -77,7 +77,7 @@ from the declared gauges, with bipartite edge coloring within each basis.
   See the [construction reference](../../lightstim/qec_code/shyps/README.md).
 
 The executable [Bacon–Shor memory notebook](../../notebooks/Memory/memory_bacon_shor.ipynb)
-and [SHYPS memory notebook](../../notebooks/Memory/memory_subsystem.ipynb)
+and [SHYPS implementation notes](../../lightstim/qec_code/shyps/README.md)
 use the public pipeline for both families. Regression tests cover declaration
 algebra, signed Stim flows for measured gauges and bare logicals, partial and
 omitted gauge rounds, preparation, both memory bases and phase orders,

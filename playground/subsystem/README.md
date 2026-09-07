@@ -3,8 +3,9 @@
 These research reviews have moved out of `notebooks/Memory/`. The regular
 [Bacon–Shor memory demo](../../notebooks/Memory/memory_bacon_shor.ipynb) contains
 the dedicated memory circuit diagram and a live CPU MWPM baseline.
-[SHYPS memory and visualization](../../notebooks/Memory/memory_subsystem.ipynb)
-remain in the original subsystem demo.
+The early SHYPS memory checks are archived locally in
+`archive/memory_subsystem.ipynb`; a dedicated notebook will accompany its later
+integration. See the [SHYPS implementation notes](../../lightstim/qec_code/shyps/README.md).
 
 | Review | Purpose | Reproduction sources and local assets |
 | --- | --- | --- |
@@ -23,8 +24,8 @@ not committed. Generators now write notebooks to this playground directory.
 The historical circuit benchmarks use ideal final data readout and no idle
 noise. The new formal demo uses native `NoiseConfig`, including noisy final
 data readout. Its diagram and decoding cells run without these historical
-archives; the compact committed summary preserves the reference counts and
-circuit hashes.
+archives. Reference counts, circuit hashes and other generated assets stay
+in the local playground results directories.
 
 ## Regular memory experiments
 

@@ -32,7 +32,7 @@ figures, Stim/DEM files and `summary.json` under `results/native_mwpm/` here.
 `--output PATH` selects another asset directory. The CSV does not record seeds
 or workers; preserve the actual command alongside any new run when archiving.
 
-## Committed baseline (2026-09-07)
+## Local reference baseline (2026-09-07)
 
 - Z memory; d=3,5,7,9; d complete X-then-Z extraction pairs per shot.
 - Dedicated geometric SE: X left then right; Z negative-y then positive-y.
@@ -54,14 +54,14 @@ or workers; preserve the actual command alongside any new run when archiving.
 | 7 | 102 / 1,000,000 | 1.02e-4 |
 | 9 | 63 / 1,000,000 | 6.30e-5 |
 
-[summary.json](../../../notebooks/Memory/assets/bacon_shor/summary.json) records the complete metadata
-and uncertainties. The notebook assets are in
-[`notebooks/Memory/assets/bacon_shor/`](../../../notebooks/Memory/assets/bacon_shor/).
-To update the committed baseline, rerun the command, review its output, then
-copy only `summary.json` to the notebook asset directory. The notebook renders
-its Stim diagram and MWPM plot directly when executed; the extra schedule and
-exported figures remain here for research review. Keep this README consistent
-with the new counts. Do not overwrite historical review results.
+The local `results/reference_2026-09-07/summary.json` preserves the original
+reference metadata and uncertainties. New summaries are generated under the
+output directory chosen above. These JSON files and exported figures remain
+in playground and are not committed.
+
+The notebook renders its Stim diagram and MWPM plot directly when executed;
+it does not load external assets. Review a new run before updating the counts
+in this README, and preserve historical results separately.
 
 For each d, the asset generator verifies zero ideal detector/observable flips,
 preservation of the physical circuit, and graphlikeness of the complete

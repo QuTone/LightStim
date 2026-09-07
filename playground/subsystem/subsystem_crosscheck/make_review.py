@@ -248,7 +248,7 @@ Bacon–Shor：匹配 publication 的 capacity 检查 + native SE circuit noise�
 SHYPS：reference / regenerated / generic 分开比较。更多 detectors 不保证 BPOSD 更好。
 全部纵轴默认是 **logical block failure per shot**，不自动除以 rounds 或 logical 数。
 
-正式 Bacon–Shor demo 见 `notebooks/Memory/memory_bacon_shor.ipynb`；SHYPS visualization 见 `notebooks/Memory/memory_subsystem.ipynb`。
+正式 Bacon–Shor demo 见 `notebooks/Memory/memory_bacon_shor.ipynb`；早期 SHYPS visualization 本地存档于 `archive/memory_subsystem.ipynb`。
 '''
     setup='''from pathlib import Path
 import pandas as pd
