@@ -72,6 +72,11 @@ from the declared gauges, with bipartite edge coloring within each basis.
 - `BaconShorCode(distance=d)` uses dedicated `BaconShorCodeExtractionBlock`
   for its square nearest-neighbor XX/ZZ gauges. Its geometric schedule has
   two CNOT layers per basis; generic edge coloring remains an explicit option.
+- `SubsystemSurfaceCode(distance=d)` uses dedicated
+  `SubsystemSurfaceCodeExtractionBlock` for planar weight-three triangle gauges
+  and weight-two boundary checks, with four local CNOT layers per basis.
+  The [memory notebook](../../notebooks/Memory/memory_subsystem_surface.ipynb)
+  shows the circuit and a small CPU-MWPM example using all automatic detectors.
 - `SHYPSCode(r=3)` and `SHYPSCode(r=4)`, subsystem hypergraph-product
   simplex constructions, use `GenericCSSGaugeExtractionBlock`.
   See the [construction reference](../../lightstim/qec_code/shyps/README.md).

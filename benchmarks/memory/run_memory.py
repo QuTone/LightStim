@@ -10,6 +10,7 @@ Topological (require --distances):
     rotated_sc, rotated_sc_defect, unrotated_sc, toric, color, xzzx_sc
 Subsystem (require --distances):
     bacon_shor (dedicated four-layer XZ extraction)
+    subsystem_surface (planar triangle gauges, dedicated eight-layer XZ extraction)
 BB codes (distance fixed by code, --distances ignored):
     bb_72_12_6, bb_108_8_10, bb_144_12_12, bb_288_12_18
 HGP codes (distance fixed by code, --distances ignored):
@@ -81,6 +82,9 @@ from lightstim.protocols.rotated_surface_defect import (
 )
 from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
 from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtractionBlock
+from lightstim.qec_code.subsystem_surface import (
+    SubsystemSurfaceCode, SubsystemSurfaceCodeExtractionBlock,
+)
 from lightstim.qec_code.HGP import (
     HGPProductColorationExtractionBlock,
     hgp_13_1_3,
@@ -145,7 +149,7 @@ _TOPO_CODES = {
 }
 _BB_CODES   = set(_BB_CONFIGS)
 _HGP_CODES  = set(_HGP_CONFIGS)
-_DISTANCE_CODES = _TOPO_CODES | {"bacon_shor"}
+_DISTANCE_CODES = _TOPO_CODES | {"bacon_shor", "subsystem_surface"}
 ALL_CODES   = sorted(_DISTANCE_CODES | _BB_CODES | _HGP_CODES)
 
 DEFAULT_COLOR_SE_CIRCUIT = "space_multiplexing"
@@ -195,6 +199,10 @@ def _color_se_spec(se_circuit: str | None) -> ColorSECircuitSpec:
 
 
 def _make_code(code_name: str, distance: int, se_circuit: str | None = None):
+    if code_name == "subsystem_surface":
+        if se_circuit not in (None, "default", "dedicated"):
+            raise ValueError(f"Unknown subsystem surface SE circuit: {se_circuit!r}")
+        return SubsystemSurfaceCode(distance=distance), SubsystemSurfaceCodeExtractionBlock
     if code_name == "bacon_shor":
         if se_circuit not in (None, "default", "dedicated"):
             raise ValueError(f"Unknown Bacon-Shor SE circuit: {se_circuit!r}")
@@ -545,6 +553,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
         elif task["code"] == "bacon_shor":
             layout = "square_edge_ancillas"
             block_class = BaconShorCodeExtractionBlock.__name__
+        elif task["code"] == "subsystem_surface":
+            layout = "planar_triangle_hypotenuse_ancillas"
+            block_class = SubsystemSurfaceCodeExtractionBlock.__name__
         else:
             layout = "code_default"
             block_class = "code_default"
@@ -581,7 +592,7 @@ def main():
                     metavar="CODE",
                     help=f"QEC code(s) to benchmark. Built-in: {', '.join(ALL_CODES)}")
     ap.add_argument("--distances", nargs="+", type=int, default=None,
-                    help="Distances to sweep (required for topological / Bacon-Shor codes; "
+                    help="Distances to sweep (required for topological / subsystem codes; "
                          "BB/HGP codes use their built-in distance)")
     ap.add_argument("--p-values", nargs="+", type=float,
                     default=np.logspace(-3, -1.5, 6).tolist(),
@@ -602,7 +613,7 @@ def main():
              f"(default: {DEFAULT_COLOR_SE_CIRCUIT})",
     )
     ap.add_argument("--rounds", type=int, default=None,
-                    help="SE rounds per cycle (default: distance)")
+                    help="Complete SE cycles per memory shot (default: distance)")
     ap.add_argument("--decoder", choices=["pymatching", "mwpf", "cpu_bposd", "gpu_bposd", "mle-ilp"],
                     default="pymatching",
                     help="Decoder (default: pymatching)")
@@ -688,7 +699,7 @@ def main():
             se_circuits = [_HGP_CONFIGS[code]["se_circuit"]]
         elif code == "rotated_sc_defect":
             se_circuits = ["alternating_defect_gauges"]
-        elif code == "bacon_shor":
+        elif code in {"bacon_shor", "subsystem_surface"}:
             se_circuits = ["dedicated"]
         else:
             se_circuits = ["default"]
