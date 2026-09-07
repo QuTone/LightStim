@@ -43,6 +43,9 @@ _GROUP_COLUMNS = [
     "rounds",
     "noise_model",
     "decoder_name",
+    "detector_basis",
+    "p_idle_setting",
+    "p_1q_setting",
 ]
 
 
@@ -55,12 +58,19 @@ def _with_group_defaults(df: pd.DataFrame) -> pd.DataFrame:
         "rounds": -1,
         "noise_model": "circuit_level",
         "decoder_name": "unknown",
+        "detector_basis": "all",
     }
     for column, default in defaults.items():
         if column not in df:
             df[column] = default
         else:
             df[column] = df[column].fillna(default)
+    for column in ("p_idle", "p_1q"):
+        rates = df[column].fillna(df["p"]) if column in df else df["p"]
+        modes = df[column + "_mode"].fillna("sweep") if column + "_mode" in df else ["sweep"] * len(df)
+        df[column + "_setting"] = [
+            "p" if mode == "sweep" else f"{rate:.6g}" for rate, mode in zip(rates, modes)
+        ]
     return df
 
 
@@ -69,7 +79,7 @@ def plot_ler_vs_p(df: pd.DataFrame, ax: plt.Axes, title: str = "") -> None:
     df = _with_group_defaults(df)
     groups = df.groupby(_GROUP_COLUMNS, sort=True, dropna=False)
     for i, (group, sub) in enumerate(groups):
-        code, se_circuit, basis, d, rounds, noise_model, decoder = group
+        code, se_circuit, basis, d, rounds, noise_model, decoder, detectors, idle, one_q = group
         sub = sub.sort_values("p")
         color  = PALETTE_DISTANCE.get(int(d), f"C{i % 10}")
         marker = _MARKERS[i % len(_MARKERS)]
@@ -79,6 +89,11 @@ def plot_ler_vs_p(df: pd.DataFrame, ax: plt.Axes, title: str = "") -> None:
             label += f" r={rounds}"
         if df["noise_model"].nunique() > 1:
             label += f" {noise_model}"
+        for column, value, name in (("detector_basis", detectors, "detectors"),
+                                    ("p_idle_setting", idle, "p_idle"),
+                                    ("p_1q_setting", one_q, "p_1q")):
+            if df[column].nunique() > 1:
+                label += f" {name}={value}"
         ax.plot(
             sub["p"], sub["logical_error_rate"],
             marker=marker, color=color, lw=2, ms=7,

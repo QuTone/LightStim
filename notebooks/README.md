@@ -57,15 +57,19 @@ They compare LER vs PER and show distance scaling for each code family.
 | Notebook | Code family |
 |---|---|
 | `memory_surface_family.ipynb` | Rotated SC, unrotated SC, toric code |
-| `defective_surface_code.ipynb` | Rotated SC with a mid-circuit data-qubit defect and alternating gauge checks |
+| `memory_defective_surface_code.ipynb` | Rotated SC with a mid-circuit data-qubit defect and alternating gauge checks |
 | `memory_xzzx.ipynb` | Rotated XZZX surface code |
 | `memory_HGP.ipynb` | HGP codes ([[13,1,3]], [[18,2,3]], [[225,9,4]]) |
 | `memory_BB.ipynb` | Bivariate Bicycle codes ([[72,12,6]] … [[288,12,18]]) |
 | `memory_color.ipynb` | Triangular color code (6-6-6) |
-| `memory_subsystem.ipynb` | Bacon–Shor and SHYPS subsystem memory with automatic gauge-state inference |
+| `memory_bacon_shor.ipynb` | Weight-2 Bacon–Shor: dedicated four-layer SE, automatic detectors, CPU MWPM results |
 | `memory_PQRM.ipynb` | PQRM codes (1,2,4), (1,3,5), (1,4,6) |
 | `memory_repetition.ipynb` | Repetition code (sanity check) |
 | `memory_4D_hadamard.ipynb` | 4D geometric code (Hadamard-encoded) |
+
+The earlier subsystem prototype is kept locally in `archive/memory_subsystem.ipynb`.
+A dedicated SHYPS memory notebook will accompany its later integration.
+Generated experiment assets stay in playground, outside this directory.
 
 ### System/
 

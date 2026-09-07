@@ -28,6 +28,7 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | Toric Code | `toric` | yes |
 | Color Code (6-6-6) | `color` | yes |
 | XZZX Surface Code | `xzzx_sc` | yes |
+| Weight-2 Bacon–Shor | `bacon_shor` | yes |
 | BB [[72,12,6]] | `bb_72_12_6` | no (d=6 fixed) |
 | BB [[90,8,10]] | `bb_90_8_10` | no (d=10 fixed) |
 | BB [[108,8,10]] | `bb_108_8_10` | no (d=10 fixed) |
@@ -45,7 +46,7 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 
 | `--decoder` | Backend | Best for |
 |-------------|---------|---------|
-| `pymatching` (default) | CPU | Surface / toric codes |
+| `pymatching` (default) | CPU | Surface / toric / Bacon–Shor memory |
 | `mwpf` | CPU | General QLDPC |
 | `cpu_bposd` | CPU | QLDPC codes, no GPU |
 | `gpu_bposd` | GPU (CUDA) | BB/HGP codes at scale |
@@ -96,6 +97,37 @@ Use `--decoder gpu_bposd --num-workers 1` for the GPU backend. The runner
 always uses exactly one worker for GPU decoding.
 
 ## Common Use Cases
+
+### Bacon–Shor: dedicated SE and CPU MWPM
+
+Use this same runner for Bacon–Shor. The default is the dedicated geometric
+X-then-Z schedule (four CNOT layers per full round); `--rounds` defaults to d.
+MWPM selects the original pure memory-basis detectors after LightStim builds
+the full XZ memory. Gates, noise, measurements and the observable are retained.
+The selected undecomposed DEM must be graphlike. This loses complementary
+syndrome information; BP+OSD and other decoders receive the full detector set.
+The CSV records this distinction as `detector_basis=X`, `Z` or `all`.
+
+As for other codes, all five noise rates default to each swept p. To reproduce
+the notebook's no-idle baseline, set the two overrides explicitly:
+
+```bash
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes bacon_shor --distances 3 5 7 9 --p-values 0.001 \
+    --p-idle 0 --p-1q 0 --basis Z --decoder pymatching \
+    --max-shots 1000000 --max-errors 1000001 --num-workers 1 --batch-size 10000
+```
+
+This uses native circuit-level CNOT/reset/measurement noise, including noisy
+final data readout. The command takes 1M shots per distance (seed 0 in the
+single-worker pipeline). Its output is the usual
+`results/bacon_shor_pymatching.csv`; no per-code benchmark directory is needed.
+For a full-syndrome comparison, choose `--decoder cpu_bposd`.
+
+The [memory notebook](../../notebooks/Memory/memory_bacon_shor.ipynb) contains
+the memory circuit diagram and live MWPM decoding. Historical research, circuit-distance
+audits and figure-generation helpers live in
+[playground/subsystem](../../playground/subsystem/README.md).
 
 ### Rotated surface code with a center data defect
 
@@ -227,7 +259,9 @@ venv/bin/python benchmarks/memory/plot_memory.py results/*.csv \
 Results are saved as CSV with one row per complete benchmark configuration:
 
 ```
-code, distance, p, basis, rounds, se_circuit, noise_model, decoder_name,
+code, distance, p, basis, rounds, se_circuit, p_idle, p_1q,
+p_idle_mode, p_1q_mode, detector_basis,
+noise_model, decoder_name,
 decoder_time_limit, on_decode_failure, layout, block_class,
 shots, errors, logical_error_rate, seconds,
 n_data, n_total, k
@@ -243,4 +277,9 @@ is deliberately published elsewhere.
 The runner automatically skips tasks already present in the output CSV.
 Safe to interrupt with Ctrl+C and resume — just re-run the same command.
 The SE circuit is part of the checkpoint key, so different Color Code circuits
-can safely share one CSV.
+can safely share one CSV. Idle/one-qubit noise rates and detector selection
+also distinguish checkpoint entries and plot curves. Older CSVs are migrated
+with their original uniform-noise and full-detector defaults.
+
+The two noise-mode columns distinguish rates that follow the swept p from
+fixed overrides, even where a fixed rate equals one point of the p sweep.

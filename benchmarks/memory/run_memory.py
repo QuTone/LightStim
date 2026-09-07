@@ -8,6 +8,8 @@ Supported codes
 ---------------
 Topological (require --distances):
     rotated_sc, rotated_sc_defect, unrotated_sc, toric, color, xzzx_sc
+Subsystem (require --distances):
+    bacon_shor (dedicated four-layer XZ extraction)
 BB codes (distance fixed by code, --distances ignored):
     bb_72_12_6, bb_108_8_10, bb_144_12_12, bb_288_12_18
 HGP codes (distance fixed by code, --distances ignored):
@@ -66,6 +68,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import stim
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # repo root → lightstim importable
@@ -77,6 +80,7 @@ from lightstim.protocols.rotated_surface_defect import (
     RotatedSurfaceDefectMemoryExperiment,
 )
 from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
+from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtractionBlock
 from lightstim.qec_code.HGP import (
     HGPProductColorationExtractionBlock,
     hgp_13_1_3,
@@ -141,7 +145,8 @@ _TOPO_CODES = {
 }
 _BB_CODES   = set(_BB_CONFIGS)
 _HGP_CODES  = set(_HGP_CONFIGS)
-ALL_CODES   = sorted(_TOPO_CODES | _BB_CODES | _HGP_CODES)
+_DISTANCE_CODES = _TOPO_CODES | {"bacon_shor"}
+ALL_CODES   = sorted(_DISTANCE_CODES | _BB_CODES | _HGP_CODES)
 
 DEFAULT_COLOR_SE_CIRCUIT = "space_multiplexing"
 
@@ -190,6 +195,10 @@ def _color_se_spec(se_circuit: str | None) -> ColorSECircuitSpec:
 
 
 def _make_code(code_name: str, distance: int, se_circuit: str | None = None):
+    if code_name == "bacon_shor":
+        if se_circuit not in (None, "default", "dedicated"):
+            raise ValueError(f"Unknown Bacon-Shor SE circuit: {se_circuit!r}")
+        return BaconShorCode(distance=distance), BaconShorCodeExtractionBlock
     if code_name in {"rotated_sc", "rotated_sc_defect"}:
         return RotatedSurfaceCode(distance=distance), RotatedSurfaceCodeExtractionBlock
     if code_name == "unrotated_sc":
@@ -268,6 +277,37 @@ def _decoder_config(
 
 # ── Circuit builder ───────────────────────────────────────────────────────────
 
+def _select_memory_detectors(circuit: stim.Circuit, basis: str) -> stim.Circuit:
+    """Select existing pure-basis M/MX detectors in the Bacon-Shor memory.
+
+    This loses complementary syndrome information. Every physical operation,
+    noise channel, measurement and observable is retained. The tracker has
+    already generated the full detector set; this helper constructs none.
+    """
+    selected = stim.Circuit()
+    record_bases = []
+    for instruction in circuit.flattened():
+        if instruction.name == "DETECTOR":
+            targets = instruction.targets_copy()
+            if not all(t.is_measurement_record_target for t in targets):
+                raise ValueError("Expected measurement-record detector targets.")
+            if all(record_bases[len(record_bases) + t.value] == basis for t in targets):
+                selected.append(instruction)
+        else:
+            selected.append(instruction)
+            one = stim.Circuit()
+            one.append(instruction)
+            if one.num_measurements:
+                if instruction.name not in {"M", "MX"}:
+                    raise ValueError(f"Unsupported memory measurement: {instruction.name}")
+                record_bases.extend(["X" if instruction.name == "MX" else "Z"] * one.num_measurements)
+    dem = selected.detector_error_model(decompose_errors=False).flattened()
+    if any(sum(t.is_relative_detector_id() for t in op.targets_copy()) > 2
+           for op in dem if op.type == "error"):
+        raise ValueError("Selected memory DEM is not graphlike; MWPM is unsupported.")
+    return selected
+
+
 def build_circuit(
     code_name: str,
     distance: int,
@@ -276,10 +316,29 @@ def build_circuit(
     rounds: int | None = None,
     noise_model: str = "circuit_level",
     se_circuit: str | None = None,
+    *,
+    p_idle: float | None = None,
+    p_1q: float | None = None,
+    detector_basis: str = "all",
 ):
-    """Return (circuit, n_data, n_total, k) for a noisy memory experiment."""
+    """Return (circuit, n_data, n_total, k) for a noisy memory experiment.
+
+    All noise rates default to p. Optional idle / one-qubit overrides also
+    support the saved no-idle Bacon-Shor baseline. By default retain all
+    detectors; Bacon-Shor MWPM callers select detector_basis=basis (X or Z).
+    """
+    if detector_basis != "all" and (
+        code_name != "bacon_shor" or detector_basis not in {"X", "Z"}
+        or detector_basis != basis
+    ):
+        raise ValueError("detector_basis selection requires matching X/Z Bacon-Shor memory.")
+    for name, rate in (("p", p), ("p_idle", p_idle), ("p_1q", p_1q)):
+        if rate is not None and (not np.isfinite(rate) or not 0 <= rate <= 1):
+            raise ValueError(f"{name} must be finite and between 0 and 1.")
     code, block_cls = _make_code(code_name, distance, se_circuit)
-    noise = NoiseConfig(p_idle=p, p_1q=p, p_2q=p, p_meas=p, p_reset=p)
+    noise = NoiseConfig(p_idle=p if p_idle is None else p_idle,
+                        p_1q=p if p_1q is None else p_1q,
+                        p_2q=p, p_meas=p, p_reset=p)
     r = rounds if rounds is not None else distance
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -325,6 +384,8 @@ def build_circuit(
                 data_basis_map=basis_map,
             )
         circuit = exp.build()
+    if detector_basis != "all":
+        circuit = _select_memory_detectors(circuit, detector_basis)
     n_data  = len(code.data_indices)
     n_total = circuit.num_qubits
     k       = getattr(code, "num_logicals", 1)
@@ -347,6 +408,7 @@ _RESULT_COLS = frozenset({
 
 _RESULT_COLUMNS = [
     "code", "distance", "p", "basis", "rounds", "se_circuit",
+    "p_idle", "p_1q", "p_idle_mode", "p_1q_mode", "detector_basis",
     "noise_model", "decoder_name", "decoder_time_limit",
     "on_decode_failure", "layout", "block_class", "shots", "errors",
     "logical_error_rate", "seconds", "n_data", "n_total", "k",
@@ -354,11 +416,14 @@ _RESULT_COLUMNS = [
 _RESULT_METADATA_DEFAULTS = {
     "decoder_time_limit": 0.0,
     "on_decode_failure": "error",
+    "detector_basis": "all",
+    "p_idle_mode": "sweep",
+    "p_1q_mode": "sweep",
 }
 
 
 def _ensure_result_schema(path: Path) -> None:
-    """Upgrade pre-MLE benchmark CSVs before checkpointing or appending."""
+    """Upgrade older benchmark CSVs before checkpointing or appending."""
     if not path.exists():
         return
     df = pd.read_csv(path)
@@ -368,6 +433,10 @@ def _ensure_result_schema(path: Path) -> None:
             f"Cannot migrate {path}: unknown result columns {sorted(unknown)}"
         )
     changed = False
+    for column in ("p_idle", "p_1q"):
+        if column not in df.columns:
+            df[column] = df["p"]
+            changed = True
     for column, default in _RESULT_METADATA_DEFAULTS.items():
         if column not in df.columns:
             df[column] = default
@@ -378,6 +447,10 @@ def _ensure_result_schema(path: Path) -> None:
 
 def _task_key(row: dict) -> tuple:
     """Stable key from input-only columns (used to skip completed tasks)."""
+    row = {**_RESULT_METADATA_DEFAULTS,
+           **{f"{name}_mode": "fixed" if name in row else "sweep" for name in ("p_idle", "p_1q")},
+           "p_idle": row.get("p"),
+           "p_1q": row.get("p"), **row}
     return tuple(
         f"{v:.6e}" if isinstance(v, float) else str(v)
         for k, v in sorted(row.items()) if k not in _RESULT_COLS
@@ -405,6 +478,16 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
     decoder_name.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tasks = [
+        {**_RESULT_METADATA_DEFAULTS, "p_idle": t["p"], "p_1q": t["p"],
+         **{f"{name}_mode": "fixed" if name in t else "sweep" for name in ("p_idle", "p_1q")},
+         "detector_basis": (
+             t["basis"] if t["code"] == "bacon_shor" and decoder_cfg.name == "pymatching"
+             else "all"
+         ), **t}
+        for t in tasks
+    ]
 
     done_keys = _load_done_keys(output_path)
     if done_keys:
@@ -442,6 +525,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
             rounds=task["rounds"],
             noise_model=task["noise_model"],
             se_circuit=task["se_circuit"],
+            p_idle=task["p_idle"],
+            p_1q=task["p_1q"],
+            detector_basis=task["detector_basis"],
         )
         stats   = pipeline.run(circuit, task)
         elapsed = time.perf_counter() - t0
@@ -456,6 +542,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
         elif task["code"] in _HGP_CODES:
             layout = "canonical_interleaved_product"
             block_class = HGPProductColorationExtractionBlock.__name__
+        elif task["code"] == "bacon_shor":
+            layout = "square_edge_ancillas"
+            block_class = BaconShorCodeExtractionBlock.__name__
         else:
             layout = "code_default"
             block_class = "code_default"
@@ -492,11 +581,15 @@ def main():
                     metavar="CODE",
                     help=f"QEC code(s) to benchmark. Built-in: {', '.join(ALL_CODES)}")
     ap.add_argument("--distances", nargs="+", type=int, default=None,
-                    help="Distances to sweep (required for topological codes; "
+                    help="Distances to sweep (required for topological / Bacon-Shor codes; "
                          "BB/HGP codes use their built-in distance)")
     ap.add_argument("--p-values", nargs="+", type=float,
                     default=np.logspace(-3, -1.5, 6).tolist(),
                     help="Physical error rate values (default: 6 log-spaced points)")
+    ap.add_argument("--p-idle", type=float, default=None,
+                    help="Override idle noise rate (default: each swept p)")
+    ap.add_argument("--p-1q", type=float, default=None,
+                    help="Override one-qubit gate noise rate (default: each swept p)")
     ap.add_argument("--basis", nargs="+", choices=["Z", "X", "Y"], default=["Z"],
                     help="Logical basis to run (default: Z). Color Code supports "
                          "X/Y/Z except middle_out, which supports X/Z.")
@@ -547,6 +640,11 @@ def main():
         ap.error("--num-workers must be between 1 and 48")
     if args.batch_size < 1:
         ap.error("--batch-size must be positive")
+    for name, rates in (("--p-values", args.p_values), ("--p-idle", [args.p_idle]),
+                        ("--p-1q", [args.p_1q])):
+        if any(rate is not None and (not np.isfinite(rate) or not 0 <= rate <= 1)
+               for rate in rates):
+            ap.error(f"{name} must be finite and between 0 and 1")
     if not np.isfinite(args.mle_time_limit) or args.mle_time_limit < 0:
         ap.error("--mle-time-limit must be finite and non-negative")
     if args.mle_time_limit > 0 and args.decoder != "mle-ilp":
@@ -560,10 +658,9 @@ def main():
         args.max_shots = 100_000
         args.max_errors = 50
 
-    # Validate distances for topological codes
-    topo = [c for c in args.codes if c in _TOPO_CODES]
-    if topo and not args.distances:
-        ap.error(f"--distances is required for topological codes: {topo}")
+    variable_distance = [c for c in args.codes if c in _DISTANCE_CODES]
+    if variable_distance and not args.distances:
+        ap.error(f"--distances is required for these codes: {variable_distance}")
     if "Y" in args.basis and any(code != "color" for code in args.codes):
         ap.error("--basis Y is currently supported here only for Color Code")
     if (
@@ -591,6 +688,8 @@ def main():
             se_circuits = [_HGP_CONFIGS[code]["se_circuit"]]
         elif code == "rotated_sc_defect":
             se_circuits = ["alternating_defect_gauges"]
+        elif code == "bacon_shor":
+            se_circuits = ["dedicated"]
         else:
             se_circuits = ["default"]
         for d in distances:
@@ -602,6 +701,10 @@ def main():
                             "code": code,
                             "distance": d,
                             "p": p,
+                            "p_idle": p if args.p_idle is None else args.p_idle,
+                            "p_1q": p if args.p_1q is None else args.p_1q,
+                            "p_idle_mode": "sweep" if args.p_idle is None else "fixed",
+                            "p_1q_mode": "sweep" if args.p_1q is None else "fixed",
                             "basis": basis,
                             "rounds": r,
                             "se_circuit": se_circuit,

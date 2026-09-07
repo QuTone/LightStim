@@ -9,7 +9,7 @@ from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.noise.config import NoiseConfig
 from lightstim.protocols.memory import MemoryExperiment
-from lightstim.qec_code.bacon_shor import BaconShorCode
+from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtractionBlock
 from lightstim.qec_code.generic_css import GenericCSSGaugeExtractionBlock
 from lightstim.qec_code.repetition import RepetitionCode
 from lightstim.utils.linear_algebra import row_echelon
@@ -100,7 +100,8 @@ def test_bacon_shor_noisy_memory_has_detector_error_model(basis):
     assert dem.num_detectors == circuit.num_detectors
 
 
-def test_bacon_shor_repeated_single_basis_phases_keep_static_declaration():
+@pytest.mark.parametrize("block_class", [BaconShorCodeExtractionBlock, GenericCSSGaugeExtractionBlock])
+def test_bacon_shor_repeated_single_basis_phases_keep_static_declaration(block_class):
     system = QECSystem()
     system.add_patch(BaconShorCode(distance=3), name="bs")
     tracker = SyndromeTracker(system.num_qubits, system.num_logicals)
@@ -110,7 +111,7 @@ def test_bacon_shor_repeated_single_basis_phases_keep_static_declaration():
     center_supports = [dict(s["pauli"]) for s in system.stabilizers]
 
     for order in [("X", "Z"), ("Z",), ("Z",), ("X",), ("Z",)]:
-        block = GenericCSSGaugeExtractionBlock(system, basis_order=order)
+        block = block_class(system, basis_order=order)
         builder.apply_syndrome_extraction(
             block.circuit, rounds=1, measurement_blocks=block.measurement_blocks,
         )
@@ -161,10 +162,12 @@ def _affine_annotation_rows(circuit):
 @pytest.mark.parametrize("distance", [2, 3])
 @pytest.mark.parametrize("basis", ["X", "Z"])
 @pytest.mark.parametrize("order", [("X", "Z"), ("Z", "X")])
-def test_bacon_shor_compressed_memory_preserves_all_record_relations(distance, basis, order):
+@pytest.mark.parametrize("block_class", [BaconShorCodeExtractionBlock, GenericCSSGaugeExtractionBlock])
+def test_bacon_shor_compressed_memory_preserves_all_record_relations(distance, basis, order, block_class):
     rounds = 7
     compressed = MemoryExperiment(
         qec_patch=BaconShorCode(distance=distance),
+        extraction_block_class=block_class,
         basis=basis,
         rounds=rounds,
         se_block_kwargs={"basis_order": order},
@@ -175,7 +178,7 @@ def test_bacon_shor_compressed_memory_preserves_all_record_relations(distance, b
     tracker = SyndromeTracker(system.num_qubits, system.num_logicals)
     builder = CircuitBuilder(tracker, system)
     builder.initialize({q: basis for q in system.data_indices}, system.num_qubits)
-    block = GenericCSSGaugeExtractionBlock(system, basis_order=order)
+    block = block_class(system, basis_order=order)
     for _ in range(rounds):
         builder.apply_syndrome_extraction(
             block.circuit, rounds=1, measurement_blocks=block.measurement_blocks,
@@ -202,7 +205,8 @@ def test_bacon_shor_compressed_memory_preserves_all_record_relations(distance, b
     assert _rank(np.vstack([compressed_detectors, difference])) == joint_rank
 
 
-def test_bacon_shor_and_ordinary_patch_keep_two_protected_logicals():
+@pytest.mark.parametrize("block_class", [BaconShorCodeExtractionBlock, GenericCSSGaugeExtractionBlock])
+def test_bacon_shor_and_ordinary_patch_keep_two_protected_logicals(block_class):
     system = QECSystem()
     system.add_patch(RepetitionCode(distance=3), name="ordinary")
     system.add_patch(BaconShorCode(distance=2), name="subsystem", offset=(10, 0))
@@ -223,7 +227,7 @@ def test_bacon_shor_and_ordinary_patch_keep_two_protected_logicals():
     ordinary.append("M", [s["syn_idx"] for s in ordinary_checks])
     builder.apply_syndrome_extraction(ordinary, rounds=1)
 
-    gauges = GenericCSSGaugeExtractionBlock(system)
+    gauges = block_class(system)
     builder.apply_syndrome_extraction(
         gauges.circuit, rounds=3, measurement_blocks=gauges.measurement_blocks,
     )

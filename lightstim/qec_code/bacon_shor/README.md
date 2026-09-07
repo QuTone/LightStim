@@ -39,16 +39,74 @@ Z-gauge ancillas at `(2c, 2r+1)`. It uses `2d(d−1)` dedicated measurement
 ancillas, giving `d² + 2d(d−1)` physical qubits. Gauge qubits are subsystem
 degrees of freedom, distinct from these physical ancillas.
 
-The default `GenericCSSGaugeExtractionBlock` measures all X gauges and then
-all Z gauges, with a separate physical measurement block for each basis.
+The default `BaconShorCodeExtractionBlock` in `SE_block.py` measures all X
+gauges and then all Z gauges, with a separate physical measurement block for
+each basis. It uses a fixed geometric schedule in each patch's local frame:
+
+| Basis | Ancilla-to-data neighbor directions | CNOT direction |
+| --- | --- | --- |
+| X | left `(-1, 0)`, then right `(+1, 0)` | ancilla → data |
+| Z | negative y `(0, -1)`, then positive y `(0, +1)` | data → ancilla |
+
+In the row-index layout these Z directions are top, then bottom. Patch
+rotations/transpositions transform the schedule with the patch. Neighbor lookup
+uses global coordinates and only accepts data in the declared gauge support.
+Each basis takes two parallel CNOT layers, so an XZ pair has CNOT depth four,
+independent of distance. Reset and measurement time are additional.
+
 `se_block_kwargs={"basis_order": ("Z", "X")}` reverses this order; single-basis
 and repeated-basis sequences are also accepted. The tracker infers the current
 gauge constraints and their record parities from the measurements while S and
 G remain fixed. A final memory readout requires adequate preparation of the
 code and protected logical state.
 
-Within each basis, bipartite edge coloring avoids simultaneous CNOT collisions.
-This generic schedule has tests for gauge measurement flows, protected logical
-flows, detector relations, and noisy DEM extraction. These checks do not establish
-its circuit-level distance, decoding threshold, or an optimized fault-tolerant
-schedule.
+The generic edge-colored implementation remains explicitly selectable:
+
+```python
+from lightstim.qec_code.generic_css import GenericCSSGaugeExtractionBlock
+
+generic_circuit = MemoryExperiment(
+    qec_patch=BaconShorCode(distance=3),
+    extraction_block_class=GenericCSSGaugeExtractionBlock,
+    basis="Z",
+    rounds=3,
+).build()
+```
+
+Both schedules have CNOT depth four and the same ideal gauge-measurement
+instrument, but they need not use the same layer assignments. In particular,
+the generic schedule mixes positive/negative-y interactions within a Z layer.
+Identical ideal measurements do not by themselves imply identical noisy
+circuits or logical error rates.
+
+Tests cover signed measurement/logical flows, transformed multi-patch geometry,
+compressed memory relations, and noisy DEM extraction. The review in
+[`playground/subsystem/bacon_shor_schedule/`](../../../playground/subsystem/bacon_shor_schedule/README.md)
+also saves distance bounds and a decoding comparison for both schedules. Its
+distance checks apply to the specified X/Z memories and Pauli fault models;
+they do not establish a threshold or an atom-movement implementation.
+
+## Memory decoding
+
+The recommended baseline for this XZ-alternating memory is **CPU PyMatching
+(MWPM), using detectors of the memory basis**. The complete same-basis DEM in
+the reviewed noise models is graphlike. Physical locality alone does not imply
+this property: the full XZ-detector DEM has hyperedges, and needs a decoder
+that handles them or a justified projection/decomposition.
+
+The review notebook explicitly selects original, automatically generated
+Z-record detectors for Z memory before compiling the decoder. It preserves
+all physical operations and the logical observable. This drops complementary
+syndrome information, so it is a baseline rather than an optimality claim.
+X memory uses the corresponding X-record selection.
+
+[`playground/subsystem/bacon_shor_decoder_review.ipynb`](../../../playground/subsystem/bacon_shor_decoder_review.ipynb)
+compares CPU BP+OSD and MWPM on identical samples from the dedicated circuit.
+BP `serial`/`parallel` describes message updates; neither configuration uses
+a GPU. The full XZ BP+OSD configurations are reported separately. The public
+`MemoryExperiment` continues to generate the complete detector set; decoder
+selection and detector projection are explicit choices at the experiment level.
+
+The regular [Bacon–Shor memory demo](../../../notebooks/Memory/memory_bacon_shor.ipynb)
+shows the dedicated memory circuit diagram and runs a native-noise CPU MWPM baseline. Its final
+data readout is noisy; the historical review above uses ideal final readout.
