@@ -3,6 +3,7 @@ from typing import Tuple, Dict, List, Set, Optional, Any, Literal
 import stim
 import numpy as np
 import math
+from ..utils.linear_algebra import check_commutativity, row_echelon
 
 
 class QECPatch(ABC):
@@ -35,6 +36,8 @@ class QECPatch(ABC):
         # Master source of truth for error correction properties
         # Store as stim.PauliString for efficiency
         self.stabilizers: List[Dict[str, Any]] = [] 
+        # Subsystem gauge generators; stabilizers remain the centre of this group.
+        self.gauges: List[Dict[str, Any]] = []
         self.logical_ops: List[Dict[str, Any]] = [] 
         self.num_logicals: int = 0
         self.rotation_angle: float = 0.0
@@ -213,7 +216,7 @@ class QECPatch(ABC):
         self._rebuild_grid_map()
 
         # 3. Update syndrome coords for the stabilizers
-        for stab in self.stabilizers:
+        for stab in self.stabilizers + self.gauges:
             if 'syn_idx' in stab:
                 idx = stab['syn_idx']
                 if idx in self.qubit_coords:
@@ -245,7 +248,7 @@ class QECPatch(ABC):
         self._rebuild_grid_map()
         
         # 3. Update syndrome coords for the stabilizers
-        for stab in self.stabilizers:
+        for stab in self.stabilizers + self.gauges:
             if 'syn_idx' in stab:
                 idx = stab['syn_idx']
                 if idx in self.qubit_coords:
@@ -289,15 +292,13 @@ class QECPatch(ABC):
         self._rebuild_grid_map()
 
         # 4. Update Stabilizers (Coordinate Metadata)
-        for stab in self.stabilizers:
-            if 'syn_idx' in stab:
+        for stab in self.stabilizers + self.gauges:
+            if stab.get('syn_idx') is not None:
                 idx = stab['syn_idx']
                 if idx in self.qubit_coords:
                      stab['syn_coord'] = self.qubit_coords[idx] # Avoid double calculation
                 else:
                     raise ValueError(f"Synaptic index {idx} not found in qubit coordinates.")
-            else:
-                raise ValueError(f"Stabilizer {stab} does not have a syndrome qubit index.")
 
         # 5. Update accumulated rotation angle and rebuild grid map
         self.rotation_angle = (self.rotation_angle + theta) % (2 * np.pi)
@@ -387,6 +388,108 @@ class QECPatch(ABC):
     }
         
         self.stabilizers.append(stabilizer_record)
+
+    def create_stim_gauge(self, target_dict: Dict[Tuple[int, int], str],
+                          syn_coord: Optional[Tuple[int, int]] = None,
+                          type: Optional[str] = None):
+        """Declare a phase-free gauge generator without making it a stabilizer.
+
+        Gauge generators may anticommute. Their support must consist of
+        registered data qubits; an optional syndrome qubit measures the gauge
+        in a separately supplied extraction circuit.
+        """
+        pauli = {}
+        for coord, factor in target_dict.items():
+            if coord not in self.index_map:
+                raise ValueError(f"Gauge support coordinate {coord} is not registered.")
+            index = self.index_map[coord]
+            if index not in self.data_indices:
+                raise ValueError(f"Gauge support qubit {index} is not a data qubit.")
+            if factor not in ("X", "Y", "Z"):
+                raise ValueError(f"Gauge Pauli factors must be X, Y or Z; got {factor!r}.")
+            pauli[index] = factor
+        syn_idx = None
+        if syn_coord is not None:
+            syn_idx = self.index_map.get(syn_coord)
+            if syn_idx not in self.syndrome_indices:
+                raise ValueError(f"Gauge syndrome coordinate {syn_coord} is not a registered syndrome qubit.")
+        self.gauges.append({
+            "pauli": pauli,
+            "type": type,
+            "data_indices": list(pauli),
+            "syn_coord": syn_coord,
+            "syn_idx": syn_idx,
+        })
+
+    def validate_subsystem_declaration(self) -> None:
+        """Validate S, G and k for a standard qubit subsystem code.
+
+        This phase-free algebra check runs only when gauges are declared.
+        Stabilizers must span the entire centre of the gauge group, and
+        ``num_logicals`` counts protected qubits, excluding gauge qubits.
+        Logical representative naming and extraction schedules are unchanged.
+        """
+        if not self.gauges:
+            return
+        if not self.data_indices.issubset(self.qubit_coords):
+            raise ValueError("Subsystem data qubits must have registered coordinates.")
+        data = {qubit: column for column, qubit in enumerate(sorted(self.data_indices))}
+        n = len(data)
+
+        def as_matrix(records, kind):
+            matrix = np.zeros((len(records), 2 * n), dtype=np.uint8)
+            for row, record in enumerate(records):
+                if "sign" in record or "phase" in record:
+                    raise ValueError(f"Subsystem {kind} {row} is phase-free and does not accept sign or phase metadata.")
+                pauli = record.get("pauli")
+                if not isinstance(pauli, dict):
+                    raise ValueError(f"Subsystem {kind} {row} requires a phase-free Pauli dictionary.")
+                for qubit, factor in pauli.items():
+                    if (qubit not in data or qubit not in self.qubit_coords
+                            or qubit in self.syndrome_indices):
+                        raise ValueError(f"Subsystem {kind} {row} acts on undeclared data qubit {qubit!r}.")
+                    if factor not in ("X", "Y", "Z"):
+                        raise ValueError(f"Subsystem {kind} {row} has invalid Pauli factor {factor!r}; expected X, Y or Z.")
+                    column = data[qubit]
+                    matrix[row, column] = factor in ("X", "Y")
+                    matrix[row, n + column] = factor in ("Z", "Y")
+                if not matrix[row].any():
+                    raise ValueError(f"Subsystem {kind} {row} must have nonempty Pauli support.")
+                if sorted(record.get("data_indices", pauli)) != sorted(pauli):
+                    raise ValueError(f"Subsystem {kind} {row} data_indices disagree with its Pauli support.")
+                syn_idx = record.get("syn_idx")
+                if syn_idx is not None and (
+                    syn_idx not in self.syndrome_indices
+                    or syn_idx not in self.qubit_coords
+                    or syn_idx in self.data_indices
+                ):
+                    raise ValueError(f"Subsystem {kind} {row} has an unregistered syndrome qubit.")
+                syn_coord = record.get("syn_coord")
+                if syn_coord is not None and (
+                    syn_idx is None or self.qubit_coords[syn_idx] != syn_coord
+                ):
+                    raise ValueError(f"Subsystem {kind} {row} syndrome coordinate disagrees with syn_idx.")
+            return matrix
+
+        def rank(matrix):
+            return int(row_echelon(matrix)[1]) if matrix.size else 0
+
+        stabilizers = as_matrix(self.stabilizers, "stabilizer")
+        gauges = as_matrix(self.gauges, "gauge")
+        if np.any(check_commutativity(stabilizers, stabilizers)):
+            raise ValueError("Subsystem stabilizers must commute with each other.")
+        if np.any(check_commutativity(stabilizers, gauges)):
+            raise ValueError("Subsystem stabilizers must commute with every gauge generator.")
+        g = rank(gauges)
+        s = rank(stabilizers)
+        if rank(np.vstack([gauges, stabilizers])) != g:
+            raise ValueError("Subsystem stabilizers must belong to the gauge group span.")
+        centre_rank = g - rank(check_commutativity(gauges, gauges))
+        if s != centre_rank:
+            raise ValueError("Subsystem stabilizers must span the entire centre of the gauge group.")
+        expected_k = n - (g + s) // 2
+        if self.num_logicals != expected_k:
+            raise ValueError(f"Subsystem num_logicals={self.num_logicals} does not match protected k={expected_k}.")
 
     def create_stim_logical(self, target_dict: Dict[Tuple[int, int], str], op_type: str):
         """Helper to convert list of coords to stim.PauliString"""

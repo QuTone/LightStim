@@ -32,8 +32,8 @@ physical measurement block. It returns the exact stabilizer rows that Gaussian
 elimination found eligible for later logical classification, but it does not
 decide whether to classify them.
 
-At the end of its declared measurement-block group, `CircuitBuilder` chooses
-one of three explicit actions:
+For patches without declared subsystem gauges, at the end of its declared
+measurement-block group, `CircuitBuilder` chooses one of three explicit actions:
 
 - a single disposable-ancilla block promotes the eligible rows with
   `promote_stabilizer_rows_to_logicals(...)`;
@@ -41,6 +41,12 @@ one of three explicit actions:
   `rebase_stabilizers_onto_code_basis(...)`;
 - a retained-data round keeps its physical state basis and validates the
   logical count after the block group.
+
+When active subsystem gauges are declared, Builder instead invokes
+`classify_subsystem_state(...)` before the first physical block and after
+each block. This computes the currently known gauge constraints and the
+protected logical-state constraints from the tracked physical state, with no
+per-phase edits to the code declaration. See [subsystem tracking](subsystem_tracking.md).
 
 The old `finalize_logicals` argument and
 `finalize_composite_syndrome_measurement(...)` protocol-shaped Tracker method

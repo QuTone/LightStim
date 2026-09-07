@@ -1,7 +1,10 @@
 import stim
 import warnings
 import numpy as np
-from ..utils.linear_algebra import check_commutativity, solve_linear_decomposition
+from ..utils.linear_algebra import check_commutativity, kernel_gf2, solve_linear_decomposition
+from ..utils.subsystem_algebra import (
+    combine_records, independent_row_indices, intersect_row_spaces, reduce_modulo,
+)
 from ..utils.tableau_utils import stabilizers_to_symplectic
 from .tableau import PauliTableau
 from typing import List, Dict, Tuple, Optional, Set, Any
@@ -326,6 +329,11 @@ class SyndromeTracker:
 
         Call after encoding, before SE. Raises if logical count does not match expected.
         """
+        if getattr(system, "active_gauges", ()):
+            if stabilizer_uids is not None:
+                raise ValueError("Subsystem classification uses the full active S/G declaration.")
+            self.classify_subsystem_state(system)
+            return
         self._reject_pending_row_metadata("stabilizer_canonicalization")
         n = self.num_qubits
         if stabilizer_uids is not None:
@@ -399,6 +407,103 @@ class SyndromeTracker:
         self.logicals.records = new_log_records
 
         self.validate_logical_count(context="stabilizer canonicalization")
+
+    def _subsystem_spaces(self, system):
+        """Fixed code algebra in the current register (ordinary patches have G=S)."""
+        center = stabilizers_to_symplectic(system, system.active_stabilizers, self.num_qubits)
+        gauges = stabilizers_to_symplectic(system, system.active_gauges, self.num_qubits)
+        gauge_space = np.vstack([gauges, center])
+        return center, gauge_space
+
+    def infer_gauge_fixed_stabilizers(self, system) -> PauliTableau:
+        """Snapshot of the currently known gauge constraints, including record parities.
+
+        Compute T ∩ G from the actual conditional state T, without changing the
+        patch, the extraction schedule, or the tracker. Declarations do not
+        imply a measured or initialized eigenvalue. The result may therefore
+        contain only part of the code centre during preparation.
+        """
+        _, gauges = self._subsystem_spaces(system)
+        state = np.vstack([self.stabilizers.matrix, self.logicals.matrix])
+        records = self.stabilizers.records + self.logicals.records
+        if any(record < 0 for row in records for record in row):
+            raise RuntimeError("Subsystem inference requires physical state rows, not unmeasured placeholders.")
+        rows, coefficients = intersect_row_spaces(state, gauges)
+        result = PauliTableau(self.num_qubits)
+        result.add_stabilizers(rows, combine_records(coefficients, records))
+        return result
+
+    def classify_subsystem_state(self, system, *, require_complete: bool = False) -> None:
+        """Automatically separate known gauge and protected logical constraints.
+
+        A = T ∩ G supplies gauge-fixed stabilizers. Known bare logical-state
+        constraints come from T ∩ G^perp on the data register, modulo A; they
+        commute with every gauge, including the next round's measurements.
+        Residual preparation constraints remain in the stabilizer bank until
+        the rounds establish S. This avoids treating unprepared code checks
+        or gauge qubits as protected logical qubits.
+
+        Once S is known, this path requires the declared number of initialized
+        protected logical-state constraints. General mixed logical/gauge
+        states and pending logical absorption are not classified silently.
+        """
+        if not getattr(system, "active_gauges", ()):
+            return
+        self._reject_pending_row_metadata("subsystem classification")
+        if self.absorbed_ops.count or self._gauge_logical_vectors:
+            raise RuntimeError("Subsystem classification does not yet support pending absorbed logical relations.")
+        center, gauges = self._subsystem_spaces(system)
+        state = np.vstack([self.stabilizers.matrix, self.logicals.matrix])
+        records = self.stabilizers.records + self.logicals.records
+        if any(record < 0 for row in records for record in row):
+            raise RuntimeError("Subsystem classification requires physical state rows, not unmeasured placeholders.")
+        gauge_rows, gauge_coefficients = intersect_row_spaces(state, gauges)
+
+        # Bare logicals have support only on data, and commute with all G.
+        # Find combinations of state rows obeying these constraints directly;
+        # computing a centralizer over the full register would include ancillas.
+        nondata = sorted(set(range(self.num_qubits)) - set(system.data_indices))
+        nondata_columns = nondata + [q + self.num_qubits for q in nondata]
+        constraints = np.hstack([check_commutativity(state, gauges), state[:, nondata_columns]])
+        bare_coefficients = (kernel_gf2(constraints.T) if state.shape[0]
+                             else np.zeros((0, 0), dtype=np.uint8))
+        bare_rows = (bare_coefficients @ state) % 2
+
+        # Keep already valid logical representatives when possible, so a basis
+        # change in the gauge sector does not arbitrarily relabel observables.
+        old_log_indices = [idx for idx in range(self.stabilizers.count, state.shape[0])
+                           if not constraints[idx].any()]
+        identity = np.eye(state.shape[0], dtype=np.uint8)
+        candidates = np.vstack([state[old_log_indices], bare_rows])
+        candidate_coefficients = np.vstack([identity[old_log_indices], bare_coefficients])
+        gauge_rank = gauge_rows.shape[0]
+        logical_indices = [idx - gauge_rank for idx in independent_row_indices(
+            np.vstack([gauge_rows, candidates])) if idx >= gauge_rank]
+        logical_rows = candidates[logical_indices]
+        logical_coefficients = candidate_coefficients[logical_indices]
+
+        center_known = not reduce_modulo(center, state).any()
+        if require_complete and not center_known:
+            raise RuntimeError("Subsystem code centre is not yet established by initialization and gauge measurements.")
+        if center_known and logical_rows.shape[0] != self.expected_num_logicals:
+            raise RuntimeError(
+                "Subsystem classification requires initialized protected logical states: "
+                f"found {logical_rows.shape[0]} known bare logical constraints, expected "
+                f"{self.expected_num_logicals}. Logical/gauge entanglement, mixed logical "
+                "states, or a changed code boundary need additional support."
+            )
+
+        classified = np.vstack([gauge_rows, logical_rows])
+        classified_count = classified.shape[0]
+        residual_indices = [idx - classified_count for idx in independent_row_indices(
+            np.vstack([classified, state])) if idx >= classified_count]
+        stabilizer_rows = np.vstack([gauge_rows, state[residual_indices]])
+        stabilizer_coefficients = np.vstack([gauge_coefficients, identity[residual_indices]])
+        # Commit only after all checks, retaining exactly the same physical span.
+        self.stabilizers.matrix = stabilizer_rows
+        self.stabilizers.records = combine_records(stabilizer_coefficients, records)
+        self.logicals.matrix = logical_rows
+        self.logicals.records = combine_records(logical_coefficients, records)
 
     def logical_canonicalization(
         self,
@@ -1427,6 +1532,11 @@ class SyndromeTracker:
         This differs from :meth:`stabilizer_canonicalization`, which may insert
         unmeasured canonical rows when preparing a code for its first SE round.
         """
+        if getattr(system, "active_gauges", ()):
+            if stabilizer_uids is not None:
+                raise ValueError("Subsystem classification uses the full active S/G declaration.")
+            self.classify_subsystem_state(system, require_complete=True)
+            return
         self._reject_pending_row_metadata("rebase_stabilizers_onto_code_basis")
         n = self.num_qubits
         if stabilizer_uids is None:

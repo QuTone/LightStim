@@ -223,6 +223,8 @@ class CircuitBuilder:
         """
         if rounds < 1:
             return
+        if z_only and self.if_detector and getattr(self.system, "active_gauges", ()):
+            raise ValueError("z_only readout is not supported for subsystem gauges; use the full detector pipeline.")
 
         blocks = tuple(measurement_blocks or (circuit_chunk,))
         if not blocks:
@@ -303,7 +305,10 @@ class CircuitBuilder:
             ))
             return
 
-        if not self._uses_disposable_syndrome_readout(analyses):
+        if getattr(self.system, "active_gauges", ()) or not self._uses_disposable_syndrome_readout(analyses):
+            # Subsystem rounds must preserve classification at every physical
+            # boundary even when the verified periodic compression declines.
+            # The legacy disposable fallback reuses a body without verifying it.
             persistent_logical_components = set(
                 self.tracker.stabilizer_with_logical_components
             )
@@ -532,6 +537,9 @@ class CircuitBuilder:
         tracker: Optional[SyndromeTracker] = None,
     ) -> None:
         tracker = self.tracker if tracker is None else tracker
+        subsystem = bool(getattr(self.system, "active_gauges", ()))
+        if subsystem:
+            tracker.classify_subsystem_state(self.system)
         promotable_stabilizer_rows = []
         for block_index, analysis in enumerate(analyses):
             output_circuit += analysis.circuit
@@ -550,10 +558,11 @@ class CircuitBuilder:
                 if reset_paulis is not None:
                     tracker.process_resets(reset_paulis)
                     reset_paulis = None
-                self._try_canonicalize_stateful_code_frame(
-                    analysis,
-                    tracker=tracker,
-                )
+                if not subsystem:
+                    self._try_canonicalize_stateful_code_frame(
+                        analysis,
+                        tracker=tracker,
+                    )
 
             promotable_stabilizer_rows.append(
                 tracker.process_mid_measurement(
@@ -576,6 +585,8 @@ class CircuitBuilder:
                     no_detector_mask=analysis.no_detector_mask,
                 )
             )
+            if subsystem:
+                tracker.classify_subsystem_state(self.system)
         self._finish_measurement_block_group(
             analyses,
             promotable_stabilizer_rows=tuple(
@@ -593,6 +604,10 @@ class CircuitBuilder:
     ) -> None:
         """Apply Builder-owned state classification at an SE-round boundary."""
         tracker = self.tracker if tracker is None else tracker
+        if getattr(self.system, "active_gauges", ()):
+            # Already classified from the physical state after every block.
+            # The static centre is a code declaration, not a gauge-phase basis.
+            return
         if self._uses_disposable_syndrome_readout(analyses):
             if len(analyses) == 1:
                 tracker.promote_stabilizer_rows_to_logicals(
@@ -1231,6 +1246,10 @@ class CircuitBuilder:
         """
         if final_measurements is None:
             final_measurements = {q: 'Z' for q in self.system.data_indices}
+        if self.if_detector and getattr(self.system, "active_gauges", ()):
+            if z_only:
+                raise ValueError("z_only readout is not supported for subsystem gauges; use the full detector pipeline.")
+            self.tracker.classify_subsystem_state(self.system, require_complete=True)
 
         # Final destructive data readout must start in a fresh moment. Some
         # extraction blocks, such as middle-out color-code circuits, end with

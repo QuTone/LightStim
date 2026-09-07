@@ -23,6 +23,7 @@ Abstract base class for all QEC codes. Subclass it to define a new code family.
 | `syndrome_indices_x` | `Set[int]` | UIDs used for X-syndrome readout |
 | `syndrome_indices_z` | `Set[int]` | UIDs used for Z-syndrome readout |
 | `stabilizers` | `List[Dict]` | See stabilizer record format below |
+| `gauges` | `List[Dict]` | Optional subsystem gauge generators; same record format. `stabilizers` then declares their centre. |
 | `logical_ops` | `List[Dict]` | See logical op record format below |
 | `num_logicals` | `int` | Number of logical qubits (must set in `build()`) |
 
@@ -53,6 +54,10 @@ self.create_stim_stabilizer(
     type,            # "X" or "Z"
 )
 # Appends one entry to self.stabilizers.
+
+self.create_stim_gauge(target_dict, syn_coord=None, type=None)
+# Appends one entry to self.gauges. Gauge generators may anticommute.
+# Centre stabilizers inferred from gauge outcomes can have syn_coord=None.
 
 self.create_stim_logical(
     target_dict,     # {(x, y): "X"/"Z"/"Y", ...}
@@ -127,6 +132,8 @@ global_patch = system.add_patch(
 | `system.local_to_global_map` | `{patch_name: {local_idx: global_idx}}` |
 | `system.stabilizers` | Master list of all stabilizer records (global indices) |
 | `system.active_stabilizer_indices` | Set of stabilizer UIDs currently ON |
+| `system.gauges` | Declared gauge records in global indices |
+| `system.active_gauge_indices` | Active gauge inventory; unchanged when the measurement phase alternates |
 
 ### Active stabilizer properties
 
@@ -134,10 +141,27 @@ global_patch = system.add_patch(
 system.active_stabilizers         # List of active stabilizer records
 system.active_stabilizers_x       # X-type only
 system.active_stabilizers_z       # Z-type only
+system.active_gauges              # Declared gauges, independent of the round phase
+system.active_gauges_x            # X-type only
+system.active_gauges_z            # Z-type only
 system.active_syndrome_indices    # Global indices of active syndrome qubits
 system.active_syndrome_indices_x  # X-syndrome only
 system.active_syndrome_indices_z  # Z-syndrome only
 ```
+
+For subsystem patches, registration validates that S is the full centre of G
+and that `num_logicals` is the protected count `n - (rank(G) + rank(S))/2`.
+Ancillas belonging to active gauges are included in the active syndrome
+properties. A patch without gauges retains the existing stabilizer-code path.
+
+`SyndromeTracker.infer_gauge_fixed_stabilizers(system)` returns a derived
+`PauliTableau` snapshot with measurement-record parities. It computes the
+intersection of the tracked physical state and the gauge span, including
+products of rows. The Builder automatically classifies subsystem state before
+and after each physical measurement block; users do not update active
+stabilizers between X/Z rounds. See
+[subsystem tracking](../design/subsystem_tracking.md) for initialization and
+the supported scope.
 
 ### Define-by-run (dynamic patch addition)
 
