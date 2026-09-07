@@ -129,3 +129,47 @@ class TestRotatedTwoPatchLSCircuit:
         # Z̄₁Z̄₂ merge = vertical stack
         c = self._build("ZZ", (0, 8), "X", "Z")
         assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("interaction_type", "expected_basis"),
+    [("XX", "ZX"), ("ZZ", "XZ")],
+)
+def test_logical_ops_runner_executes_rotated_two_patch_ls(
+    interaction_type, expected_basis
+):
+    from benchmarks.logical_ops.run_logical_ops import build_tasks
+    from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeline
+
+    tasks = build_tasks(
+        f"TwoPatchLS_rotated_{interaction_type}",
+        distances=[3],
+        p_values=[1e-3],
+        rounds=1,
+    )
+
+    assert len(tasks) == 1
+    circuit, metadata = tasks[0]
+    assert metadata == {
+        "gate": f"TwoPatchLS_rotated_{interaction_type}",
+        "sub_experiment": f"LS_{interaction_type}",
+        "init_basis": expected_basis,
+        "measure_basis": expected_basis,
+        "d": 3,
+        "rounds": 3,
+        "p": 1e-3,
+    }
+    assert circuit.num_observables == 1
+
+    stats = SimulationPipeline(
+        decoder_config=DecoderConfig("pymatching", backend="cpu"),
+        max_shots=16,
+        max_errors=16,
+        batch_size=16,
+        num_workers=1,
+        print_progress=False,
+    ).run(circuit, metadata)
+
+    assert stats.shots == 16
+    assert stats.decoder == "pymatching"

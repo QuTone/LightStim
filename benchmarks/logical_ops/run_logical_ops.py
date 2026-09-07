@@ -14,8 +14,10 @@ Supported gates
     CNOT_LS_ZZ_XX Lattice Surgery CNOT, ZZ-XX protocol (5 sub-experiments)
     CNOT_LS_XX_ZZ Lattice Surgery CNOT, XX-ZZ protocol (5 sub-experiments)
     GHZ           GHZ state prep: CNOT(1,2)+CNOT(1,3) on 3 patches (2 sub-experiments)
-    TwoPatchLS_XX Two-patch lattice surgery XX measurement (1 sub-experiment)
-    TwoPatchLS_ZZ Two-patch lattice surgery ZZ measurement (1 sub-experiment)
+    TwoPatchLS_unrotated_XX Unrotated two-patch LS XX measurement (1 sub-experiment)
+    TwoPatchLS_unrotated_ZZ Unrotated two-patch LS ZZ measurement (1 sub-experiment)
+    TwoPatchLS_rotated_XX   Rotated two-patch LS XX measurement (1 sub-experiment; rounds=d)
+    TwoPatchLS_rotated_ZZ   Rotated two-patch LS ZZ measurement (1 sub-experiment; rounds=d)
     memory        Z and X basis memory baseline (rounds=d); plot scripts average.
 
 For state injection benchmarks, see benchmarks/state_injection/.
@@ -24,7 +26,7 @@ Decoders
 --------
     cpu_bposd     CPU BP+OSD  (default for non-LS gates; handles non-CSS correlations)
     gpu_bposd     GPU BP+OSD  (same algorithm, CUDA-accelerated)
-    pymatching    CPU MWPM    (default for memory and surface-code LS CNOT)
+    pymatching    CPU MWPM    (default for memory and surface-code LS)
     mwpf          CPU MWPF    (general purpose)
 
 CSV output schema
@@ -85,6 +87,11 @@ from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode,
     UnrotatedSurfaceCodeExtractionBlock,
 )
+from lightstim.qec_code.surface_code.rotated import (
+    RotatedSurfaceCode,
+    RotatedSurfaceCodeExtractionBlock,
+    RotatedTwoPatchCoupler,
+)
 
 # ── Available gates ───────────────────────────────────────────────────────────
 
@@ -97,8 +104,10 @@ ALL_GATES = [
     "CNOT_LS_ZZ_XX",
     "CNOT_LS_XX_ZZ",
     "GHZ",
-    "TwoPatchLS_XX",
-    "TwoPatchLS_ZZ",
+    "TwoPatchLS_unrotated_XX",
+    "TwoPatchLS_unrotated_ZZ",
+    "TwoPatchLS_rotated_XX",
+    "TwoPatchLS_rotated_ZZ",
     "memory",
 ]
 
@@ -376,45 +385,59 @@ def _build_ghz_tasks(distances, p_values, rounds):
     return tasks
 
 
-def _build_two_patch_ls_tasks(distances, p_values, rounds, interaction_type):
-    """Two-patch lattice surgery XX or ZZ measurement.
-    XX: patch1=|+>, patch2=|0> → LS XX → measure Z,X (one observable: XX result)
-    ZZ: patch1=|0>, patch2=|0> → LS ZZ → measure Z,Z (one observable: ZZ result)
-    """
+def _build_two_patch_ls_tasks(
+    distances, p_values, rounds, code_family, interaction_type
+):
+    """Build an XX or ZZ two-patch LS sweep for one surface-code family."""
+    if interaction_type not in ("XX", "ZZ"):
+        raise ValueError(f"Unsupported LS interaction: {interaction_type!r}")
+
     tasks = []
-    if interaction_type == "XX":
-        init1, init2, meas1, meas2 = "X", "Z", "Z", "X"
-        offset = (4 * 3 - 2, 0)  # overridden per d below
+    if code_family == "rotated":
+        init1, init2 = ("Z", "X") if interaction_type == "XX" else ("X", "Z")
+        meas1, meas2 = init1, init2
+        code_options = {
+            "coupler_protocol": RotatedTwoPatchCoupler(),
+            "code_patch_class": RotatedSurfaceCode,
+            "extraction_block_class": RotatedSurfaceCodeExtractionBlock,
+        }
+    elif code_family == "unrotated":
+        if interaction_type == "XX":
+            init1, init2, meas1, meas2 = "X", "Z", "Z", "X"
+        else:
+            init1, init2, meas1, meas2 = "Z", "Z", "Z", "Z"
+        code_options = {}
     else:
-        init1, init2, meas1, meas2 = "Z", "Z", "Z", "Z"
-        offset = (0, 4 * 3 - 2)
+        raise ValueError(f"Unsupported surface-code family: {code_family!r}")
 
     for d, p in product(distances, p_values):
         noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
-        step = 2 * (2 * d - 1)
-        off = (step, 0) if interaction_type == "XX" else (0, step)
+        step = 2 * d + 2 if code_family == "rotated" else 2 * (2 * d - 1)
+        offset = (step, 0) if interaction_type == "XX" else (0, step)
+        task_rounds = d if code_family == "rotated" else rounds
         with contextlib.redirect_stdout(io.StringIO()):
             exp = TwoPatchLSExperiment(
                 patch1_config={"distance": d},
                 patch2_config={"distance": d},
-                offset=off,
+                offset=offset,
                 interaction_type=interaction_type,
                 initial_state_patch1=init1,
                 initial_state_patch2=init2,
                 measure_state_patch1=meas1,
                 measure_state_patch2=meas2,
-                rounds=rounds,
+                rounds=task_rounds,
                 noise_params=noise,
                 noise_model="circuit_level",
+                **code_options,
             )
             circuit = exp.build()
         meta = {
-            "gate": f"TwoPatchLS_{interaction_type}",
+            "gate": f"TwoPatchLS_{code_family}_{interaction_type}",
             "sub_experiment": f"LS_{interaction_type}",
             "init_basis": init1 + init2,
             "measure_basis": meas1 + meas2,
             "d": d,
-            "rounds": rounds,
+            "rounds": task_rounds,
             "p": p,
         }
         tasks.append((circuit, meta))
@@ -439,10 +462,11 @@ def build_tasks(gate: str, distances, p_values, rounds: int):
         return _build_cnot_ls_tasks(distances, p_values, rounds, "XX_ZZ")
     if gate == "GHZ":
         return _build_ghz_tasks(distances, p_values, rounds)
-    if gate == "TwoPatchLS_XX":
-        return _build_two_patch_ls_tasks(distances, p_values, rounds, "XX")
-    if gate == "TwoPatchLS_ZZ":
-        return _build_two_patch_ls_tasks(distances, p_values, rounds, "ZZ")
+    if gate in ALL_GATES and gate.startswith("TwoPatchLS_"):
+        code_family, interaction_type = gate.removeprefix("TwoPatchLS_").split("_")
+        return _build_two_patch_ls_tasks(
+            distances, p_values, rounds, code_family, interaction_type
+        )
     if gate == "memory":
         return _build_memory_tasks(distances, p_values)
     raise ValueError(f"Unknown gate: {gate!r}. Available: {ALL_GATES}")
@@ -628,11 +652,17 @@ def main():
     )
     ap.add_argument(
         "--rounds", type=int, default=2,
-        help="SE rounds for gate benchmarks (default: 2). Memory always uses rounds=d.",
+        help=(
+            "SE rounds for gate benchmarks (default: 2). Memory and rotated "
+            "two-patch LS always use rounds=d."
+        ),
     )
     ap.add_argument(
         "--decoder", choices=["cpu_bposd", "gpu_bposd", "pymatching", "mwpf"], default=None,
-        help="Decoder to use (default: pymatching for memory/LS CNOT, cpu_bposd for other gates)",
+        help=(
+            "Decoder to use (default: pymatching for memory and surface-code "
+            "LS, cpu_bposd for other gates)"
+        ),
     )
     ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
     ap.add_argument("--max-errors",  type=int, default=100)
@@ -677,7 +707,10 @@ def main():
     print(f"Gates      : {gates_to_run}")
     print(f"Distances  : {distances}")
     print(f"p values   : {p_values}")
-    print(f"rounds     : {args.rounds} (gates); d (memory)")
+    print(
+        f"rounds     : {args.rounds} (gates); d "
+        "(memory and rotated two-patch LS)"
+    )
     print(f"max_shots  : {max_shots:.0e}")
     print(f"max_errors : {max_errors}")
     print(f"num_workers: {args.num_workers}")
@@ -691,7 +724,11 @@ def main():
         # Choose decoder: explicit flag > sensible default per gate
         if args.decoder is not None:
             decoder_name = args.decoder
-        elif gate == "memory" or gate.startswith("CNOT_LS_"):
+        elif (
+            gate == "memory"
+            or gate.startswith("CNOT_LS_")
+            or gate.startswith("TwoPatchLS_")
+        ):
             decoder_name = "pymatching"
         else:
             decoder_name = "cpu_bposd"
