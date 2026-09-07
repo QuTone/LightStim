@@ -29,6 +29,7 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | Color Code (6-6-6) | `color` | yes |
 | XZZX Surface Code | `xzzx_sc` | yes |
 | Weight-2 Bacon–Shor | `bacon_shor` | yes |
+| Planar subsystem surface code (triangle gauges) | `subsystem_surface` | yes |
 | BB [[72,12,6]] | `bb_72_12_6` | no (d=6 fixed) |
 | BB [[90,8,10]] | `bb_90_8_10` | no (d=10 fixed) |
 | BB [[108,8,10]] | `bb_108_8_10` | no (d=10 fixed) |
@@ -43,6 +44,14 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 > for an interactive example, and `lightstim/qec_code/four_d_geo_code/configs.py` for named configs.
 
 ## Supported Decoders
+
+`subsystem_surface` uses its dedicated X-then-Z extraction block: four CNOT
+layers per basis, eight per complete SE cycle. The default is `rounds=distance`.
+Its full automatically generated detector set supports strict graphlike
+decomposition for CPU PyMatching; no detector-basis projection is applied.
+Use `--p-idle 0 --p-1q 0` for the initial SSC/Bacon–Shor no-idle comparison.
+The [memory notebook](../../notebooks/Memory/memory_subsystem_surface.ipynb)
+shows a small circuit and CPU-MWPM decoding example.
 
 | `--decoder` | Backend | Best for |
 |-------------|---------|---------|

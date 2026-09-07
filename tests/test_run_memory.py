@@ -237,6 +237,37 @@ def test_bacon_shor_no_idle_memory_has_distance_d():
         assert all(error.circuit_error_locations for error in physical)
 
 
+@pytest.mark.parametrize("basis", ["X", "Z"])
+def test_subsystem_surface_native_memory_and_full_detector_mwpm(basis):
+    import stim
+    from lightstim.noise.config import NoiseConfig
+    from lightstim.protocols.memory import MemoryExperiment
+    from lightstim.qec_code.subsystem_surface import SubsystemSurfaceCode
+
+    circuit, n_data, n_total, k = build_circuit(
+        "subsystem_surface", 3, .001, basis=basis, p_idle=0, p_1q=0,
+        se_circuit="dedicated")
+    native = MemoryExperiment(
+        qec_patch=SubsystemSurfaceCode(distance=3), basis=basis, rounds=3,
+        noise_params=NoiseConfig(p_2q=.001, p_meas=.001, p_reset=.001),
+    ).build()
+    assert circuit == native
+    assert (n_data, n_total, k) == (21, 45, 1)
+    assert circuit.num_detectors == 52
+    # Strict decomposition succeeds on all automatic detectors. No projection
+    # or ignore_decomposition_failures fallback is needed for this schedule.
+    dem = circuit.detector_error_model(decompose_errors=True)
+    for op in dem.flattened():
+        if op.type == "error":
+            component_size = 0
+            for target in [*op.targets_copy(), stim.target_separator()]:
+                if target.is_separator():
+                    assert component_size <= 2
+                    component_size = 0
+                component_size += target.is_relative_detector_id()
+    assert len(circuit.shortest_graphlike_error()) == 3
+
+
 @pytest.mark.parametrize("code,basis,detectors", [
     ("bacon_shor", "X", "Z"), ("bacon_shor", "Z", "Y"), ("rotated_sc", "Z", "Z"),
 ])
@@ -484,6 +515,24 @@ def test_cli_bacon_shor_uses_shared_checkpoint_and_explicit_noise(tmp_path):
     assert (rows.shots == 100).all()
     assert set(rows.se_circuit) == {"dedicated"}
     assert set(rows.block_class) == {"BaconShorCodeExtractionBlock"}
+
+
+def test_cli_subsystem_surface_defaults_to_complete_cycles_and_all_detectors(tmp_path):
+    out = tmp_path / "memory.csv"
+    result = _run_cli([
+        "--codes", "subsystem_surface", "--distances", "3", "--basis", "Z", "X",
+        "--p-values", ".001", "--p-idle", "0", "--p-1q", "0",
+        "--max-shots", "100", "--max-errors", "101", "--batch-size", "100",
+        "--num-workers", "1",
+    ], out)
+    assert result.returncode == 0, result.stderr
+    rows = pd.read_csv(out)
+    assert len(rows) == 2
+    assert (rows.rounds == rows.distance).all()
+    assert (rows.detector_basis == "all").all()
+    assert (rows.shots == 100).all()
+    assert set(rows.se_circuit) == {"dedicated"}
+    assert set(rows.block_class) == {"SubsystemSurfaceCodeExtractionBlock"}
 
 
 def test_legacy_checkpoint_keeps_uniform_noise_defaults(tmp_path):

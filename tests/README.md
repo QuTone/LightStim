@@ -35,6 +35,7 @@ CI runs only `not slow` (~89 tests, ~30s).
 | `test_simulation_backend_quality.py` | Decoder-backend edge cases: unknown decoder errors, post-selection, `list_decoders()` deduplication. | Fast |
 | `color_code/test_color_code.py` | Color-code math: stabilizer commutation, logical operator weight, qubit counts. | Fast |
 | `test_run_memory.py` | End-to-end CLI tests for `benchmarks/memory/run_memory.py`; most are marked `slow`. | Slow |
+| `test_subsystem_surface_code.py` | Planar triangle-code algebra, local extraction flows, transformed placement, gauge-phase tracking and native X/Z memories. | Fast |
 
 ## The core invariant
 

@@ -51,8 +51,8 @@ notebooks/
 
 ### Memory/
 
-Memory notebooks use the `lightstim` QECPatch API directly (no separate protocol file).
-They compare LER vs PER and show distance scaling for each code family.
+Memory notebooks build through `MemoryExperiment` and the `lightstim` QECPatch API.
+They show a small memory circuit and, optionally, a quick decoding example.
 
 | Notebook | Code family |
 |---|---|
@@ -63,6 +63,7 @@ They compare LER vs PER and show distance scaling for each code family.
 | `memory_BB.ipynb` | Bivariate Bicycle codes ([[72,12,6]] … [[288,12,18]]) |
 | `memory_color.ipynb` | Triangular color code (6-6-6) |
 | `memory_bacon_shor.ipynb` | Weight-2 Bacon–Shor: dedicated four-layer SE, automatic detectors, CPU MWPM results |
+| `memory_subsystem_surface.ipynb` | Planar subsystem surface code: dedicated X/Z gauge extraction, circuit diagram and a small CPU-MWPM example |
 | `memory_PQRM.ipynb` | PQRM codes (1,2,4), (1,3,5), (1,4,6) |
 | `memory_repetition.ipynb` | Repetition code (sanity check) |
 | `memory_4D_hadamard.ipynb` | 4D geometric code (Hadamard-encoded) |
