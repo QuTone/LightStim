@@ -137,3 +137,51 @@ The completed beta check and numerical counts are recorded in the
 python -m pytest tests/test_ionq_beam_search_decoder.py -q
 # With upstream/decoder on PYTHONPATH, native cases run as well.
 ```
+
+## Low-LER collection with an error target
+
+For the p=0.001 point, use the parallel, resumable runner. Each job samples an
+independent, equal-sized X/Z pair. Logical errors are counted using the paper's
+observable-only policy; native invalid corrections are recorded separately.
+The target is **combined X+Z logical errors**, not per basis. In-flight jobs
+finish and are included after the target is reached, so the count may exceed it.
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHONPATH=. \
+python benchmarks/decoding/ionq_beam_search_low_ler.py \
+    --upstream /path/to/BeamSearchDecoder \
+    --p 0.001 --target-errors 20 --workers 12 --shots-per-job 5000
+```
+
+Repeat the same command to resume from `jobs.jsonl`; completed job IDs are not
+resampled. Changing the worker count or raising the error target is supported;
+changing the seed, circuit, decoder, batch size, or dependency versions requires
+a new `--output-dir`. A checkpoint contains each completed job's seed, error
+shot indices, counts, and reference comparisons. `summary.json` is atomically
+updated after each group of completed jobs. Do not run two coordinators against
+the same output directory simultaneously.
+
+Every observed logical-error shot, plus the first 16 shots of each job/basis,
+is decoded by upstream too. Predictions must match. Both bases' matrices and
+priors are checked against upstream in each worker before sampling starts.
+
+The reported confidence bounds use a beta(1/2,1/2) mixture Bernoulli confidence
+sequence for each basis, with error probability 0.025 per basis. Summing their
+bounds and dividing by 12 gives a joint 95% confidence sequence for the paper's
+metric, valid under the error-count stopping rule. These intervals are wider
+than ordinary fixed-sample intervals. The empirical LER is reported as usual;
+no claim of an unbiased estimate at the stopping time is made.
+
+For basis error count `e` after `n` shots, the mixture likelihood ratio at a
+candidate error probability `p` is
+`B(e+1/2,n-e+1/2) / [B(1/2,1/2) p^e (1-p)^(n-e)]`. The reported set keeps
+candidates for which that ratio is below `1/0.025`. This uses the nonnegative
+martingale / mixture construction described in
+[Howard et al., Time-uniform confidence sequences](https://arxiv.org/abs/1810.08240).
+
+The completed p=0.001, 20-error run is recorded in the
+[low-LER report](../benchmarks/decoding/ionq_beam_search_low_ler_result.md).
+After an interrupted run, missing job IDs are filled even if the saved error
+target was already met. Confidence bounds are withheld for out-of-order partial
+checkpoints and reported only for a complete job prefix; all in-flight jobs are
+included before the final result is reported.
