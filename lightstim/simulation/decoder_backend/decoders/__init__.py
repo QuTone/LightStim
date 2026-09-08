@@ -81,3 +81,6 @@ except ImportError as exc:
     _log.debug("cudaqx import failed: %s", exc)
 
 __all__ = ["PyMatchingDecoder"]
+
+# IonQ BP-guided beam search: pure-Python registration, native import on use.
+from . import ionq_beam_search  # noqa: F401

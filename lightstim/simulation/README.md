@@ -40,6 +40,7 @@
 | `"mwpf"` | `"cpu"` | `mwpf` | — |
 | `"relay-bp"` | `"cpu"` | `relay_bp` | Relay-BP; aliases `"relay_bp"`, `"relaybp"` |
 | `"tesseract"` | `"cpu"` | `tesseract_decoder` | Beam-search MLE; lazy import |
+| `"ionq-beam-search"` | `"cpu"` | separately built IonQ extension | BP-guided beam search; [setup and paper check](../../docs/ionq_beam_search.md) |
 | `"ldpc-bp"` | `"cpu"` | `ldpc` | Plain BP (no OSD), via `ldpc.BpDecoder`; aliases `"ldpc_bp"`, `"bp"` |
 | `"mle-ilp"` | `"cpu"` | `scipy>=1.9` | Exact most-likely-error via ACG-ALP/RPC with MILP fallback; aliases `"mle"`, `"ilp"` |
 | `"chain"` | `"cpu"` | *(none — composes other registered decoders)* | Multi-level escalation, e.g. BP → relay-BP → MLE; aliases `"decoder-chain"`, `"multi-level"` — see §11 |
