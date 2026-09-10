@@ -1,4 +1,5 @@
 from .memory import MemoryExperiment
+from .h_six_encoded_memory import encoded_memory_circuit
 from .bell_teleportation import BellTeleportTG, BellTeleportZZLS, BellTeleportXXLS
 from .gate_teleport import SGateTeleportExperiment
 from .ls_distillation import (
