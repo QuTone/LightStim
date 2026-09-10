@@ -77,37 +77,66 @@ Kasai codes make. `MemoryExperiment` picks it up automatically as the patch's
 
 ## Low-weight fault audit
 
-`single_fault_audit(circuit)` (in `lightstim.utils.fault_audit`, a code-agnostic
-helper) inserts every single-qubit Pauli fault after every operation of an
-annotated circuit and classifies it as *detected*, *undetected-harmless*, or
-*undetected-logical*. A circuit with no undetected-logical single fault has
-circuit fault distance `>= 2`, i.e. an `O(p^2)` conditional logical-error rate
-under detector post-selection.
+`lightstim.utils.fault_audit.low_weight_fault_audit(circuit)` (code-agnostic)
+inserts low-weight Pauli faults into an annotated circuit and classifies each as
+*detected*, *undetected-harmless*, or *undetected-logical*. It first **atomises**
+the circuit (splits merged gate layers so `stim` cannot collapse a whole encoder
+into one `CX`), then sweeps
 
-The baseline `MemoryExperiment` circuit above **passes this audit in both bases**
-(`result.has_circuit_fault_distance_two is True`); see
-`tests/test_H_six_fault_audit.py`, which also checks the `O(p^2)` slope by
-Monte-Carlo. The non-fault-tolerant `get_dist_circ` encoder path does *not* pass
-it — a single encoder fault can flip a logical undetected — which is why the
-flag-verified encoder (`get_ft_init_circ`, Fig. 5 of arXiv:2506.14688) and the
-Bell-pair H-check exist.
+* **weight 1** — every single-qubit Pauli after every physical gate;
+* **weight 2 on two-qubit gates** — every `P_a ⊗ P_b` after every two-qubit gate
+  (the correlated hook faults a `DEPOLARIZE2` channel would sample).
+
+No undetected-logical fault at either weight ⇒ circuit fault distance `>= 2` ⇒
+`O(p^2)` conditional logical-error rate under detector post-selection. The
+atomisation makes this verdict agree with a Monte-Carlo slope fit.
+`single_fault_audit` is the weight-1-only variant.
+
+| circuit | audit | conditional LER |
+|---|---|---|
+| bare-qubit `MemoryExperiment` (both bases) | distance `>= 2` | `O(p^2)` (MC slope ≈ 2.0) |
+| `encoded_memory_circuit(encoder="zero_zero")` — `\|00>_L` | distance `>= 2` | `O(p^2)` (MC slope ≈ 2.0) |
+| `encoded_memory_circuit(..., flag_verified=True)` | distance `>= 2` | `O(p^2)` |
+| `get_dist_circ` `\|++>_L` + SE + Bell-pair H-check | **distance 1** | `O(p)` — roadmap stage 3 |
+
+Under generic-CSS extraction the `|00>_L` encoded Z-memory is already circuit
+fault distance `>= 2` — flag verification is not needed for it. The genuinely
+distance-1 circuit is the `|++>_L` distillation path (`get_dist_circ` has weight-1
+hook errors on its control-qubit spine, and so does the H-check ancilla prep);
+closing that is roadmap stage 3. See `tests/test_H_six_fault_audit.py`.
+
+### Flag-verified preparation
+
+`encoded_memory_circuit(encoder="zero_zero", flag_verified=True)` runs the Fig. 5
+(arXiv:2506.14688) flag-verified `|00>_L` encoder **natively through the
+builder**: two ancillas are entangled with the encoder's control qubits (0, 2)
+before the data-CX core and disentangled + measured after; the caller
+post-selects on the two flag `DETECTOR`s (indices in
+`info["flag_detector_indices"]`). SE rounds, readout and observables are
+tracker-generated as usual; only the flag `R`/`M`/`DETECTOR` are appended
+directly (the tracker rejects a measurement block that follows a data-entangling
+unitary, so the encoder is split into per-gate unitary blocks with the flag
+gadget spliced between).
 
 ## Roadmap / follow-ups
 
-This patch is stage 1–2 of a longer roadmap; later stages are separate PRs:
+Stages 1–2 are in this PR; later stages are separate PRs.
 
-1. **(this PR)** H-code patch with the canonical conventions above, generic-CSS
-   memory baseline, Tanner visualisation, and the low-weight fault audit
-   establishing `O(p^2)` conditional scaling for the memory experiment.
-2. **Flag-verified state preparation and syndrome extraction, natively.**
-   `get_ft_init_circ` is ported, but wiring flag ancillas through
-   `CircuitBuilder` / `SyndromeTracker` so their detectors are auto-generated
-   needs a non-destructive mid-circuit ancilla-measurement gadget the builder
-   does not yet expose.
+1. **(done)** H-code patch with the canonical conventions above, generic-CSS
+   memory baseline, Tanner visualisation, `low_weight_fault_audit`, and
+   `encoded_memory_circuit` (builder-native `|00>_L` encoded memory). Circuit
+   fault distance `>= 2` with `O(p^2)` conditional scaling (exact audit +
+   Monte-Carlo).
+2. **(done)** Flag-verified state preparation and syndrome extraction, natively;
+   `low_weight_fault_audit` for low-weight fault audits; `O(p^2)` conditional
+   logical-error scaling verified under post-selection for the bare, encoded and
+   flag-verified circuits.
 3. **Level-1 Magic-H6 Clifford proxy** (`[[6, 2, 2]]`, `k = 2`) and its expected
-   `O(p^2)` output suppression.
+   `O(p^2)` output suppression — against a dedicated **input `|H>` infidelity**
+   channel `p_in` (cf. `tg_distillation.estimate_p_in`), not circuit-level `p`
+   (under which the level-1 proxy is only `O(p)`).
 4. **Level-2 concatenated `[[36, 4, 4]]`** (`k = 4`) and its expected `O(p^4)`
-   suppression.
+   suppression in `p_in`.
 5. **A true non-Clifford validation path** (`|H>` states + controlled-H), e.g.
    via Clifft, to compare the real protocol against the Clifford proxy.
 
