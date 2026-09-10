@@ -27,8 +27,9 @@ from lightstim.ir.qec_patch import QECPatch
 class HSixLogicalOpSet(CSSLogicalOpSet):
     """Transversal logical gate set for :class:`HSixCode` patches.
 
-    Inherits ``transversal_cnot`` from :class:`CSSLogicalOpSet`; adds transversal
-    H, S, S_DAG, X (single-patch) and CZ, CY (two-patch).
+    Inherits ``transversal_cnot`` and ``transversal_x`` / ``transversal_z`` from
+    :class:`CSSLogicalOpSet`; adds transversal H, S, S_DAG (single-patch) and
+    CZ, CY (two-patch).
     """
 
     def __init__(self):
@@ -60,9 +61,8 @@ class HSixLogicalOpSet(CSSLogicalOpSet):
         """Logical S_DAG via transversal physical S_DAG."""
         self._transversal_1q(builder, patch, "S_DAG", noiseless)
 
-    def transversal_x(self, builder, patch, noiseless: bool = False):
-        """Transversal physical X (flips X-basis parity of every data qubit)."""
-        self._transversal_1q(builder, patch, "X", noiseless)
+    # transversal_x / transversal_z are inherited from CSSLogicalOpSet
+    # (physical Pauli on the registered X_L / Z_L support; slot 0 by default).
 
     # ------------------------------------------------------------------
     # Two-patch transversal gates
