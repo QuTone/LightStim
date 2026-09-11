@@ -19,12 +19,12 @@ from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.noise.config import NoiseConfig
 from lightstim.noise.injector import NoiseInjector
+from lightstim.protocols.h_six_encoded_memory import encoded_memory_circuit
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.qec_code.H_six import (
     HSixCode,
     HSixExtractionBlock,
     HSixLogicalXCheckBlock,
-    encoded_memory_circuit,
     get_dist_circ,
 )
 

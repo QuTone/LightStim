@@ -6,7 +6,6 @@ from .prep_circuits import (
     get_dist_circ,
     get_ft_init_circ,
 )
-from .experiments import encoded_memory_circuit
 
 HSixCode.default_extraction_block_class = HSixExtractionBlock
 
@@ -18,5 +17,4 @@ __all__ = [
     "get_zero_l_encoder",
     "get_dist_circ",
     "get_ft_init_circ",
-    "encoded_memory_circuit",
 ]

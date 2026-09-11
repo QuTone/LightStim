@@ -108,6 +108,11 @@ ancilla prep); closing that is roadmap stage 3. See
 
 ### Flag-verified preparation
 
+`encoded_memory_circuit` is the [[6,2,2]]-specific *encoded* memory experiment
+(`from lightstim.protocols.h_six_encoded_memory import encoded_memory_circuit`),
+alongside the other experiment drivers in `lightstim.protocols`; the bare-qubit
+baseline is the generic `MemoryExperiment`.
+
 `encoded_memory_circuit(encoder="zero_zero", flag_verified=True)` runs the Fig. 5
 (arXiv:2506.14688) flag-verified `|00>_L` encoder **natively through the
 builder**: two ancillas are entangled with the encoder's control qubits (0, 2)

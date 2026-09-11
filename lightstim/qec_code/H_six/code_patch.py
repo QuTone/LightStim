@@ -59,6 +59,14 @@ class HSixCode(QECPatch):
         if self.h_check_ancillas < 0:
             raise ValueError("'h_check_ancillas' must be a non-negative integer.")
 
+    @property
+    def syndrome_coords_x(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[i] for i in sorted(self.syndrome_indices_x)]
+
+    @property
+    def syndrome_coords_z(self) -> List[Tuple[float, float]]:
+        return [self.qubit_coords[i] for i in sorted(self.syndrome_indices_z)]
+
     @staticmethod
     def _data_coord(label: int) -> Tuple[float, float]:
         """Coordinate of data qubit ``label`` (0..5)."""
@@ -139,12 +147,14 @@ class HSixCode(QECPatch):
         info = super().get_info()
         info.update(
             {
-                "n": 6,
+                "code_distance": 2,
                 "k": self.num_logicals,
-                "d": 2,
-                "num_data_qubits": len(self.data_coords),
-                "num_syndrome_qubits": len(self.syndrome_coords),
+                "n_data": len(self.data_indices),
+                "num_x_syndromes": len(self.syndrome_indices_x),
+                "num_z_syndromes": len(self.syndrome_indices_z),
                 "data_coords": self.data_coords,
+                "syndrome_coords_z": self.syndrome_coords_z,
+                "syndrome_coords_x": self.syndrome_coords_x,
                 "syndrome_coords": self.syndrome_coords,
                 "stabilizers": self.stabilizers,
                 "logical_ops": self.logical_ops,

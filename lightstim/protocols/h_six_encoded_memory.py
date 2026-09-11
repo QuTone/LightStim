@@ -1,4 +1,4 @@
-"""Encoded-state memory experiments for the ``[[6, 2, 2]]`` H-code.
+"""Encoded-state memory experiment for the ``[[6, 2, 2]]`` H-code.
 
 :func:`encoded_memory_circuit` prepares a codeword with a ported Magic-H6
 encoder and then runs native syndrome extraction, so LightStim's
@@ -29,6 +29,11 @@ already circuit fault distance ``>= 2`` (``O(p^2)``); flag verification matters
 for the ``|++>_L`` distillation path (``get_dist_circ`` + the Bell-pair
 H-check), which is genuinely distance 1 -- that is roadmap stage 3, on the
 ``feat/magic-h6-protocol`` branch.
+
+The bare-qubit memory experiment for any code is
+:class:`~lightstim.protocols.memory.MemoryExperiment`; this module is the
+[[6,2,2]]-specific *encoded* variant, alongside the other experiment drivers in
+``lightstim.protocols``.
 """
 
 from __future__ import annotations
@@ -40,12 +45,11 @@ import stim
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.tracker import SyndromeTracker
-
-from .code_patch import HSixCode
-from .SE_block import HSixExtractionBlock
+from lightstim.qec_code.H_six import HSixCode, HSixExtractionBlock
 
 # Data-CX core of get_ft_init_circ (flag ancillas / verification CX removed):
-# prepares |00>_L. Controls 0 and 2 are the encoder "spine".
+# prepares |00>_L. Controls 0 and 2 are the encoder "spine". Matches
+# ``lightstim.qec_code.H_six.prep_circuits`` (the port of Code614.py).
 _ZERO_ZERO_ENCODER_HEAD = (("H", (0, 2)),)
 _ZERO_ZERO_ENCODER_CORE = (
     ("CX", (0, 1)), ("CX", (2, 3)),
