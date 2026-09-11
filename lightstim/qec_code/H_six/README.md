@@ -60,11 +60,9 @@ row `y = +1`, Z ancillas on `y = -1`, each centred over its 4-qubit support.
 `HSixExtractionBlock` ignores them. A `shift=(dx, dy)` kwarg offsets every
 qubit for multi-block layouts.
 
-`from lightstim.utils.tanner import draw_tanner_graph` — `draw_tanner_graph(HSixCode())`
-renders the bipartite Tanner graph in this convention (X checks above the data
-line, Z checks below, mirror images of each other). It is the generic
-`QECPatch` Tanner drawer; `matplotlib` is an optional dependency, imported
-lazily.
+For visualisation, build the patch's `MemoryExperiment` circuit and use stim's
+built-in detector-slice diagram, the same as every other code:
+`MemoryExperiment(qec_patch=HSixCode(), rounds=2, basis="Z").build().without_noise().diagram("detslice-with-ops-svg")`.
 
 ## Syndrome extraction
 
@@ -75,35 +73,38 @@ independently and emits one CNOT layer per colour. This is the same choice the
 Kasai codes make. `MemoryExperiment` picks it up automatically as the patch's
 `default_extraction_block_class`.
 
-## Low-weight fault audit
+## Circuit fault distance
 
-`lightstim.utils.fault_audit.low_weight_fault_audit(circuit)` (code-agnostic)
-inserts low-weight Pauli faults into an annotated circuit and classifies each as
-*detected*, *undetected-harmless*, or *undetected-logical*. It first **atomises**
-the circuit (splits merged gate layers so `stim` cannot collapse a whole encoder
-into one `CX`), then sweeps
+Inject circuit-level noise with `NoiseInjector.from_circuit_level`, then read
+stim's built-in `Circuit.shortest_graphlike_error`: the length of the shortest
+graphlike error is the circuit fault distance. Length `>= 2` means no single
+fault flips a logical undetected ⇒ `O(p^2)` conditional logical-error rate under
+detector post-selection.
 
-* **weight 1** — every single-qubit Pauli after every physical gate;
-* **weight 2 on two-qubit gates** — every `P_a ⊗ P_b` after every two-qubit gate
-  (the correlated hook faults a `DEPOLARIZE2` channel would sample).
+```python
+from lightstim.noise.config import NoiseConfig
+from lightstim.noise.injector import NoiseInjector
 
-No undetected-logical fault at either weight ⇒ circuit fault distance `>= 2` ⇒
-`O(p^2)` conditional logical-error rate under detector post-selection. The
-atomisation makes this verdict agree with a Monte-Carlo slope fit.
-`single_fault_audit` is the weight-1-only variant.
+cfg = NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3, p_reset=1e-3)
+noisy = NoiseInjector.from_circuit_level(
+    cfg, list(range(circuit.num_qubits))
+).inject_noise(circuit)
+distance = len(noisy.shortest_graphlike_error())   # >= 2  ->  O(p^2)
+```
 
-| circuit | audit | conditional LER |
+| circuit | distance | conditional LER |
 |---|---|---|
-| bare-qubit `MemoryExperiment` (both bases) | distance `>= 2` | `O(p^2)` (MC slope ≈ 2.0) |
-| `encoded_memory_circuit(encoder="zero_zero")` — `\|00>_L` | distance `>= 2` | `O(p^2)` (MC slope ≈ 2.0) |
-| `encoded_memory_circuit(..., flag_verified=True)` | distance `>= 2` | `O(p^2)` |
-| `get_dist_circ` `\|++>_L` + SE + Bell-pair H-check | **distance 1** | `O(p)` — roadmap stage 3 |
+| bare-qubit `MemoryExperiment` (both bases) | `>= 2` | `O(p^2)` (MC slope ≈ 2.0) |
+| `encoded_memory_circuit(encoder="zero_zero")` — `\|00>_L` | `>= 2` | `O(p^2)` (MC slope ≈ 2.0) |
+| `encoded_memory_circuit(..., flag_verified=True)` | `>= 2` | `O(p^2)` |
+| `get_dist_circ` `\|++>_L` + SE + Bell-pair H-check | **1** | `O(p)` — roadmap stage 3 |
 
 Under generic-CSS extraction the `|00>_L` encoded Z-memory is already circuit
 fault distance `>= 2` — flag verification is not needed for it. The genuinely
-distance-1 circuit is the `|++>_L` distillation path (`get_dist_circ` has weight-1
-hook errors on its control-qubit spine, and so does the H-check ancilla prep);
-closing that is roadmap stage 3. See `tests/test_H_six_fault_audit.py`.
+distance-1 circuit is the `|++>_L` distillation path (`get_dist_circ` has a
+single undetected hook error on its control-qubit spine, and so does the H-check
+ancilla prep); closing that is roadmap stage 3. See
+`tests/test_H_six_fault_distance.py`.
 
 ### Flag-verified preparation
 
@@ -123,14 +124,14 @@ gadget spliced between).
 Stages 1–2 are in this PR; later stages are separate PRs.
 
 1. **(done)** H-code patch with the canonical conventions above, generic-CSS
-   memory baseline, Tanner visualisation, `low_weight_fault_audit`, and
-   `encoded_memory_circuit` (builder-native `|00>_L` encoded memory). Circuit
-   fault distance `>= 2` with `O(p^2)` conditional scaling (exact audit +
-   Monte-Carlo).
+   memory baseline, stim detector-slice visualisation, `shortest_graphlike_error`
+   fault-distance check, and `encoded_memory_circuit` (builder-native `|00>_L`
+   encoded memory). Circuit fault distance `>= 2` with `O(p^2)` conditional
+   scaling (`shortest_graphlike_error` + Monte-Carlo).
 2. **(done)** Flag-verified state preparation and syndrome extraction, natively;
-   `low_weight_fault_audit` for low-weight fault audits; `O(p^2)` conditional
-   logical-error scaling verified under post-selection for the bare, encoded and
-   flag-verified circuits.
+   `shortest_graphlike_error` for the circuit-fault-distance check; `O(p^2)`
+   conditional logical-error scaling verified under post-selection for the bare,
+   encoded and flag-verified circuits.
 3. **Level-1 Magic-H6 Clifford proxy** (`[[6, 2, 2]]`, `k = 2`) and its expected
    `O(p^2)` output suppression — against a dedicated **input `|H>` infidelity**
    channel `p_in` (cf. `tg_distillation.estimate_p_in`), not circuit-level `p`

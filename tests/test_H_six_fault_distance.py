@@ -1,8 +1,12 @@
 """Stage-2 fault-distance / O(p^2) checks for the [[6, 2, 2]] H-code patch.
 
-The exact low-weight fault audit is the primary correctness criterion; the
-Monte-Carlo slope tests are marked-slow sanity checks on top of it. Both agree
-because the audit atomises merged gate layers before probing.
+The primary correctness criterion is stim's built-in
+:meth:`stim.Circuit.shortest_graphlike_error`: circuit-level noise is injected
+with :class:`~lightstim.noise.injector.NoiseInjector`, and the length of the
+shortest graphlike error is the circuit fault distance. Length ``>= 2`` means no
+single fault flips a logical undetected, hence an ``O(p^2)`` conditional
+logical-error rate under detector post-selection. The marked-slow Monte-Carlo
+slope tests are sanity checks on top of it.
 """
 
 from __future__ import annotations
@@ -23,11 +27,6 @@ from lightstim.qec_code.H_six import (
     encoded_memory_circuit,
     get_dist_circ,
 )
-from lightstim.utils.fault_audit import (
-    atomise,
-    low_weight_fault_audit,
-    single_fault_audit,
-)
 
 
 def _baseline_memory_circuit(basis: str, rounds: int = 2):
@@ -40,7 +39,7 @@ def _distillation_encoder_circuit():
     """Magic-H6 level-1 non-FT path: |0>^6 -> get_dist_circ -> |++>_L, one SE
     round, the Bell-pair H-check (which registers the X0_L / X1_L observables),
     then destructive X readout. This is roadmap stage 3, kept here only as the
-    contrast case for the fault audit."""
+    contrast case for the fault-distance check."""
     system = QECSystem()
     system.add_patch(HSixCode(h_check_ancillas=2), name="c622")
     tracker = SyndromeTracker(
@@ -61,14 +60,22 @@ def _distillation_encoder_circuit():
     return builder.circuit
 
 
+def _circuit_level_noise(circuit, p: float):
+    cfg = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p)
+    return NoiseInjector.from_circuit_level(
+        cfg, list(range(circuit.num_qubits))
+    ).inject_noise(circuit)
+
+
+def _circuit_fault_distance(circuit, p: float = 1e-3) -> int:
+    """Length of the shortest graphlike error of the circuit-level-noised circuit."""
+    return len(_circuit_level_noise(circuit, p).shortest_graphlike_error())
+
+
 def _conditional_ler_slope(circuit_fn, ps, shots=400_000):
     logs_p, logs_ler = [], []
     for p in ps:
-        circuit = circuit_fn()
-        cfg = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p)
-        noisy = NoiseInjector.from_circuit_level(
-            cfg, list(range(circuit.num_qubits))
-        ).inject_noise(circuit)
+        noisy = _circuit_level_noise(circuit_fn(), p)
         dets, obs = noisy.compile_detector_sampler().sample(
             shots, separate_observables=True
         )
@@ -81,40 +88,23 @@ def _conditional_ler_slope(circuit_fn, ps, shots=400_000):
     return float(np.polyfit(logs_p, logs_ler, 1)[0])
 
 
-# --- the audit tool -------------------------------------------------------
+# --- noiseless determinism ---------------------------------------------------
 
 @pytest.mark.smoke
-def test_atomise_preserves_determinism_and_splits_layers():
-    circ, _ = encoded_memory_circuit(basis="Z", rounds=1, encoder="zero_zero")
-    atomic = atomise(circ)
-    dets, obs = atomic.compile_detector_sampler().sample(
-        256, separate_observables=True
-    )
+@pytest.mark.parametrize("basis", ["Z", "X"])
+def test_baseline_memory_is_deterministic_noiseless(basis):
+    circ = _baseline_memory_circuit(basis)
+    dets, obs = circ.compile_detector_sampler().sample(256, separate_observables=True)
     assert not dets.any() and not obs.any()
-    # every gate instruction now carries at most one 1q target or one 2q pair
-    for inst in atomic.flattened():
-        if inst.name in ("CX",):
-            assert len(inst.targets_copy()) == 2
-        if inst.name in ("H",):
-            assert len(inst.targets_copy()) == 1
+    circ.detector_error_model(decompose_errors=True)
 
 
-@pytest.mark.smoke
-def test_audit_reports_both_detected_and_harmless_classes():
-    result = single_fault_audit(_baseline_memory_circuit("Z"))
-    assert any(r.detected for r in result.records)
-    assert len(result.undetected_harmless_faults) > 0
-    assert result.audited_max_weight == 1
-
-
-# --- O(p^2) circuits: bare, encoded, flag-verified ----------------------
+# --- O(p^2) circuits: bare, encoded, flag-verified -------------------------
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("basis", ["Z", "X"])
 def test_baseline_memory_is_circuit_fault_distance_two(basis):
-    result = low_weight_fault_audit(_baseline_memory_circuit(basis))
-    assert result.num_locations > 0
-    assert result.has_circuit_fault_distance_two, result.summary()
+    assert _circuit_fault_distance(_baseline_memory_circuit(basis)) >= 2
 
 
 @pytest.mark.smoke
@@ -132,7 +122,7 @@ def test_encoded_memory_is_circuit_fault_distance_two(kwargs):
     dets, obs = circ.compile_detector_sampler().sample(4096, separate_observables=True)
     assert not dets.any() and not obs.any()
     circ.detector_error_model(decompose_errors=True)
-    assert low_weight_fault_audit(circ).has_circuit_fault_distance_two
+    assert _circuit_fault_distance(circ) >= 2
 
 
 @pytest.mark.smoke
@@ -149,20 +139,20 @@ def test_flag_verified_prep_adds_two_postselected_flag_detectors():
     assert not dets[:, info["flag_detector_indices"]].any()
 
 
-# --- contrast: the |++>_L distillation path is genuinely distance 1 -----
+# --- contrast: the |++>_L distillation path is genuinely distance 1 -------
 
 @pytest.mark.smoke
 def test_distillation_encoder_path_is_only_distance_one():
-    """Roadmap stage 3 motivation: get_dist_circ + H-check has weight-1 faults
-    on the encoder spine / H-check ancilla that flip a logical undetected."""
-    result = single_fault_audit(_distillation_encoder_circuit())
-    assert len(result.undetectable_logical_faults) > 0
-    assert all(
-        r.gate in {"R", "H", "CX"} for r in result.undetectable_logical_faults
-    )
+    """Roadmap stage 3 motivation: get_dist_circ + H-check has a single fault
+    on the encoder spine / H-check ancilla that flips a logical undetected."""
+    noisy = _circuit_level_noise(_distillation_encoder_circuit(), 1e-3)
+    err = noisy.shortest_graphlike_error()
+    assert len(err) == 1
+    # the lone undetected error flips a logical observable
+    assert any("L" in str(term) for term in err[0].dem_error_terms)
 
 
-# --- O(p^2) scaling under post-selection (slow Monte-Carlo) -------------
+# --- O(p^2) scaling under post-selection (slow Monte-Carlo) --------------
 
 @pytest.mark.slow
 @pytest.mark.parametrize("basis", ["Z", "X"])

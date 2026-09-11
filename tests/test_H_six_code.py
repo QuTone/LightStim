@@ -194,15 +194,14 @@ def test_bell_pair_h_check_is_deterministic_and_dem_clean():
     circ.detector_error_model(decompose_errors=True)
 
 
-def test_draw_tanner_graph_smoke():
-    plt = pytest.importorskip("matplotlib.pyplot")
-    from lightstim.utils.tanner import draw_tanner_graph
-
-    ax = draw_tanner_graph(HSixCode())
-    # Two X checks + two Z checks + six data nodes, plus logical-support markers.
-    assert len(ax.patches) >= 10
-    assert ax.get_title()
-    plt.close(ax.figure)
+def test_memory_circuit_detslice_diagram_smoke():
+    # Visualisation is stim's built-in detector-slice diagram over the patch's
+    # own MemoryExperiment circuit, the same as every other code's notebook.
+    circ = MemoryExperiment(
+        qec_patch=HSixCode(), rounds=2, basis="Z", noise_params=None
+    ).build()
+    svg = str(circ.without_noise().diagram("detslice-with-ops-svg"))
+    assert "<svg" in svg
 
 
 def test_logical_op_set_transversal_h_is_self_dual():
