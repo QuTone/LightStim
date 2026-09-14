@@ -1,220 +1,133 @@
-"""Phase-1 tests for the [[6, 2, 2]] code patch (Magic-H6 base code)."""
+"""H6 patch algebra, placement, and native memory integration."""
 
-from __future__ import annotations
+from itertools import product
 
 import numpy as np
 import pytest
 import stim
 
-from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.qec_system import QECSystem
-from lightstim.ir.tracker import SyndromeTracker
 from lightstim.protocols.memory import MemoryExperiment
-from lightstim.qec_code.H_six import (
-    HSixCode,
-    HSixExtractionBlock,
-    HSixLogicalOpSet,
-    HSixLogicalXCheckBlock,
-    get_dist_circ,
-    get_ft_init_circ,
-)
+from lightstim.qec_code.H_six import HSixCode, HSixExtractionBlock
+
+pytestmark = pytest.mark.smoke
 
 
-def _pcm():
-    return HSixCode().get_parity_check_matrix()
+def test_patch_algebra_and_code_distance():
+    patch = HSixCode()
+    assert patch.num_qubits == 10
+    assert len(patch.data_indices) == 6
+    assert len(patch.syndrome_indices_x) == len(patch.syndrome_indices_z) == 2
+    assert patch.num_logicals == 2
+
+    def as_pauli(record):
+        pauli = stim.PauliString(patch.num_qubits)
+        for q, factor in record["pauli"].items():
+            pauli[q] = factor
+        return pauli
+
+    checks = [as_pauli(s) for s in patch.stabilizers]
+    logicals = [as_pauli(op) for op in patch.logical_ops]
+    assert len(checks) == len(logicals) == 4
+    hx, hz = patch.get_parity_check_matrix()
+    assert hx[:, :6].tolist() == [[1, 1, 1, 1, 0, 0], [0, 0, 1, 1, 1, 1]]
+    assert np.array_equal(hx, hz)
+    assert not ((hx @ hz.T) % 2).any()
+    # Enumerate over GF(2), rather than use real-valued matrix rank.
+    group = set()
+    for choices in product((0, 1), repeat=4):
+        p = stim.PauliString(patch.num_qubits)
+        for include, check in zip(choices, checks):
+            if include:
+                p *= check
+        group.add(str(p))
+    assert len(group) == 16  # Four independent generators: k = 6 - 4.
+
+    expected = ("XIXIXI", "ZIZIZI", "IXIXIX", "IZIZIZ")
+    for op, paulis in zip(logicals, expected):
+        assert op == stim.PauliString(paulis + "IIII")
+        assert all(op.commutes(check) for check in checks)
+    for i, a in enumerate(logicals):
+        for j, b in enumerate(logicals):
+            assert a.commutes(b) == (i == j or i // 2 != j // 2)
+
+    # Every weight-one Pauli is detected; X0 X1 is a weight-two logical.
+    for q, pauli in product(range(6), (1, 2, 3)):
+        error = stim.PauliString(patch.num_qubits)
+        error[q] = pauli
+        assert any(not error.commutes(check) for check in checks)
+    witness = stim.PauliString("XXIIIIIIII")
+    assert all(witness.commutes(check) for check in checks)
+    assert any(not witness.commutes(op) for op in logicals)
 
 
-def test_shape_and_counts():
-    p = HSixCode()
-    assert p.num_qubits == 10                    # 6 data + 4 ancilla
-    assert len(p.data_indices) == 6
-    assert len(p.syndrome_indices_x) == 2
-    assert len(p.syndrome_indices_z) == 2
-    assert len(p.stabilizers) == 4
-    assert p.num_logicals == 2
-    assert len(p.logical_ops) == 4               # X0, Z0, X1, Z1
-
-
-def test_css_structure_gives_k2_d2():
-    Hx, Hz = _pcm()
-    # Both bases: two weight-4 checks on {0,1,2,3} and {2,3,4,5}.
-    assert Hx[:, :6].tolist() == [[1, 1, 1, 1, 0, 0], [0, 0, 1, 1, 1, 1]]
-    assert Hz[:, :6].tolist() == [[1, 1, 1, 1, 0, 0], [0, 0, 1, 1, 1, 1]]
-    assert np.linalg.matrix_rank(Hx % 2) == 2
-    assert np.linalg.matrix_rank(Hz % 2) == 2
-    # CSS commutation.
-    assert np.all((Hx @ Hz.T) % 2 == 0)
-    # n - rank(Hx) - rank(Hz) = 6 - 2 - 2 = 2 logical qubits.
-    assert 6 - 2 - 2 == HSixCode().num_logicals
-
-
-def test_logical_operator_symplectic_structure():
-    Hx, Hz = _pcm()
-    n = Hx.shape[1]
-
-    def v(support):
-        out = np.zeros(n, dtype=int)
-        for q in support:
-            out[q] = 1
-        return out
-
-    X0, X1 = v((0, 2, 4)), v((1, 3, 5))
-    Z0, Z1 = v((0, 2, 4)), v((1, 3, 5))
-
-    # Logicals commute with every check of the opposite type.
-    assert np.all((Hz @ X0) % 2 == 0) and np.all((Hz @ X1) % 2 == 0)
-    assert np.all((Hx @ Z0) % 2 == 0) and np.all((Hx @ Z1) % 2 == 0)
-    # X_i anticommutes with Z_i only.
-    assert (X0 @ Z0) % 2 == 1 and (X1 @ Z1) % 2 == 1
-    assert (X0 @ Z1) % 2 == 0 and (X1 @ Z0) % 2 == 0
-    # Logicals are not in the row span of the same-type checks (odd weight 3
-    # vs even-weight generators).
-    assert (X0.sum() % 2 == 1) and (X1.sum() % 2 == 1)
-
-
-def test_extraction_block_builds():
+def test_extraction_uses_disjoint_cnot_layers_and_global_indices():
     system = QECSystem()
-    system.add_patch(HSixCode(), name="c622")
+    system.add_patch(HSixCode(), name="first")
+    system.add_patch(HSixCode(shift=(20, 4)), name="second")
     se = HSixExtractionBlock(system)
-    assert se.circuit.num_qubits >= 10
-    last = se.circuit[-1]
-    assert last.name in ("M", "MX")
+    assert se.depth_x == se.depth_z == 4
+    for layers, stabilizers in (
+        (se.x_layers, system.active_stabilizers_x),
+        (se.z_layers, system.active_stabilizers_z),
+    ):
+        assert sorted(edge for layer in layers for edge in layer) == sorted(
+            (s["syn_idx"], q) for s in stabilizers for q in s["data_indices"]
+        )
+        for layer in layers:
+            targets = [q for edge in layer for q in edge]
+            assert len(targets) == len(set(targets))
+    assert se.circuit[-1].name == "M"
 
 
 @pytest.mark.parametrize("basis", ["Z", "X"])
-def test_noiseless_memory_is_deterministic(basis):
-    system = QECSystem()
-    system.add_patch(HSixCode(), name="c622")
-    se = HSixExtractionBlock(system)
-    tracker = SyndromeTracker(system.num_qubits, expected_num_logicals=system.num_logicals)
-    builder = CircuitBuilder(tracker, system)
-    builder.write_coordinates()
-    builder.initialize({q: basis for q in system.data_indices}, n=system.num_qubits)
-    builder.apply_syndrome_extraction(se.circuit, rounds=3)
-    builder.apply_data_readout({q: basis for q in system.data_indices})
-
-    circ = builder.circuit
-    assert circ.num_observables == 2
-    dets, obs = circ.compile_detector_sampler().sample(256, separate_observables=True)
-    assert not dets.any()
-    assert not obs.any()
-    circ.detector_error_model(decompose_errors=True)   # graphlike, compiles
-
-
-@pytest.mark.parametrize("basis", ["Z", "X"])
-def test_memory_experiment_wrapper(basis):
-    exp = MemoryExperiment(qec_patch=HSixCode(), rounds=3, basis=basis, noise_params=None)
-    circ = exp.build()
-    dets, obs = circ.compile_detector_sampler().sample(256, separate_observables=True)
-    assert not dets.any()
-    assert not obs.any()
-
-
-def test_shift_moves_every_qubit():
-    a = HSixCode()
-    b = HSixCode(shift=(20, 4))
-    for idx, (x, y) in a.qubit_coords.items():
-        bx, by = b.qubit_coords[idx]
-        assert (bx, by) == (x + 20, y + 4)
-
-
-# --- Code614.py port ---------------------------------------------------------
-
-def test_h_check_ancillas_are_bare_syndrome_qubits():
-    p = HSixCode(h_check_ancillas=2)
-    assert p.num_qubits == 12
-    bare = p.syndrome_indices - p.syndrome_indices_x - p.syndrome_indices_z
-    assert len(bare) == 2
-    # SE block still ignores them.
-    system = QECSystem()
-    system.add_patch(HSixCode(h_check_ancillas=2), name="c622")
-    se = HSixExtractionBlock(system)
-    used = {t.value for inst in se.circuit for t in inst.targets_copy()}
-    assert used.isdisjoint({10, 11})
-
-
-def test_get_stabs_and_get_logicals_match_code614():
-    # A valid codeword string has both stabilizers 0.
-    assert HSixCode.get_stabs([1, 1, 1, 1, 0, 0]) == [0, 0]
-    assert HSixCode.get_stabs([0, 0, 1, 1, 1, 1]) == [0, 0]
-    assert HSixCode.get_stabs([1, 0, 0, 0, 0, 0]) == [1, 0]
-    assert HSixCode.get_logicals([1, 0, 1, 0, 1, 0]) == [1, 0]
-    assert HSixCode.get_logicals([0, 1, 0, 1, 0, 1]) == [0, 1]
-
-
-def test_get_dist_circ_prepares_plus_plus_L():
-    circ = get_dist_circ([0, 1, 2, 3, 4, 5])
-    assert circ.num_qubits == 6
-    gate_counts = {"H": 0, "CX": 0}
-    for inst in circ.flattened():
-        if inst.name in gate_counts:
-            gate_counts[inst.name] += len(inst.targets_copy()) // (1 if inst.name == "H" else 2)
-    assert gate_counts == {"H": 4, "CX": 8}
-    sim = stim.TableauSimulator()
-    sim.do(circ)
-    for check in ("+XXXXII", "+IIXXXX", "+ZZZZII", "+IIZZZZ"):
-        assert sim.peek_observable_expectation(stim.PauliString(check)) == 1
-    # |++>_L : X0_L = X1_L = +1
-    assert sim.peek_observable_expectation(stim.PauliString("+XIXIXI")) == 1
-    assert sim.peek_observable_expectation(stim.PauliString("+IXIXIX")) == 1
-
-
-def test_get_ft_init_circ_prepares_zero_zero_L_and_flags_stay_0():
-    circ = get_ft_init_circ([0, 1, 2, 3, 4, 5], flags=[6, 7])
-    sim = stim.TableauSimulator()
-    sim.do(circ)  # trailing M on flags is deterministic-0 noiseless
-    assert sim.current_measurement_record()[-2:] == [False, False]
-    for check in ("+XXXXII", "+IIXXXX", "+ZZZZII", "+IIZZZZ"):
-        assert sim.peek_observable_expectation(stim.PauliString(check + "II")) == 1
-    # |00>_L : Z0_L = Z1_L = +1
-    assert sim.peek_observable_expectation(stim.PauliString("+ZIZIZIII")) == 1
-    assert sim.peek_observable_expectation(stim.PauliString("+IZIZIZII")) == 1
-
-
-def test_bell_pair_h_check_is_deterministic_and_dem_clean():
-    system = QECSystem()
-    system.add_patch(HSixCode(h_check_ancillas=2), name="c622")
-    tracker = SyndromeTracker(system.num_qubits, expected_num_logicals=system.num_logicals)
-    builder = CircuitBuilder(tracker, system, if_detector=True)
-    builder.write_coordinates()
-    data = sorted(system.data_indices)
-    builder.initialize({q: "Z" for q in data}, n=system.num_qubits)
-    builder.apply_unitary_block(get_dist_circ(data))
-    builder.apply_syndrome_extraction(
-        circuit_chunk=HSixExtractionBlock(system).circuit, rounds=1
+@pytest.mark.parametrize("rounds", [1, 2, 3])
+def test_memory_experiment_wrapper(basis, rounds):
+    experiment = MemoryExperiment(
+        qec_patch=HSixCode(shift=(20, 4)), rounds=rounds, basis=basis
     )
-    h_check = HSixLogicalXCheckBlock(system)
-    assert h_check.ancilla_indices == [10, 11]
-    builder.apply_syndrome_extraction(circuit_chunk=h_check.circuit, rounds=1)
-    builder.apply_data_readout({q: "X" for q in data})
-
-    circ = builder.circuit
-    dets, obs = circ.compile_detector_sampler().sample(256, separate_observables=True)
+    assert experiment.block_class is HSixExtractionBlock
+    circuit = experiment.build()
+    assert circuit.num_observables == 2
+    assert circuit.num_detectors == 4 * rounds
+    circuit.detector_error_model()
+    dets, obs = circuit.compile_detector_sampler(seed=98).sample(
+        256, separate_observables=True
+    )
     assert not dets.any() and not obs.any()
-    circ.detector_error_model(decompose_errors=True)
 
 
-def test_memory_circuit_detslice_diagram_smoke():
-    # Visualisation is stim's built-in detector-slice diagram over the patch's
-    # own MemoryExperiment circuit, the same as every other code's notebook.
-    circ = MemoryExperiment(
-        qec_patch=HSixCode(), rounds=2, basis="Z", noise_params=None
-    ).build()
-    svg = str(circ.without_noise().diagram("detslice-with-ops-svg"))
-    assert "<svg" in svg
+def test_shift_metadata_matches_geometry_and_config():
+    patch = HSixCode.from_config({"shift": [20, 4]})
+    assert patch.shift == (20, 4)
+    patch.shift_coords(3, -2)
+    assert patch.shift == (23, 2)
+    for q, (x, y) in HSixCode().qubit_coords.items():
+        assert patch.qubit_coords[q] == (x + 23, y + 2)
+    for check in patch.stabilizers:
+        assert check["syn_coord"] == patch.qubit_coords[check["syn_idx"]]
 
 
-def test_logical_op_set_transversal_h_is_self_dual():
-    system = QECSystem()
-    system.add_patch(HSixCode(), name="c622")
-    patch = system.patches["c622"][0]
-    tracker = SyndromeTracker(system.num_qubits, expected_num_logicals=system.num_logicals)
-    builder = CircuitBuilder(tracker, system, if_detector=False)
-    builder.write_coordinates()
-    builder.initialize({q: "Z" for q in system.data_indices}, n=system.num_qubits)
+@pytest.mark.parametrize("shift", [None, (1,), (1, 2, 3), ("a", 0), (float("nan"), 0)])
+def test_invalid_shift_is_rejected(shift):
+    with pytest.raises(ValueError, match="finite real"):
+        HSixCode(shift=shift)
 
-    ops = HSixLogicalOpSet()
-    ops.transversal_hadamard(builder, patch)
-    ops.transversal_s(builder, patch)
-    # Just needs to append cleanly and keep the circuit simulable.
-    builder.circuit.compile_detector_sampler()
+
+def test_fixed_code_rejects_protocol_parameters():
+    with pytest.raises(ValueError, match="Unknown"):
+        HSixCode(h_check_ancillas=2)
+
+
+def test_classical_parities_match_registered_supports():
+    patch = HSixCode()
+    z_checks = [s for s in patch.stabilizers if s["type"] == "Z"]
+    z_logicals = [s for s in patch.logical_ops if s["type"] == "Z"]
+    for bits in product((0, 1), repeat=6):
+        for helper, operators in (
+            (HSixCode.get_stabs, z_checks),
+            (HSixCode.get_logicals, z_logicals),
+        ):
+            assert helper(bits) == [
+                sum(bits[q] for q in op["data_indices"]) % 2 for op in operators
+            ]

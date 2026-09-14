@@ -1,3 +1,5 @@
+from math import isfinite
+from numbers import Real
 from typing import List, Sequence, Tuple
 
 from lightstim.ir.qec_patch import QECPatch
@@ -23,18 +25,13 @@ class HSixCode(QECPatch):
     raw-stim Magic-H6 port (``Logical-Magic-State-Distillation-Circuits``).
 
     The code has no 2D locality; qubit coordinates are cosmetic (they only feed
-    plotting and syndrome/data role inference). X ancillas are placed above the
-    line, Z ancillas below, each centred over its 4-qubit support; any
-    ``h_check_ancillas`` sit on a second row above the line.
+    plotting and coordinate lookup). X ancillas are placed above the
+    line, Z ancillas below, each centred over its 4-qubit support.
 
     Parameters (via ``**kwargs``)
     -----------------------------
     shift : tuple[float, float], optional
         Global ``(dx, dy)`` offset applied to every qubit. Default ``(0, 0)``.
-    h_check_ancillas : int, optional
-        Number of bare ancillas (role ``"syndrome"``, attached to no stabilizer)
-        to add for :class:`HSixLogicalXCheckBlock` -- Magic-H6's "H-check".
-        ``HSixExtractionBlock`` ignores them. Default ``0``.
 
     Examples
     --------
@@ -51,13 +48,18 @@ class HSixCode(QECPatch):
     _Z_LOGICALS = ((0, 2, 4), (1, 3, 5))
 
     def _process_params(self):
-        self.shift = self.params.get("shift", (0, 0))
-        if not (isinstance(self.shift, tuple) and len(self.shift) == 2):
-            raise ValueError("'shift' must be a (dx, dy) tuple.")
-
-        self.h_check_ancillas = int(self.params.get("h_check_ancillas", 0))
-        if self.h_check_ancillas < 0:
-            raise ValueError("'h_check_ancillas' must be a non-negative integer.")
+        unknown = self.params.keys() - {"shift"}
+        if unknown:
+            raise ValueError(f"Unknown HSixCode parameters: {sorted(unknown)}")
+        shift = self.params.get("shift", (0, 0))
+        if not (
+            isinstance(shift, (tuple, list)) and len(shift) == 2
+            and all(isinstance(v, Real) and isfinite(v) for v in shift)
+        ):
+            raise ValueError("'shift' must contain two finite real coordinates.")
+        self._initial_shift = tuple(shift)
+        # QECPatch.shift_coords accumulates this value itself.
+        self.shift = (0, 0)
 
     @property
     def syndrome_coords_x(self) -> List[Tuple[float, float]]:
@@ -113,11 +115,6 @@ class HSixCode(QECPatch):
         for coord in z_syn_coords:
             self.add_qubit(*coord, role="syndrome_z")
 
-        # Bare ancillas for HSixLogicalXCheckBlock (the Magic-H6 "H-check").
-        # Attached to no stabilizer, so HSixExtractionBlock skips them.
-        for i in range(self.h_check_ancillas):
-            self.add_qubit(2 * i, 3, role="syndrome")
-
         # -- Phase 2: stabilizers -------------------------------------------
         for support, syn_coord in zip(self._X_CHECKS, x_syn_coords):
             self.create_stim_stabilizer(
@@ -140,8 +137,8 @@ class HSixCode(QECPatch):
         self.num_logicals = 2
 
         # -- Phase 4: shift -------------------------------------------------
-        if self.shift != (0, 0):
-            self.shift_coords(*self.shift)
+        if self._initial_shift != (0, 0):
+            self.shift_coords(*self._initial_shift)
 
     def get_info(self):
         info = super().get_info()

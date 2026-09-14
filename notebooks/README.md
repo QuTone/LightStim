@@ -67,7 +67,7 @@ They show a small memory circuit and, optionally, a quick decoding example.
 | `memory_PQRM.ipynb` | PQRM codes (1,2,4), (1,3,5), (1,4,6) |
 | `memory_repetition.ipynb` | Repetition code (sanity check) |
 | `memory_4D_hadamard.ipynb` | 4D geometric code (Hadamard-encoded) |
-| `memory_H_six.ipynb` | Self-dual `[[6,2,2]]` H-code (Magic-H6 base code): generic-CSS coloration SE, `shortest_graphlike_error` fault distance |
+| `memory_H_six.ipynb` | `[[6,2,2]]` H6: Tanner graph, generic CSS memory, single-fault audit, and all-detector postselection |
 
 The earlier subsystem prototype is kept locally in `archive/memory_subsystem.ipynb`.
 A dedicated SHYPS memory notebook will accompany its later integration.
