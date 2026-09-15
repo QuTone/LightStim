@@ -71,7 +71,7 @@ class TestMemory:
 
     @pytest.mark.parametrize("basis", ["Z", "X"])
     def test_H_six_code(self, basis):
-        from lightstim.qec_code.H_six import HSixCode, HSixExtractionBlock
+        from lightstim.qec_code.H_code import HSixCode, HSixExtractionBlock
         c = self._run(HSixCode(), HSixExtractionBlock, basis)
         assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
         assert c.num_observables == 2, f"[[6,2,2]] encodes k=2, got {c.num_observables}"

@@ -81,10 +81,9 @@ def test_h_between_extraction_rounds_preserves_tracker_relations(code, initial, 
     assert not dets.any() and not obs.any()
 
 
-def test_legacy_operation_imports():
-    from lightstim.qec_code.H_six import HSixLogicalOpSet
-    from lightstim.qec_code.H_six.operation import HSixLogicalOpSet as LegacyOps
-    assert HSixLogicalOpSet is LegacyOps
+def test_h6_operation_exports():
+    from lightstim.qec_code.H_code.operation import HSixLogicalOpSet as SixOps
+    assert HSixLogicalOpSet is SixOps
     assert issubclass(HSixLogicalOpSet, HCodeLogicalOpSet)
 
 

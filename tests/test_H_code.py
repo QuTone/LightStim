@@ -70,12 +70,11 @@ def test_invalid_family_size(n):
         HCode(n=n)
 
 
-def test_h6_compatibility_paths_and_exact_patch():
-    from lightstim.qec_code.H_six import HSixCode as LegacyCode
-    from lightstim.qec_code.H_six.code_patch import HSixCode as LegacyPatch
-    from lightstim.qec_code.H_six.SE_block import HSixExtractionBlock
+def test_h6_constructor_exports_and_exact_patch():
+    from lightstim.qec_code.H_code.code_patch import HSixCode as SixPatch
+    from lightstim.qec_code.H_code import HSixExtractionBlock
 
-    assert LegacyCode is LegacyPatch is HSixCode
+    assert SixPatch is HSixCode
     assert HSixExtractionBlock is HCodeExtractionBlock
     family = HCode.from_config({"n": 6, "shift": (20, 4)})
     old = HSixCode(shift=(20, 4))

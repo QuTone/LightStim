@@ -8,7 +8,7 @@ import stim
 
 from lightstim.ir.qec_system import QECSystem
 from lightstim.protocols.memory import MemoryExperiment
-from lightstim.qec_code.H_six import HSixCode, HSixExtractionBlock
+from lightstim.qec_code.H_code import HSixCode, HSixExtractionBlock
 
 pytestmark = pytest.mark.smoke
 

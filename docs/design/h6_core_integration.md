@@ -17,9 +17,10 @@ PR commit for subsequent work.
 
 | Original asset | First milestone | Reason / follow-up |
 |---|---|---|
-| `H_six/code_patch.py` | Generalize in `H_code/code_patch.py`; retain thin legacy imports | HCode(n) with even n >= 6; n=6 preserves the contributor's logical convention and coordinates |
+| `H_six/code_patch.py` | Generalize in `H_code/code_patch.py`; retain the HSixCode name in that package | HCode(n) with even n >= 6; n=6 preserves the contributor's logical convention and coordinates |
 | `HSixExtractionBlock` | Alias dedicated concurrent family extraction | n+2 CNOT layers, simultaneous X/Z pipeline, native detector generation |
 | Memory notebook | Adapt the original PR as `memory_H_code.ipynb`; keep old-path pointer | Compact general-n configuration, X/Z memory, detector slices, and a fault check |
+| Benchmark CLI | Add `benchmarks/memory/run_h_code.py` | General n, X/Z, both SE schedules, full-detector postselection, CSV checkpoints, existing memory plotter |
 | H6 tests | Preserve compatibility checks and extend to the family | Algebra, full extraction tableau, coordinates/global indices, active checks, memory faults, and scaling |
 | `prep_circuits.py` | Adopt Fig. 1(d) in `HSixLogicalOpSet.encode`; defer flagged preparation | Independent X/Y/Z input bases; Fig. 5's flagged \|00> preparation has a separate acceptance contract |
 | `h_six_encoded_memory.py` | Defer | Flag operations bypass the tracker; encoded X path needs correction |
@@ -58,7 +59,7 @@ from it.
 and validates it for the general family. H exchanges each registered X/Z
 logical pair and implements H on all n-4 slots together. `HSixLogicalOpSet`
 inherits it and adds the unflagged Fig. 1(d) encoder for independently chosen
-logical X/Y/Z eigenstates. Legacy operation imports remain supported.
+logical X/Y/Z eigenstates. All H6 imports now use the H_code package.
 Gates use global patch indices and the builder's
 unitary-block path so tracker and noise semantics are retained.
 
@@ -174,6 +175,22 @@ Logical Pauli application also does not implement arbitrary-state logical
 preparation. These are reasons to test gate semantics separately.
 
 ## Next milestones and acceptance gates
+
+### Package and benchmark boundary
+
+The general patch and HSixCode(n=6) implementation in H_code/code_patch.py
+already supplied the desired constructor compatibility and were not changed
+by the final directory cleanup. The old H_six directory contained forwarding
+imports only; it is removed. Import HSixCode, HSixExtractionBlock, and
+HSixLogicalOpSet from lightstim.qec_code.H_code.
+
+The formal LER benchmark is benchmarks/memory/run_h_code.py, separate from
+the pre-existing fault-audit command. It reuses MemoryExperiment, samples with
+Stim, accepts on all detectors including final readout, and scores any logical
+observable flip without decoding. Completed parameter configurations are
+checkpointed to CSV; plot_memory.py reads that CSV. The implementation tests
+cover terminal-detector rejection, any-logical scoring, shot/error limits,
+zero-acceptance NaN, CLI sweeps, invalid input, and checkpoint resumption.
 
 ### Memory experiment API boundary
 
@@ -311,7 +328,7 @@ PR head; no flagged implementation was added to this first asset.
 `HSixLogicalOpSet` now specializes the family operation set with the unflagged
 Fig. 1(d) encoder. Both logical input bases are explicit, with X/Y/Z denoting
 the +1 eigenstate. It accepts HSixCode and HCode(6), keeps the four CNOT layers
-separate for noise injection, and preserves the legacy operation import.
+separate for noise injection, and exports the HSixLogicalOpSet name from H_code.
 It does not insert Fig. 5 preparation or a logical-parity check into memory SE.
 
 The updated targeted run passed **492 tests**, with **4 slow scaling tests

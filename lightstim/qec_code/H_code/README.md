@@ -3,7 +3,8 @@
 `HCode(n=6)` is H6 (also called C6). The family accepts even `n >= 6`, with
 `n` data qubits, four syndrome ancillas, `n-4` logical qubits, and distance two.
 `HSixCode()` is a compatibility subclass that delegates to `HCode(n=6)`.
-The original `lightstim.qec_code.H_six` import paths remain supported.
+Import both constructors from `lightstim.qec_code.H_code`; all implementation
+and H6-specific operations live in this one family package.
 
 The initial LightStim H6 assets were contributed by **Maggie Bao (Infleqtion)**
 in [PR #98](https://github.com/QuTone/LightStim/pull/98). The general family is
@@ -81,8 +82,7 @@ executor.register_op_set(type(patch), HCodeLogicalOpSet())
 executor.apply_logical_operation("transversal_hadamard", [patch])
 ```
 
-`HSixLogicalOpSet` inherits the family operation set, including through the
-legacy `H_six.operation` import. Inter-patch CNOT remains inherited from the
+`HSixLogicalOpSet` inherits the family operation set. Inter-patch CNOT remains inherited from the
 existing CSS operation set. General CSS X/Z APIs and the other H6 gates from
 the original PR are deferred. The shared IR state-preparation API is unchanged.
 
@@ -241,6 +241,14 @@ are outside the current scope. See the flag inventory and acceptance requirement
 [integration walkthrough](../../../docs/design/h6_core_integration.md).
 
 ## Reproduce
+
+The [memory benchmark CLI](../../../benchmarks/memory/README.md#h-family-full-postselection-memory)
+supports general n, X/Z memory, dedicated/coloration SE, full-detector
+postselection, per-task CSV checkpoints, and the existing memory plotter:
+
+```bash
+venv/bin/python benchmarks/memory/run_h_code.py --quick
+```
 
 From the repository root, using the LightStim virtual environment:
 
