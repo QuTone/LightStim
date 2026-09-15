@@ -75,3 +75,91 @@ def test_baseline_memory_conditional_ler_is_quadratic(basis, n):
     slope = float(np.polyfit(np.log(rates), np.log(lers), 1)[0])
     print(f"H{n} {basis}: fitted slope={slope:.4f}")
     assert 1.6 <= slope <= 2.6, f"baseline slope {slope:.2f} not near 2"
+
+
+def _frame_after_cnot(patch, block_class, pair, error_qubit, error_basis):
+    """Independent Pauli propagation from one physical fault to SE output."""
+    import stim
+    from lightstim.ir.qec_system import QECSystem
+
+    system = QECSystem()
+    system.add_patch(patch, name="h")
+    circuit = block_class(system).circuit
+    suffix = stim.Circuit()
+    found = False
+    for inst in circuit:
+        if inst.name == "CX":
+            targets = [t.value for t in inst.targets_copy()]
+            pairs = list(zip(targets[::2], targets[1::2]))
+            if pair in pairs:
+                assert not found
+                found = True
+                # Other gates in this layer are disjoint from the faulty pair.
+                continue
+        if found and inst.name in ("CX", "H"):
+            suffix.append(inst)
+    assert found
+    frame = stim.PauliString(patch.num_qubits)
+    frame[error_qubit] = error_basis
+    return frame.after(suffix)
+
+
+def _check_paulis(patch):
+    import stim
+    checks = []
+    for record in patch.stabilizers:
+        p = stim.PauliString(patch.n)
+        for q, basis in record["pauli"].items():
+            p[q] = basis
+        checks.append(p)
+    return checks
+
+
+@pytest.mark.smoke
+def test_h8_coloration_has_an_undetected_single_fault_logical():
+    import stim
+    from lightstim.qec_code.generic_css import GenericCSSColorationExtractionBlock
+
+    patch = HCode(8)
+    # X on XB ancilla after CX(XB, data 5). This is one outcome of a
+    # two-qubit depolarizing fault, not two independently inserted errors.
+    frame = _frame_after_cnot(patch, GenericCSSColorationExtractionBlock,
+                             pair=(9, 5), error_qubit=9, error_basis="X")
+    assert all(frame[q] not in (1, 2) for q in patch.syndrome_indices)
+    data = frame[:8]
+    checks = _check_paulis(patch)
+    assert all(data.commutes(check) for check in checks)
+    # Up to the XB stabilizer the residual is X5 X6, a nontrivial logical.
+    assert data * checks[1] == stim.PauliString("_____XX_")
+    assert any(not data.commutes(stim.PauliString(
+        ''.join(op['pauli'].get(q, 'I') for q in range(8))
+    )) for op in patch.logical_ops)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("n", [6, 8, 12, 64])
+def test_dedicated_memory_result_does_not_certify_open_output_extraction(n):
+    from itertools import product
+    import stim
+    from lightstim.qec_code.H_code import HCodeExtractionBlock
+
+    patch = HCode(n)
+    # Z on ZA after CX(data 0, ZA) spreads to private data 1 and final shared
+    # data 3, after all relevant X-check interactions. This round accepts.
+    frame = _frame_after_cnot(patch, HCodeExtractionBlock,
+                             pair=(0, n + 2), error_qubit=n + 2, error_basis="Z")
+    assert all(frame[q] not in (1, 2) for q in patch.syndrome_indices)
+    data = frame[:n]
+    assert data == stim.PauliString("_Z_Z" + "_" * (n - 4))
+    checks = _check_paulis(patch)
+    weights = []
+    for choices in product((0, 1), repeat=4):
+        residual = data.copy()
+        for include, check in zip(choices, checks):
+            if include:
+                residual *= check
+        weights.append(residual.weight)
+    assert min(weights) == 2  # Cannot reduce this output error to weight one.
+    # The error has a nontrivial final data syndrome, so a subsequent perfect
+    # round or final X readout detects it. It is not an undetected logical.
+    assert [not data.commutes(s) for s in checks] == [False, True, False, False]

@@ -17,6 +17,9 @@ class HCodeExtractionBlock:
     qubit. Interleaving only commutes mutually commuting gates: the ideal
     unitary equals serial X-then-Z extraction. The shared data at each end
     also prevent unchecked interior hook tails in the audited memory circuits.
+    An individual round can still leave an unflagged weight-two data residual;
+    the distance-two validation includes later checks and final memory readout.
+    See docs/design/h_code_se_review.md for the output-boundary counterexample.
 
     x_layers/z_layers share the same time axis and contain (syndrome,data)
     pairs; cnot_layers contains directed (control,target) pairs. depth_x/z

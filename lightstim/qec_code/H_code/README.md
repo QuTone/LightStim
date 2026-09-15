@@ -27,9 +27,10 @@ assert not dets.any() and not obs.any()
 ```
 
 Use `basis="X"` for X memory. The executed
-[memory notebook](../../../notebooks/Memory/memory_H_code.ipynb) shows H6 and
-H8 Tanner graphs, the concurrent CNOT schedule, detector slices, a memory
-size comparison, a single-fault audit, and all-detector postselection.
+[memory notebook](../../../notebooks/Memory/memory_H_code.ipynb) keeps the original PR's compact memory workflow: choose n and the extraction
+class, run X/Z memory, inspect detector slices, and check single faults.
+The detailed [SE review](../../../docs/design/h_code_se_review.md) records
+depth comparisons, paper/source provenance, and the output-boundary limitation.
 
 ## Canonical checks and logical operators
 
@@ -134,7 +135,10 @@ Together these establish circuit fault distance two for the tested circuits.
 Default graphlike search alone skips hyperedges and cannot supply (1).
 The family algebra and ideal schedule are general; these finite-size noisy
 checks are not a proof of arbitrary protocol composition or open-output fault
-tolerance. The shared-data hook argument alone also does not prove that.
+tolerance. In fact, a Z fault on ZA after its data-0 interaction can leave
+Z1 Z3 without an alarm in that round; later checks/final X readout detect it.
+The [SE review](../../../docs/design/h_code_se_review.md) records this boundary
+counterexample and the expanded 720-circuit comparison against generic coloring.
 
 Acceptance requires **every detector zero**, including final readout checks;
 block failure means **any of the n-4 logical observables flips**:
