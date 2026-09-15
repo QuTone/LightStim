@@ -76,6 +76,13 @@ class TestMemory:
         assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
         assert c.num_observables == 2, f"[[6,2,2]] encodes k=2, got {c.num_observables}"
 
+    @pytest.mark.parametrize("basis", ["Z", "X"])
+    def test_H_code_family(self, basis):
+        from lightstim.qec_code.H_code import HCode, HCodeExtractionBlock
+        c = self._run(HCode(n=8), HCodeExtractionBlock, basis)
+        assert_valid_circuit(c); assert_noiseless(c); assert_dem_valid(c)
+        assert c.num_observables == 4
+
     def test_qec_patch_interface_infers_default_extraction_block(self):
         from lightstim.protocols.memory import MemoryExperiment
         from lightstim.qec_code.color_code import (

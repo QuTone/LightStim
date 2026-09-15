@@ -1,8 +1,9 @@
-# H6 core integration walkthrough
+# H-family core integration walkthrough
 
 ## Scope and provenance
 
-This is the first memory milestone of the H6 integration. It adapts Maggie
+This is the first memory milestone of the H6 integration: a general H-family
+patch, concurrent unflagged extraction, and H6 compatibility. It adapts Maggie
 Bao's assets from [PR #98](https://github.com/QuTone/LightStim/pull/98),
 reviewed at commit `9cf7df700a85300e91434633e5cd43a04a66791b`, against base
 `0cb663f9cf498e0b6b5a1a5f9125a1d79aaee2e1`.
@@ -14,10 +15,10 @@ PR commit for subsequent work.
 
 | Original asset | First milestone | Reason / follow-up |
 |---|---|---|
-| `H_six/code_patch.py` | Keep canonical patch and parity helpers | Correct k=2 algebra; remove protocol ancillas; fix accumulated shift metadata |
-| `HSixExtractionBlock` | Keep generic CSS alias | Reuse existing scheduling and detector pipeline |
-| Memory notebook | Keep and extend | Add a Tanner graph, acceptance semantics, and stronger distance reasoning |
-| H6 tests | Adapt | Check registered logicals, code distance, placement, all single-fault signatures, and scaling |
+| `H_six/code_patch.py` | Generalize in `H_code/code_patch.py`; retain thin legacy imports | HCode(n) with even n >= 6; n=6 preserves the contributor's logical convention and coordinates |
+| `HSixExtractionBlock` | Alias dedicated concurrent family extraction | n+2 CNOT layers, simultaneous X/Z pipeline, native detector generation |
+| Memory notebook | Extend as `memory_H_code.ipynb`; keep old-path pointer | H6/H8 Tanner graphs, concurrent schedule, size comparison, fault audit, and postselection |
+| H6 tests | Preserve compatibility checks and extend to the family | Algebra, full extraction tableau, coordinates/global indices, active checks, memory faults, and scaling |
 | `prep_circuits.py` | Defer | Useful reference encoders; need a separate preparation contract |
 | `h_six_encoded_memory.py` | Defer | Flag operations bypass the tracker; encoded X path needs correction |
 | `HSixLogicalXCheckBlock` | Defer | Bell readout represents joint logical parity plus a flag, not independent logical readouts |
@@ -29,17 +30,17 @@ PR commit for subsequent work.
 
 ## Suggested reading order
 
-1. [H6 README](../../lightstim/qec_code/H_six/README.md): code algebra and what
+1. [Family README](../../lightstim/qec_code/H_code/README.md): code algebra and what
    the memory result actually means.
-2. [Patch](../../lightstim/qec_code/H_six/code_patch.py): geometry, checks, and
+2. [Patch](../../lightstim/qec_code/H_code/code_patch.py): geometry, checks, and
    canonical logical pairs.
-3. [Generic extraction](../../lightstim/qec_code/generic_css/SE_block.py):
-   four CNOT layers for each basis, using system-global indices.
+3. [Dedicated extraction](../../lightstim/qec_code/H_code/SE_block.py):
+   concurrent X/Z checks in n+2 CNOT layers, using system-global indices.
 4. [MemoryExperiment](../../lightstim/protocols/memory.py): initialization,
    extraction, readout, and noise injection through the existing builder.
-5. [Executed notebook](../../notebooks/Memory/memory_H_six.ipynb): inspect the
+5. [Executed notebook](../../notebooks/Memory/memory_H_code.ipynb): inspect the
    Tanner graph and detector time boundaries.
-6. [Fault audit](../../tests/test_H_six_fault_distance.py): distinguish the
+6. [Fault audit](../../tests/test_H_code_fault_distance.py): distinguish the
    distance proof under the selected noise model from the Monte Carlo check.
 
 The key distinction is between three objects: the stabilizer code defines
@@ -73,8 +74,10 @@ preparation. These are reasons to test gate semantics separately.
 
 ## Next milestones and acceptance gates
 
-### Encoded and flagged preparation
+### H6-only flagged extraction and preparation
 
+- Implement a separate H6 flag extraction block; general-family flags are
+  outside the agreed scope. Keep protocol ancillas out of the HCode patch.
 - Preserve the reference encoder's state and flag behavior.
 - Use complete atomic operations; obtain detectors through the tracker.
 - Distinguish preparation flags, syndrome rejection, and final verification.
@@ -103,33 +106,42 @@ fault audit to the relevant low-weight combinations. A separate true
 non-Clifford path should test the actual H states and controlled-H operations
 against the declared proxy. Bare memory results do not establish either claim.
 
-## Validation record
+## Validation record: concurrent H-family default
 
-For the scoped core implementation, the targeted patch, fault-audit, and
-protocol regression tests passed (70 tests). The two slow scaling tests also
-passed with 400,000 shots per point, rounds=2, and sampler seeds 98 through 101:
-
-| Basis | Fitted slope | Rates |
-|---|---:|---|
-| Z | 2.0607 | 0.002, 0.004, 0.008, 0.016 |
-| X | 1.9817 | 0.002, 0.004, 0.008, 0.016 |
-
-These finite-sample fits measure conditional block error after all-detector
-postselection. The stronger small-p evidence is exclusion of single-fault
-logical signatures plus an independent two-fault witness. Counts and execution
-details are visible in the tests and notebook.
-
-The broader non-slow suite completed with **744 passed and 1 skipped** after
-excluding `tests/test_api.py`. Including the API tests stalled in this local
-environment, as it also did during the original PR review; the full CI command
-is therefore still unverified. The completed broad run used:
+The targeted patch, compatibility, fault-audit, and protocol tests passed.
+The broader non-slow suite completed with **855 passed and 1 skipped** after
+excluding `tests/test_api.py`. The API tests previously stalled in this local
+environment, including during the original PR review; they were not rerun in
+this milestone, so the full CI command remains unverified. The broad run used:
 
 ```bash
 PYTHONPATH=. venv/bin/python -m pytest tests/ --ignore=tests/test_api.py -m "not slow" --timeout=60 --timeout-method=thread --maxfail=1 -q
 ```
 
-The notebook's seven code cells were executed sequentially with IPython in the
-LightStim virtual environment (Python 3.10.12, Stim 1.15.0), retaining real PNG,
-SVG, and sample outputs. A normal Jupyter kernel launch was blocked by the local
-sandbox's socket restriction. The notebook records its execution method in
-metadata and selects the `lightstim` kernel for normal interactive use.
+The full ideal extraction tableau matches a serial reference, including
+arbitrary logical inputs and ancilla states. The noisy memory audit covers
+n=6,8,12,20,32,64, both bases, rounds=1,2,3, and both zero and nonzero idle
+noise. No undecomposed single-fault logical-only signatures were found; every
+case has an independent two-fault witness. This is a distance-two result for
+these tested closed memory experiments, not open-output protocol certification.
+
+All four slow scaling tests passed with p=0.002,0.004,0.008,0.016, 400,000 shots
+per point, rounds=2, seeds 98 through 101, and no idle noise:
+
+| Code | Z-memory slope | X-memory slope |
+|---|---:|---:|
+| H6 | 1.9947 | 1.9653 |
+| H10 | 2.0662 | 2.0583 |
+
+These finite-sample fits measure conditional block error after all-detector
+postselection, including final readout. The stronger small-p evidence is
+single-fault exclusion plus an independent two-fault witness. These results
+replace the earlier generic-H6 schedule's slopes, because the default circuit
+has changed. The generic CSS extraction remains available as an explicit
+`extraction_block_class` override.
+
+The family notebook's eight code cells were executed sequentially with IPython
+in the LightStim virtual environment (Python 3.10.12, Stim 1.15.0), retaining
+real PNG, SVG, and sample outputs. The in-process execution avoids the sandbox's
+local-socket restriction on Jupyter kernels. The notebook records the method
+in metadata and selects the `lightstim` kernel for normal interactive use.

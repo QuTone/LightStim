@@ -66,7 +66,8 @@ def test_extraction_uses_disjoint_cnot_layers_and_global_indices():
     system.add_patch(HSixCode(), name="first")
     system.add_patch(HSixCode(shift=(20, 4)), name="second")
     se = HSixExtractionBlock(system)
-    assert se.depth_x == se.depth_z == 4
+    assert se.cnot_depth == 8
+    assert any(xs and zs for xs, zs in zip(se.x_layers, se.z_layers))
     for layers, stabilizers in (
         (se.x_layers, system.active_stabilizers_x),
         (se.z_layers, system.active_stabilizers_z),

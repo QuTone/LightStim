@@ -1,9 +1,9 @@
-"""H6 memory audits with all-detector postselection.
+"""H-family memory audits with all-detector postselection.
 
 The undecomposed DEM includes all single-fault signatures, including hyperedges.
 Absence of an undetected logical term gives a lower bound of two. An actual
 two-fault graphlike witness gives the upper bound. This applies to this memory
-schedule with independent Pauli gate/SPAM noise and no idle noise.
+schedule with independent Pauli gate/SPAM noise, with and without idle noise.
 """
 
 import numpy as np
@@ -11,14 +11,14 @@ import pytest
 
 from lightstim.noise.config import NoiseConfig
 from lightstim.protocols.memory import MemoryExperiment
-from lightstim.qec_code.H_six import HSixCode
+from lightstim.qec_code.H_code import HCode
 
 
-def _noisy_memory(basis, rounds=2, p=1e-3):
+def _noisy_memory(basis, rounds=2, p=1e-3, n=6, idle=False):
     return MemoryExperiment(
-        qec_patch=HSixCode(), rounds=rounds, basis=basis,
+        qec_patch=HCode(n=n), rounds=rounds, basis=basis,
         noise_params=NoiseConfig(
-            p_1q=p, p_2q=p, p_meas=p, p_reset=p, p_idle=0
+            p_1q=p, p_2q=p, p_meas=p, p_reset=p, p_idle=p if idle else 0
         ),
         noise_model="circuit_level",
     ).build()
@@ -27,8 +27,10 @@ def _noisy_memory(basis, rounds=2, p=1e-3):
 @pytest.mark.smoke
 @pytest.mark.parametrize("basis", ["Z", "X"])
 @pytest.mark.parametrize("rounds", [1, 2, 3])
-def test_all_single_faults_detected_and_two_fault_witness(basis, rounds):
-    noisy = _noisy_memory(basis, rounds)
+@pytest.mark.parametrize("n", [6, 8, 12, 20, 32, 64])
+@pytest.mark.parametrize("idle", [False, True])
+def test_all_single_faults_detected_and_two_fault_witness(basis, rounds, n, idle):
+    noisy = _noisy_memory(basis, rounds, n=n, idle=idle)
     errors = [
         inst for inst in noisy.detector_error_model(
             decompose_errors=False, approximate_disjoint_errors=False
@@ -55,11 +57,12 @@ def test_all_single_faults_detected_and_two_fault_witness(basis, rounds):
 
 @pytest.mark.slow
 @pytest.mark.parametrize("basis", ["Z", "X"])
-def test_baseline_memory_conditional_ler_is_quadratic(basis):
+@pytest.mark.parametrize("n", [6, 10])
+def test_baseline_memory_conditional_ler_is_quadratic(basis, n):
     rates = (0.002, 0.004, 0.008, 0.016)
     lers = []
     for index, p in enumerate(rates):
-        noisy = _noisy_memory(basis, p=p)
+        noisy = _noisy_memory(basis, p=p, n=n)
         dets, obs = noisy.compile_detector_sampler(seed=98 + index).sample(
             400_000, separate_observables=True
         )
@@ -68,7 +71,7 @@ def test_baseline_memory_conditional_ler_is_quadratic(basis):
         assert accepted.sum() > 2_000 and failures > 0
         ler = failures / accepted.sum()
         lers.append(ler)
-        print(f"{basis}: p={p:g}, accepted={accepted.sum()}, failures={failures}, conditional_ler={ler:.8g}")
+        print(f"H{n} {basis}: p={p:g}, accepted={accepted.sum()}, failures={failures}, conditional_ler={ler:.8g}")
     slope = float(np.polyfit(np.log(rates), np.log(lers), 1)[0])
-    print(f"{basis}: fitted slope={slope:.4f}")
+    print(f"H{n} {basis}: fitted slope={slope:.4f}")
     assert 1.6 <= slope <= 2.6, f"baseline slope {slope:.2f} not near 2"

@@ -1,9 +1,5 @@
-from .code_patch import HSixCode
-from .SE_block import HSixExtractionBlock
+"""Legacy H6 imports; new code should use lightstim.qec_code.H_code."""
 
-HSixCode.default_extraction_block_class = HSixExtractionBlock
+from lightstim.qec_code.H_code import HSixCode, HSixExtractionBlock
 
-__all__ = [
-    "HSixCode",
-    "HSixExtractionBlock",
-]
+__all__ = ["HSixCode", "HSixExtractionBlock"]
