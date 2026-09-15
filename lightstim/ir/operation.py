@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from numbers import Integral
 from typing import List
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.ir.builder import CircuitBuilder
@@ -21,6 +22,58 @@ class CSSLogicalOpSet(LogicalOpSet):
 
     def __init__(self):
         super().__init__("CSSCode")
+
+    @staticmethod
+    def _require_global_patch(builder: CircuitBuilder, patch: QECPatch):
+        """Require the global patch view returned by QECSystem.add_patch()."""
+        uids = getattr(patch, "_registered_stabilizer_uids", None)
+        for name, (registered, _) in builder.system.patches.items():
+            if uids is not None and uids == registered._registered_stabilizer_uids:
+                mapping = builder.system.local_to_global_map[name]
+                expected = {mapping[q] for q in registered.data_indices}
+                if patch.data_indices == expected:
+                    return
+        raise ValueError("Pass the global patch returned by system.add_patch(), not a local patch.")
+
+    @staticmethod
+    def _logical_support(patch: QECPatch, pauli: str, slot: int) -> List[int]:
+        """Registered logical support, in the patch view's qubit indices."""
+        if pauli not in ("X", "Z"):
+            raise ValueError("transversal_pauli supports 'X' or 'Z'.")
+        ops = [op for op in patch.logical_ops if op.get("type") == pauli]
+        if isinstance(slot, bool) or not isinstance(slot, Integral) or not 0 <= slot < len(ops):
+            raise ValueError(f"slot {slot!r} out of range: patch has {len(ops)} {pauli} logicals.")
+        op = ops[slot]
+        support = set(op["pauli"])
+        if not support or support != set(op["data_indices"]) or not support <= patch.data_indices:
+            raise ValueError("Logical support must be a nonempty subset of patch data qubits.")
+        if any(p != pauli for p in op["pauli"].values()):
+            raise ValueError(f"Logical {pauli} must have pure {pauli} support for CSS transversal Pauli.")
+        return sorted(support)
+
+    def transversal_pauli(self, builder: CircuitBuilder, patch: QECPatch,
+                          pauli: str, *, slot: int = 0, noiseless: bool = False):
+        """Apply X_L or Z_L to one registered logical slot.
+
+        Adapted from Maggie Bao's PR #98. This is a tensor product of physical
+        Paulis on that logical's support, with identity elsewhere; it is not
+        necessarily X or Z on every data qubit. It does not prepare a state.
+        Pass the global patch returned by system.add_patch().
+        """
+        self._require_global_patch(builder, patch)
+        circuit = stim.Circuit()
+        circuit.append(pauli, self._logical_support(patch, pauli, slot))
+        builder.apply_unitary_block(unitary_block=circuit, noiseless=noiseless)
+
+    def transversal_x(self, builder: CircuitBuilder, patch: QECPatch, *,
+                      slot: int = 0, noiseless: bool = False):
+        """Apply the registered logical X for one slot (default: slot 0)."""
+        self.transversal_pauli(builder, patch, "X", slot=slot, noiseless=noiseless)
+
+    def transversal_z(self, builder: CircuitBuilder, patch: QECPatch, *,
+                      slot: int = 0, noiseless: bool = False):
+        """Apply the registered logical Z for one slot (default: slot 0)."""
+        self.transversal_pauli(builder, patch, "Z", slot=slot, noiseless=noiseless)
 
     def transversal_cnot(self, builder: CircuitBuilder, control_patch: QECPatch, target_patch: QECPatch):
         """
