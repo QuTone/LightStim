@@ -3,8 +3,9 @@
 ## Scope and provenance
 
 This is the first memory milestone of the H6 integration: a general H-family
-patch, concurrent unflagged extraction, and H6 compatibility, plus the
-reviewed CSS Pauli and color-code Clifford gate contribution. It adapts Maggie
+patch, default concurrent unflagged extraction, H6 compatibility, and
+transversal H, an H6-only unflagged encoder, and the reviewed color-code
+Clifford gate contribution. It adapts Maggie
 Bao's assets from [PR #98](https://github.com/QuTone/LightStim/pull/98),
 reviewed at commit `9cf7df700a85300e91434633e5cd43a04a66791b`, against base
 `0cb663f9cf498e0b6b5a1a5f9125a1d79aaee2e1`.
@@ -20,12 +21,12 @@ PR commit for subsequent work.
 | `HSixExtractionBlock` | Alias dedicated concurrent family extraction | n+2 CNOT layers, simultaneous X/Z pipeline, native detector generation |
 | Memory notebook | Adapt the original PR as `memory_H_code.ipynb`; keep old-path pointer | Compact general-n configuration, X/Z memory, detector slices, and a fault check |
 | H6 tests | Preserve compatibility checks and extend to the family | Algebra, full extraction tableau, coordinates/global indices, active checks, memory faults, and scaling |
-| `prep_circuits.py` | Defer | Useful reference encoders; need a separate preparation contract |
+| `prep_circuits.py` | Adopt Fig. 1(d) in `HSixLogicalOpSet.encode`; defer flagged preparation | Independent X/Y/Z input bases; Fig. 5's flagged \|00> preparation has a separate acceptance contract |
 | `h_six_encoded_memory.py` | Defer | Flag operations bypass the tracker; encoded X path needs correction |
 | `HSixLogicalXCheckBlock` | Defer | Bell readout represents joint logical parity plus a flag, not independent logical readouts |
-| `H_six/operation.py` | Defer | Verify logical phases and multi-patch global indices before exposing gate APIs |
-| Generic CSS Pauli gates | Adopt `transversal_x/z` and slot selection | Preserve preparation semantics; validate global patch views and signed logical action |
-| Color-code Clifford gates | Adopt H/S/S_DAG with larger-distance phase patterns | Preserve d=3 behavior; support registered color-code layouts with exact signed-action tests |
+| `H_six/operation.py` | Adopt H in `HCodeLogicalOpSet`; specialize `HSixLogicalOpSet` for encoding | H acts on all n-4 slots; encoder is H6-only; defer other gates pending phase/global-index review |
+| Generic CSS Pauli gates | Defer the added API; restore shared IR to the PR base | Support-specific logical Pauli application and uniform all-data X/Z need distinct semantics |
+| Color-code Clifford gates | Retain code-specific X/Z/H/S/S_DAG with larger-distance phase patterns | Preserve signed logical action and validate across registered layouts |
 | `playground/magic_h6` roadmap notebook | Defer | Mixed branch state and unfinished protocols are not a reproducible core demo |
 
 [Browse all original assets at the reviewed commit](https://github.com/maggie-bao202/LightStim/tree/9cf7df700a85300e91434633e5cd43a04a66791b).
@@ -53,15 +54,25 @@ from it.
 
 ## Adopted logical-operation contribution
 
-The shared CSS layer now exposes `transversal_x`, `transversal_z`, and
-`transversal_pauli`, adapted from Maggie's PR. They apply a physical Pauli
-product on the selected registered logical support (`slot=0` by default),
-with identity elsewhere. Applying X or Z uniformly to all data is not the
-general rule for a selected logical slot. The `prepare_logical_x/z` methods
-retain their previous behavior; logical Pauli application is not relabeled
-as state preparation.
+`HCodeLogicalOpSet` adopts the physical H layer from Maggie's H6 operation set
+and validates it for the general family. H exchanges each registered X/Z
+logical pair and implements H on all n-4 slots together. `HSixLogicalOpSet`
+inherits it and adds the unflagged Fig. 1(d) encoder for independently chosen
+logical X/Y/Z eigenstates. Legacy operation imports remain supported.
+Gates use global patch indices and the builder's
+unitary-block path so tracker and noise semantics are retained.
 
-`ColorCodeLogicalOpSet` adds H, S, S_DAG and inherits the CSS gates. Its d=3
+The proposed shared CSS `transversal_x/z/pauli` API is deferred. Every CSS
+logical X or Z has a physical Pauli representative on its registered support,
+but uniform X or Z on every data qubit need not preserve a general CSS code.
+For a multi-logical code, a uniform layer can also act on several logical
+slots. The first asset leaves `lightstim/ir/operation.py` identical to the
+original PR base, including the existing state-preparation semantics.
+
+`ColorCodeLogicalOpSet` owns X, Z, H, S, S_DAG and inherits CNOT. Physical
+X/Z on every data qubit commute with the even-weight checks and anticommute
+with the odd-weight opposite-basis logical, giving the intended logical Pauli.
+Its d=3
 uniform phase-gate convention matches the PR: physical S_DAG implements
 logical S for the registered weight-seven logicals. For larger distances,
 weight-six checks need a nonuniform S/S_DAG pattern. The pattern is solved
@@ -83,7 +94,7 @@ from lightstim.qec_code.color_code import ColorCode, ColorCodeLogicalOpSet
 executor = LogicalExecutor(builder)
 executor.register_op_set(ColorCode, ColorCodeLogicalOpSet())
 executor.apply_logical_operation("transversal_s", [patch])
-executor.apply_logical_operation("transversal_x", [patch], slot=0)
+executor.apply_logical_operation("transversal_x", [patch])
 ```
 
 Tests cover signed X/Y/Z logical action, stabilizer-group preservation,
@@ -93,6 +104,53 @@ superdense, raw, triangular, and rectangle layouts, at full code boundaries.
 In-cycle middle-out gates remain a separate spacetime protocol question.
 
 ## Why the deferred assets need separate validation
+
+### Flag inventory at PR #98 head 9cf7df7
+
+The remote PR head was checked again on September 15, 2026 and remains the
+pinned commit above. The encoder and flag assets have distinct roles:
+
+| Asset | Physical role | Current LightStim integration |
+|---|---|---|
+| `prep_circuits.get_dist_circ(data)` | Fig. 1(d) unflagged encoder with fixed \|++> inputs in the PR | Adopted in `HSixLogicalOpSet.encode` with two independently chosen X/Y/Z bases |
+| `prep_circuits.get_ft_init_circ(data, flags)` | Fig. 5 flagged preparation of H6 logical \|00> using two flags | Returns a raw Stim circuit with flag resets/readout; requires a preparation block and declared acceptance |
+| `encoded_memory_circuit(flag_verified=True)` | Experiment driver: Fig. 5 preparation, then generic coloration SE, then readout | Uses the builder for part of the circuit, but manually appends flag R/CX/M/DETECTOR instructions, bypassing the tracker |
+| `HSixLogicalXCheckBlock` | Bell-pair Clifford proxy measuring joint logical XL0*XL1, plus a flag | Has a `.circuit` block and an SE-style call site; its logical-check/flag outcomes need distinct protocol semantics |
+
+No independent flagged Pauli stabilizer-extraction block is included in the
+PR: its `HSixExtractionBlock` is an alias for generic CSS coloration. The
+flagged weight-four X-stabilizer measurements in Quantinuum's experimental
+QASM are a separate source, documented in the [SE review](h_code_se_review.md#what-quantinuum-actually-used).
+
+The encoded-memory helper is not a second encoding primitive. Its `flag_verified`
+option chooses whether to flag the |00> preparation; its subsequent SE was
+generic coloration at the PR head. The dedicated family schedule is a later
+maintainer addition. The new `HSixLogicalOpSet.encode` is independently usable
+with either extraction class; ordinary `MemoryExperiment` keeps its original
+product-state initialization.
+
+Independent Stim back-propagation of the PR's Bell-check unitary confirms
+that its two measured Z operators pull back to `Z_a0 * X0 X1 X2 X3 X4 X5`
+and `Z_a1`. With both ancillas initially in \|0>, these are the joint logical
+`XL0 * XL1` check and the flag, respectively.
+
+The encoder flags monitor data controls 0 and 2. Starting from six data
+qubits in \|0>, its structure is:
+
+```text
+R  f0 f1
+H  d0 d2
+CX d0 f0 ; CX d2 f1
+CX d0 d1 ; CX d2 d3
+CX d0 d4 ; CX d2 d5
+CX d0 d5 ; CX d2 d4
+CX d0 f0 ; CX d2 f1
+M  f0 f1                 # accept both flag outcomes 0
+```
+
+This is a state-preparation gadget, not the arbitrary-input Fig. 1(d) encoder
+or a round measuring the four H-code stabilizers. Its state-specific fault
+argument must not be extended to arbitrary logical basis pairs unchanged.
 
 The original flag encoder directly appends reset, CNOT, measurement, and
 DETECTOR instructions to the builder circuit. Its flags have no
@@ -117,17 +175,41 @@ preparation. These are reasons to test gate semantics separately.
 
 ## Next milestones and acceptance gates
 
-### H6-only flagged extraction and preparation
+### Memory experiment API boundary
 
-- Implement a separate H6 flag extraction block; general-family flags are
-  outside the agreed scope. Keep protocol ancillas out of the HCode patch.
-- Preserve the reference encoder's state and flag behavior.
-- Use complete atomic operations; obtain detectors through the tracker.
-- Distinguish preparation flags, syndrome rejection, and final verification.
-- Verify coordinates, record offsets, tags, and the pipeline's acceptance mask.
-- Audit all single faults, including accepted residual data errors, for each
-  claimed output state. Compare flagged and unflagged circuits with the same
-  noise model and acceptance rule.
+`MemoryExperiment.basis` chooses a uniform physical preparation/readout basis;
+`data_basis_map` overrides it per physical data qubit. Neither parameter calls
+an encoder or assigns independently encoded states to logical slots. The PR's
+encoded-memory helper adds explicit preparation, optionally verified by flags,
+before otherwise ordinary memory rounds.
+
+The preferred future API is one `MemoryExperiment` with an optional preparation
+stage and an explicit readout contract, rather than a parallel
+`EncodedMemoryExperiment` class duplicating extraction, noise, and readout.
+Preparation must remain a code-specific operation; logical bases do not in
+general imply a compatible transversal physical readout map. This milestone
+keeps the existing memory interface and provides a runnable H6 encoded-memory
+composition in the family README. The generic API extension is follow-up work.
+
+### Keep memory SE separate from H6 state verification
+
+- Keep the memory default unflagged, with generic coloration as an explicit
+  alternative. The Fig. 1(d) encoder is a code operation; an encoded-memory
+  circuit is an experiment composing that operation, SE, and readout.
+- Implement the H6 joint logical-H check and its Clifford proxy in a separate
+  protocol experiment. Physical H^tensor6 realizes HL0*HL1; replacing every
+  controlled-H with CX measures XL0*XL1, not one of the four stabilizers.
+- Retain Fig. 5's flagged |00> preparation as a separate candidate when a
+  protocol needs it. Do not infer fault-tolerant preparation for all nine
+  logical basis pairs from the new unflagged encoder tests.
+- No flagged four-check SE or general-family flag extension is planned in
+  this milestone. A future X/Z flagged SE design would need a complete-round
+  fault audit, even if its individual weight-four checks use a published
+  primitive. Flags could be reused; four checks do not imply four dedicated
+  flag qubits.
+- For later flagged protocols, use complete atomic operations and tracker
+  detectors; declare logical-check rejection, flags, and output verification
+  separately, and audit the actual acceptance mask and residual data errors.
 
 ### Magic-H6 Level 1
 
@@ -208,3 +290,56 @@ excluding `tests/test_api.py`. Four additional distance-one CSS edge cases were
 added after that broad run's collection and passed in the 73-test gate run.
 The notebook's five code cells were re-executed successfully. The earlier H6/H10
 scaling results remain applicable: this review did not change their SE circuit.
+
+### First-asset consolidation (September 15, 2026)
+
+The latest scope keeps dedicated extraction as the default, generic coloration
+as an explicit override, H6 compatibility, family-wide transversal H, and the
+code-specific color-code gates. The shared CSS Pauli extension has been
+withdrawn; `lightstim/ir/operation.py` matches PR base `0cb663f` exactly.
+
+The targeted non-slow run passed **461 tests**, with **4 slow scaling tests
+deselected**: H-family patch/compatibility, SE fault audits, signed logical-H
+action on every slot, global indices and tracker integration, color-code
+X/Z/H/S/S_DAG across distances/layouts, and the packaged protocol tests. The
+prior memory scaling results still apply because the extraction circuit and
+noise model were unchanged. Flagged circuits were inspected at the unchanged
+PR head; no flagged implementation was added to this first asset.
+
+### Encoder / logical-check separation (September 15, 2026)
+
+`HSixLogicalOpSet` now specializes the family operation set with the unflagged
+Fig. 1(d) encoder. Both logical input bases are explicit, with X/Y/Z denoting
+the +1 eigenstate. It accepts HSixCode and HCode(6), keeps the four CNOT layers
+separate for noise injection, and preserves the legacy operation import.
+It does not insert Fig. 5 preparation or a logical-parity check into memory SE.
+
+The updated targeted run passed **492 tests**, with **4 slow scaling tests
+deselected**. The 31 new encoder cases cover all nine basis pairs on both
+constructors, signed logical expectations and all four code stabilizers,
+nonzero global indices and other-patch isolation, tracker-generated encoded
+memory, noiseless tags, preparation wrappers, and invalid-request rejection.
+These establish the encoding and integration behavior, not fault-tolerant
+preparation or noisy encoded-memory suppression. The ordinary memory circuit
+and its prior fault-distance/scaling results remain unchanged.
+
+### Push-readiness review (September 15, 2026)
+
+The final non-slow library/protocol run passed **996 tests**, with **1 skipped**
+and **8 slow tests deselected**. It excluded the eight API endpoint tests and
+the unrelated, untracked surface-postselection experiment. All **8 API tests
+also passed** when run outside the local sandbox, resolving the earlier
+TestClient hang without a code change. Thus the two runs cover the non-slow
+CI test scope of this contribution: **1004 passed and 1 skipped**.
+
+All five H-family memory notebook code cells executed successfully. The
+previous slow H6/H10 scaling evidence remains applicable because their
+circuits/noise model are unchanged. The shared IR operation file is identical
+to PR base `0cb663f`; the new logical operations live under their code families.
+All seven contributor commits remain in the integration branch's ancestry.
+
+The live main branch was checked at `eb53733`: its only change since the PR
+base is `requirements-dev.txt` (PR #99), disjoint from this integration.
+Remote CI on the proposed merge remains the final merge gate. Magic-H6
+suppression, flagged preparation, and a generic memory preparation API are
+follow-up work, rather than claims or acceptance criteria of this first asset.

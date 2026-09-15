@@ -2,8 +2,9 @@
 
 This review compares the current LightStim `GenericCSSColorationExtractionBlock`
 with `HCodeExtractionBlock`. It does not compare against every possible
-edge-coloring algorithm. The H-family default remains the dedicated unflagged
-block; experiments can choose either class explicitly.
+edge-coloring algorithm. The currently registered H-family default is the
+dedicated unflagged block; experiments can choose either class explicitly.
+This registration does not certify a fault-tolerant SE output boundary.
 
 ## Depth comparison
 
@@ -78,6 +79,19 @@ parities. Thus neither the generic coloring schedule nor our four-ancilla
 pipeline should be presented as their experimental scheduling. The source's
 instruction order also does not specify every compiled H1 hardware timestamp.
 
+These CNOT-only Pauli checks are **separate from the controlled-H check in
+Fig. 1e**. The latter checks the magic-state protocol's logical H observable;
+it is not an X stabilizer measurement. A change of basis relating H to a Pauli
+does not make that physical gadget an ordinary H-code syndrome measurement.
+An X/Z memory experiment does not need the controlled-H gadget.
+
+For an independent published reference for flagged Pauli measurement, see
+[Chao and Reichardt, arXiv:1705.02329, Fig. 2(c)](https://arxiv.org/pdf/1705.02329)
+and [Hilder et al., PRX 12, 011032, Fig. 1(c)](https://doi.org/10.1103/PhysRevX.12.011032).
+The latter implements a flagged weight-four Pauli parity check. These support
+the individual measurement primitive; a complete H6 X/Z extraction round still
+needs its own composition and acceptance audit.
+
 The reference
 [Code614.py](https://github.com/Quantinuum/Magic-H6/blob/0106aefc537257d77af737dfef00d5d335014b4c/Stim/ConcatenatedMSProtocolSim/Code614.py)
 contains Clifford-proxy distillation and flagged initialization primitives;
@@ -142,14 +156,75 @@ at that output boundary. It establishes why the memory result must not be
 advertised as a composable, flag-free fault-tolerant extraction gadget.
 A future H6 flag block needs its own input/output error and acceptance contract.
 
-## Default configuration recommendation
+## Can final readout checks determine acceptance?
 
-Keep the dedicated block as the **H-family memory baseline**: it has a general
-ideal schedule, smaller depth for n>6, a reproducible closed-memory audit, and
-one consistent implementation at n=6 and larger sizes. At H6 alone, the current
-generic circuit ties it in depth and audited distance. Keep generic coloration
-available as an explicit comparison/fallback, without promising distance two.
-For Magic-H6 protocol reproduction, implement the H6-only flag block from the
-reference and validate the complete protocol's boundaries separately. The
-notebook names its extraction class explicitly so its physical configuration
-remains visible during review.
+Yes, for a declared **destructive memory/readout benchmark**. For example, Z
+readout supplies the parities on data `(0,1,2,3)` and `(2,3,4,5)` for H6.
+Comparing these to the preceding Z syndromes closes the final detectors.
+Those are stabilizer consistency checks, not a demand that the logical
+measurement have its desired value. Logical failures among accepted shots must
+still be counted separately, and the acceptance probability must be reported.
+
+The Quantinuum notebook's `checks` function rejects nontrivial final `meas1`
+stabilizer parities; its separate `success` function scores a logical parity.
+Section II.1 of the paper also explicitly says its non-FT comparison retains
+syndrome information inferred from measuring out the code blocks.
+
+Such retrospective acceptance does **not** certify a quantum output heralded
+before destructive readout. For that claim, acceptance must use information
+available at the stated output boundary. Detectable residual data errors and
+undetected logical errors must be distinguished; distance two does not supply
+a decoder that corrects every arbitrary weight-one residual.
+
+Conversely, discarding the final checks while retaining noisy data readout
+does not isolate SE fault tolerance. A single terminal bit flip can flip the
+reported logical parity without affecting any earlier syndrome measurement,
+regardless of how good the preceding SE was. A regression test inserts just
+this fault after an otherwise noiseless H6 memory circuit: in both bases and
+both schedules, Stim gives `error(0.001) D6 L0 L1`, where D6 is a final-readout
+detector. Including D6 rejects the event; accepting on the earlier D0..D5 alone
+does not. It is a readout error, not evidence of an undetected logical Pauli on
+the encoded quantum output.
+
+A supplementary simulation of H6, two SE rounds, 400,000 shots per point,
+`p=0.002,0.004,0.008,0.016`, gate/SPAM noise as above and zero idle noise gives
+these log-log slopes for **conditional logical-readout error**:
+
+| Schedule / basis | All detectors | SE detectors only |
+|---|---:|---:|
+| Dedicated / Z | 1.995 | 1.016 |
+| Dedicated / X | 1.965 | 1.018 |
+| Coloration / Z | 2.061 | 1.011 |
+| Coloration / X | 1.982 | 1.003 |
+
+Both acceptance rules are applied to the same samples at each point. These
+finite-p fits illustrate the boundary effect; the single-fault counterexample
+establishes why the second metric has a first-order term.
+
+The SE-only acceptance column still scores raw logical readout; it does not
+decode the final detectors. Early postselection followed by final-detector
+decoding is a different experiment and requires a separate fault/scaling audit.
+
+## Chosen default for the first asset
+
+The maintainer chose the dedicated `HCodeExtractionBlock` as the default for
+both `HCode(n)` and `HSixCode()`. Generic coloration remains an explicit
+configuration for comparison. The acceptance contract of the audited memory
+baseline includes all detectors, including final readout; this choice does
+not certify the open-output SE gadget under the stronger residual-error
+condition above. The dedicated schedule is locally derived, while the current
+generic H8 ordering has the undetected single-fault logical counterexample.
+
+The current scope keeps memory SE unflagged. The next H6 protocol experiment
+will handle the joint logical-H check and its Clifford proxy separately;
+neither that check nor Fig. 5's flagged |00> preparation is a four-stabilizer
+extraction round. General-family flagged extraction is outside this scope.
+
+If flagged H6 SE is revisited, the separately sourced weight-four Pauli checks
+provide a starting point; X and Z can be related by Clifford conjugation.
+A complete-round audit must still test the chosen quantum output boundary,
+including whether a single accepted internal fault leaves at most a weight-one
+residual modulo stabilizers, and whether a fault-free round detects a
+weight-one input error. Concurrent scheduling and ancilla reuse require their
+own validation. The memory experiment must also declare its preparation,
+readout, and acceptance rules.

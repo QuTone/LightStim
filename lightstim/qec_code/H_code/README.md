@@ -63,6 +63,68 @@ Identical X/Z supports make transversal physical H act as H on each logical
 slot. A single HCode(n=36) is [[36,32,2]], distinct from the concatenated H6
 [[36,4,4]] construction.
 
+## Logical operations
+
+`HCodeLogicalOpSet.transversal_hadamard` applies physical H to every data
+qubit, implementing H on **all n-4 logical slots together**. It exchanges
+each registered X/Z logical pair, sends logical Y to -Y, and exchanges the
+X/Z stabilizer checks. Use it between complete extraction rounds through the
+builder so the tracker follows the basis change:
+
+```python
+from lightstim.ir.logical_executor import LogicalExecutor
+from lightstim.qec_code.H_code import HCodeLogicalOpSet
+
+# patch is the global view returned by system.add_patch(...).
+executor = LogicalExecutor(builder)
+executor.register_op_set(type(patch), HCodeLogicalOpSet())
+executor.apply_logical_operation("transversal_hadamard", [patch])
+```
+
+`HSixLogicalOpSet` inherits the family operation set, including through the
+legacy `H_six.operation` import. Inter-patch CNOT remains inherited from the
+existing CSS operation set. General CSS X/Z APIs and the other H6 gates from
+the original PR are deferred. The shared IR state-preparation API is unchanged.
+
+### H6 encoding with independent logical input bases
+
+`HSixLogicalOpSet.encode` initializes and encodes two +1 Pauli eigenstates
+using [Dasu et al., Fig. 1(d)](https://arxiv.org/html/2506.14688v1).
+It supports both `HSixCode()` and `HCode(n=6)`; larger family members have no
+encoder implementation here. This adapts the unflagged encoder in Maggie's
+`prep_circuits.get_dist_circ`, with independent inputs instead of fixed |++>.
+
+```python
+from lightstim.ir.builder import CircuitBuilder
+from lightstim.ir.qec_system import QECSystem
+from lightstim.ir.tracker import SyndromeTracker
+from lightstim.qec_code.H_code import HSixCode, HSixLogicalOpSet, HCodeExtractionBlock
+
+system = QECSystem()
+patch = system.add_patch(HSixCode(), name="h6")
+builder = CircuitBuilder(SyndromeTracker(system.num_qubits, system.num_logicals), system)
+bases = ("X", "Y")  # |+>_L0 and |+i>_L1; each entry may be X, Y, or Z.
+HSixLogicalOpSet().encode(builder, patch, logical_bases=bases)
+builder.stabilizer_canonicalization()
+builder.apply_syndrome_extraction(HCodeExtractionBlock(system).circuit, rounds=2)
+builder.apply_data_readout({
+    q: bases[i % 2] for i, q in enumerate(sorted(patch.data_indices))
+})
+circuit = builder.circuit
+```
+
+The operation requires fresh data qubits and touches only that patch. Inputs
+0 and 1 carry the logical states; inputs 2,3,4,5 are |+>,|0>,|+>,|0>. Four
+layers of two disjoint CNOTs implement the encoding. `prepare_logical_x`,
+`prepare_logical_y`, and `prepare_logical_z` are wrappers for equal bases.
+`noiseless=True` tags the resets and gates for the existing noise injector.
+
+This is an unflagged encoder, with no fault-tolerant preparation claim.
+`MemoryExperiment` continues to use its product-state initialization; it does
+not automatically insert this encoder. The previously audited memory distance
+does not certify circuits with a noisy encoder inserted. Fig. 5's flagged
+|00> preparation and Fig. 1(e)'s joint logical-H check are separate gadgets.
+
 ## Coordinates
 
 Data `i` sits at `(2*i,0)`. X-check ancillas sit at `(3,1)` and `(n+1,1)`;
@@ -108,7 +170,18 @@ using system-global qubit indices. Only active, unmodified H-code checks are
 supported by this dedicated block; other extraction needs an explicit block.
 
 `GenericCSSColorationExtractionBlock` remains available as an explicit
-`MemoryExperiment(extraction_block_class=...)` override. Its X-then-Z schedule
+override:
+
+```python
+from lightstim.qec_code.generic_css import GenericCSSColorationExtractionBlock
+
+generic = MemoryExperiment(
+    qec_patch=HCode(n=8), rounds=3, basis="Z",
+    extraction_block_class=GenericCSSColorationExtractionBlock,
+).build()
+```
+
+Its X-then-Z schedule
 has `2(n-2)` CNOT layers, and its ordering does not in general preserve circuit
 fault distance two as n grows. The dedicated ordering places shared data 2 and
 3 at each check's ends: every proper nonempty hook tail contains exactly one
@@ -155,9 +228,11 @@ small-p behavior suggested by the fault audit. There is no decoder or special
 flag postselection tag. These are destructively read out memory experiments,
 not Magic-H6 output-state fidelity measurements.
 
-The next flag implementation will be a **separate H6-only extraction block**,
-with its own fault and acceptance tests. General-family flagged extraction is
-outside this milestone. See the
+Memory SE stays unflagged. The next protocol work is H6-only logical-H
+measurement and its explicitly declared Clifford proxy, in a separate
+experiment. Fig. 5's flagged |00> preparation can be integrated separately
+when needed; a flagged four-stabilizer round and its general-family extension
+are outside the current scope. See the flag inventory and acceptance requirements in the
 [integration walkthrough](../../../docs/design/h6_core_integration.md).
 
 ## Reproduce
@@ -165,6 +240,6 @@ outside this milestone. See the
 From the repository root, using the LightStim virtual environment:
 
 ```bash
-PYTHONPATH=. venv/bin/python -m pytest tests/test_H_code.py tests/test_H_six_code.py tests/test_H_code_fault_distance.py tests/test_protocols.py -m "not slow" --timeout=90
+PYTHONPATH=. venv/bin/python -m pytest tests/test_H_code.py tests/test_H_six_code.py tests/test_H_code_ops.py tests/test_H_code_fault_distance.py tests/test_protocols.py -m "not slow" --timeout=90
 PYTHONPATH=. venv/bin/python -m pytest tests/test_H_code_fault_distance.py -m slow -s --timeout=90
 ```

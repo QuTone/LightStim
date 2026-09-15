@@ -77,6 +77,40 @@ def test_baseline_memory_conditional_ler_is_quadratic(basis, n):
     assert 1.6 <= slope <= 2.6, f"baseline slope {slope:.2f} not near 2"
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("basis", ["Z", "X"])
+@pytest.mark.parametrize("use_coloration", [False, True])
+def test_terminal_readout_fault_needs_final_detector(basis, use_coloration):
+    """SE-only acceptance cannot protect a later noisy logical readout."""
+    from lightstim.qec_code.H_code import HCodeExtractionBlock
+    from lightstim.qec_code.generic_css import GenericCSSColorationExtractionBlock
+
+    block = GenericCSSColorationExtractionBlock if use_coloration else HCodeExtractionBlock
+    clean = MemoryExperiment(
+        qec_patch=HCode(6), extraction_block_class=block, rounds=2, basis=basis,
+    ).build().flattened()
+    boundaries = [i for i, inst in enumerate(clean)
+                  if inst.name in ("M", "MX")
+                  and {t.value for t in inst.targets_copy()} == set(range(6))]
+    assert len(boundaries) == 1
+    boundary = boundaries[0]
+    num_se_detectors = sum(inst.name == "DETECTOR" for inst in clean[:boundary])
+    assert clean.num_detectors - num_se_detectors == 2
+
+    # All operations are perfect except a single terminal readout-bit flip.
+    probe = clean[:boundary]
+    probe.append("X_ERROR" if basis == "Z" else "Z_ERROR", [0], 0.001)
+    probe += clean[boundary:]
+    errors = [e for e in probe.detector_error_model() if e.type == "error"]
+    assert len(errors) == 1
+    assert errors[0].args_copy()[0] == pytest.approx(0.001)
+    targets = errors[0].targets_copy()
+    detectors = [t.val for t in targets if t.is_relative_detector_id()]
+    assert any(t.is_logical_observable_id() for t in targets)
+    assert detectors  # The full memory acceptance rule rejects this event.
+    assert all(d >= num_se_detectors for d in detectors)  # SE-only accepts it.
+
+
 def _frame_after_cnot(patch, block_class, pair, error_qubit, error_basis):
     """Independent Pauli propagation from one physical fault to SE output."""
     import stim

@@ -11,12 +11,13 @@ import numpy as np
 import stim
 
 from lightstim.ir.operation import CSSLogicalOpSet
+from lightstim.qec_code._operation_utils import require_global_patch
 from lightstim.utils.linear_algebra import row_echelon
 from .code_patch import ColorCode
 
 
 class ColorCodeLogicalOpSet(CSSLogicalOpSet):
-    """H, S, S_DAG, plus inherited logical X/Z and inter-patch CNOT.
+    """Color-code X, Z, H, S, S_DAG, plus inherited inter-patch CNOT.
 
     Methods act on global patch views returned by system.add_patch(). They
     preserve the registered logical convention, including the sign of logical
@@ -29,7 +30,7 @@ class ColorCodeLogicalOpSet(CSSLogicalOpSet):
         self.name = "ColorCode"
 
     def _supports(self, builder, patch):
-        self._require_global_patch(builder, patch)
+        require_global_patch(builder, patch)
         if not isinstance(patch, ColorCode) or patch.num_logicals != 1:
             raise ValueError("ColorCodeLogicalOpSet requires a one-logical-qubit ColorCode patch.")
         by_basis = {}
@@ -46,11 +47,40 @@ class ColorCodeLogicalOpSet(CSSLogicalOpSet):
             by_basis[basis] = set(supports)
         if not by_basis["X"] or by_basis["X"] != by_basis["Z"]:
             raise ValueError("Color-code transversal gates require matching X/Z check supports.")
-        xl = self._logical_support(patch, "X", 0)
-        zl = self._logical_support(patch, "Z", 0)
+        xl = self._logical_support(patch, "X")
+        zl = self._logical_support(patch, "Z")
         if xl != zl or len(xl) % 2 != 1:
             raise ValueError("Color-code transversal gates require matching odd-weight X/Z logicals.")
         return sorted(by_basis["X"], key=lambda s: tuple(sorted(s))), xl
+
+    @staticmethod
+    def _logical_support(patch, basis):
+        ops = [op for op in patch.logical_ops if op.get("type") == basis]
+        if len(ops) != 1:
+            raise ValueError(f"Expected exactly one color-code {basis} logical.")
+        op = ops[0]
+        support = set(op["pauli"])
+        if (not support or support != set(op["data_indices"])
+                or not support <= patch.data_indices
+                or set(op["pauli"].values()) != {basis}):
+            raise ValueError(f"Expected a pure {basis} logical on color-code data qubits.")
+        return sorted(support)
+
+    def transversal_x(self, builder, patch, noiseless: bool = False):
+        """Logical X via physical X on every color-code data qubit."""
+        self._apply_pauli(builder, patch, "X", noiseless)
+
+    def transversal_z(self, builder, patch, noiseless: bool = False):
+        """Logical Z via physical Z on every color-code data qubit."""
+        self._apply_pauli(builder, patch, "Z", noiseless)
+
+    def _apply_pauli(self, builder, patch, basis, noiseless):
+        # Even checks commute with the uniform Pauli; the odd opposite-basis
+        # logical anticommutes. Thus it has the intended one-logical action.
+        self._supports(builder, patch)
+        circuit = stim.Circuit()
+        circuit.append(basis, sorted(patch.data_indices))
+        builder.apply_unitary_block(unitary_block=circuit, noiseless=noiseless)
 
     def transversal_hadamard(self, builder, patch, noiseless: bool = False):
         """Logical H via physical H on every data qubit."""

@@ -32,7 +32,7 @@ def pauli(record, n):
 
 @pytest.mark.parametrize("distance", [3, 5, 7, 9])
 @pytest.mark.parametrize("layout", ["superdense", "raw", "triangular", "rectangle"])
-@pytest.mark.parametrize("gate", ["hadamard", "s", "s_dag"])
+@pytest.mark.parametrize("gate", ["x", "z", "hadamard", "s", "s_dag"])
 def test_signed_clifford_action_at_all_code_boundaries(distance, layout, gate):
     builder, patch, other = setup_code(distance, layout)
     start = len(builder.circuit)
@@ -41,13 +41,15 @@ def test_signed_clifford_action_at_all_code_boundaries(distance, layout, gate):
     n = builder.system.num_qubits
     xl, zl = [pauli(next(o for o in patch.logical_ops if o["type"] == b), n) for b in ("X", "Z")]
     yl = 1j * xl * zl
-    expected = {"hadamard": (zl, xl), "s": (yl, zl), "s_dag": (-yl, zl)}[gate]
+    expected = {"x": (xl, -zl), "z": (-xl, zl),
+                "hadamard": (zl, xl), "s": (yl, zl), "s_dag": (-yl, zl)}[gate]
     assert xl.after(c) == expected[0] and zl.after(c) == expected[1]
     xchecks = {frozenset(s["pauli"]): pauli(s, n) for s in patch.stabilizers if s["type"] == "X"}
     zchecks = {frozenset(s["pauli"]): pauli(s, n) for s in patch.stabilizers if s["type"] == "Z"}
     for support, x in xchecks.items():
         z = zchecks[support]
-        assert x.after(c) == (z if gate == "hadamard" else x * z)
+        expected_x = z if gate == "hadamard" else x * z if gate in ("s", "s_dag") else x
+        assert x.after(c) == expected_x
         assert z.after(c) == (x if gate == "hadamard" else z)
     for op in other.logical_ops:
         p = pauli(op, n)
@@ -68,7 +70,8 @@ def test_d3_uniform_phase_convention_from_original_pr():
     assert builder.circuit[-1].name == "S"
 
 
-@pytest.mark.parametrize("gate,initial,final", [("hadamard", "Z", "X"),
+@pytest.mark.parametrize("gate,initial,final", [("x", "Z", "Z"), ("z", "X", "X"),
+                                               ("hadamard", "Z", "X"),
                                                ("s", "X", "Y"), ("s_dag", "X", "Y")])
 def test_clifford_between_extraction_rounds_uses_tracker(gate, initial, final):
     system = QECSystem()
@@ -87,3 +90,14 @@ def test_clifford_between_extraction_rounds_uses_tracker(gate, initial, final):
     c.detector_error_model()
     dets, obs = c.compile_detector_sampler(seed=98).sample(128, separate_observables=True)
     assert c.num_observables == 1 and not dets.any() and not obs.any()
+
+
+def test_color_gates_reject_local_and_mixed_supports():
+    builder, patch, _ = setup_code()
+    ops = ColorCodeLogicalOpSet()
+    with pytest.raises(ValueError, match="global patch"):
+        ops.transversal_x(builder, builder.system.patches["color"][0])
+    logical = next(op for op in patch.logical_ops if op["type"] == "X")
+    logical["pauli"][next(iter(logical["pauli"]))] = "Y"
+    with pytest.raises(ValueError, match="pure X"):
+        ops.transversal_x(builder, patch)
