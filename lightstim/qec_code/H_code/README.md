@@ -115,8 +115,13 @@ circuit = builder.circuit
 
 The operation requires fresh data qubits and touches only that patch. Inputs
 0 and 1 carry the logical states; inputs 2,3,4,5 are |+>,|0>,|+>,|0>. Four
-layers of two disjoint CNOTs implement the encoding. `prepare_logical_x`,
-`prepare_logical_y`, and `prepare_logical_z` are wrappers for equal bases.
+layers of two disjoint CNOTs implement the encoding. `prepare_logical_xx`,
+`prepare_logical_yy`, and `prepare_logical_zz` are wrappers for equal bases
+on both logical slots. The single-letter `prepare_logical_x/y/z` names remain
+compatibility aliases for the whole-patch preparation interface. Each slot
+is prepared in its +1 eigenstate; these are product states, not just states
+with a specified joint parity. Use `encode(builder, patch, logical_bases=("X", "Z"))`
+for mixed bases.
 `noiseless=True` tags the resets and gates for the existing noise injector.
 
 This is an unflagged encoder, with no fault-tolerant preparation claim.

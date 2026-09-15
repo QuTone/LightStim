@@ -106,17 +106,22 @@ class HSixLogicalOpSet(HCodeLogicalOpSet):
             # that share qubits, instead of merging the whole encoder.
             builder.apply_unitary_block(layer, noiseless=noiseless)
 
-    def prepare_logical_z(self, builder, patch, noiseless: bool = False):
+    def prepare_logical_zz(self, builder, patch, noiseless: bool = False):
         """Prepare |00>_L using the unflagged Fig. 1(d) encoder."""
         self.encode(builder, patch, ("Z", "Z"), noiseless=noiseless)
 
-    def prepare_logical_x(self, builder, patch, noiseless: bool = False):
+    def prepare_logical_xx(self, builder, patch, noiseless: bool = False):
         """Prepare |++>_L using the unflagged Fig. 1(d) encoder."""
         self.encode(builder, patch, ("X", "X"), noiseless=noiseless)
 
-    def prepare_logical_y(self, builder, patch, noiseless: bool = False):
+    def prepare_logical_yy(self, builder, patch, noiseless: bool = False):
         """Prepare |+i,+i>_L using the unflagged Fig. 1(d) encoder."""
         self.encode(builder, patch, ("Y", "Y"), noiseless=noiseless)
+
+    # Preserve the whole-patch preparation names used by the CSS operation API.
+    prepare_logical_z = prepare_logical_zz
+    prepare_logical_x = prepare_logical_xx
+    prepare_logical_y = prepare_logical_yy
 
 
 __all__ = ["HCodeLogicalOpSet", "HSixLogicalOpSet"]

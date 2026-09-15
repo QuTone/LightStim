@@ -157,7 +157,7 @@ def test_h6_preparation_wrappers_and_noiseless_layers(basis):
     system = QECSystem()
     patch = system.add_patch(HSixCode(), name="h")
     builder = CircuitBuilder(SyndromeTracker(system.num_qubits, system.num_logicals), system)
-    getattr(HSixLogicalOpSet(), f"prepare_logical_{basis.lower()}")(
+    getattr(HSixLogicalOpSet(), f"prepare_logical_{basis.lower() * 2}")(
         builder, patch, noiseless=True,
     )
     gates = [g for g in builder.circuit if g.name not in ("QUBIT_COORDS", "TICK")]
