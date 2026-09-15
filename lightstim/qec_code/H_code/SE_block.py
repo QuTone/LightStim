@@ -10,6 +10,10 @@ from .code_patch import HCode
 class HCodeExtractionBlock:
     """Pipeline all four checks in n+2 CNOT layers, without flag ancillas.
 
+    For a complete H-code round, generic CSS coloration uses 2*(n-2) CNOT
+    layers. Including both H layers gives n+4 versus 2*n-2 gate layers;
+    counting reset and measurement as one layer each gives n+6 versus 2*n.
+
     Let s=0,1,2,3 label XA,XB,ZA,ZB. Check s touches shared data 2 in
     layer s, its private data in layers s+1 onward, and shared data 3 in
     layer n-2+s. Private orders are (0,1) for A and (4,...,n-1) for B.
