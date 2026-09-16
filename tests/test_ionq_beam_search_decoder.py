@@ -124,7 +124,7 @@ def _require_native():
     try:
         return ionq._load_native()
     except ImportError:
-        pytest.skip('Build the optional IonQ extension; see docs/ionq_beam_search.md')
+        pytest.skip('Build the optional IonQ extension; see docs/decoder/ionq_beam_search.md')
 
 
 def test_native_matches_upstream_matrices_and_predictions():

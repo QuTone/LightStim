@@ -40,7 +40,7 @@
 | `"mwpf"` | `"cpu"` | `mwpf` | — |
 | `"relay-bp"` | `"cpu"` | `relay_bp` | Relay-BP; aliases `"relay_bp"`, `"relaybp"` |
 | `"tesseract"` | `"cpu"` | `tesseract_decoder` | Beam-search MLE; lazy import |
-| `"ionq-beam-search"` | `"cpu"` | separately built IonQ extension | BP-guided beam search; [build, workload CLI, failure policies, batching](../../docs/ionq_beam_search.md) |
+| `"ionq-beam-search"` | `"cpu"` | separately built IonQ extension | BP-guided beam search; [build, workload CLI, failure policies, batching](../../docs/decoder/ionq_beam_search.md) |
 | `"ldpc-bp"` | `"cpu"` | `ldpc` | Plain BP (no OSD), via `ldpc.BpDecoder`; aliases `"ldpc_bp"`, `"bp"` |
 | `"mle-ilp"` | `"cpu"` | `scipy>=1.9` | Exact most-likely-error via ACG-ALP/RPC with MILP fallback; aliases `"mle"`, `"ilp"` |
 | `"chain"` | `"cpu"` | *(none — composes other registered decoders)* | Multi-level escalation, e.g. BP → relay-BP → MLE; aliases `"decoder-chain"`, `"multi-level"` — see §11 |
@@ -166,7 +166,7 @@ simulation/
 - `mwpf` — MWPF decoder: `pip install mwpf frozendict frozenlist`
 - `relay_bp` — Relay-BP decoder: `pip install "relay-bp[stim]"`
 - `tesseract_decoder` — Tesseract beam-search MLE: `pip install tesseract-decoder` (a prebuilt wheel may not match every CPU; build from source if it fails to import)
-- IonQ BeamSearchDecoder — optional BP-guided beam search; build its C++ extension separately and follow [the setup guide](../../docs/ionq_beam_search.md)
+- IonQ BeamSearchDecoder — optional BP-guided beam search; build its C++ extension separately and follow [the setup guide](../../docs/decoder/ionq_beam_search.md)
 - `ldpc` — Plain BP decoder: `pip install ldpc`
 - `scipy>=1.9` — exact MLE (`scipy.optimize.milp`)
 - `cudaq_qec` — GPU BP+OSD: `pip install cudaq_qec` (NVIDIA GPU required)

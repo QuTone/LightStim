@@ -1,4 +1,4 @@
-"""Optional IonQ BP-guided beam search; see docs/ionq_beam_search.md.
+"""Optional IonQ BP-guided beam search; see docs/decoder/ionq_beam_search.md.
 
 Build upstream separately. No native code or build dependency is vendored.
 """
@@ -25,7 +25,7 @@ def _load_native():
     raise ImportError(
         "ionq-beam-search requires the separately built IonQ BeamSearchDecoder. "
         "Run 'python setup.py build_ext --inplace' in its decoder directory "
-        "and add that directory to PYTHONPATH. See docs/ionq_beam_search.md. "
+        "and add that directory to PYTHONPATH. See docs/decoder/ionq_beam_search.md. "
         f"Import errors: {'; '.join(str(e) for e in errors)}"
     ) from errors[0]
 

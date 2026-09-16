@@ -83,6 +83,7 @@ config = DecoderConfig(
 | `"ldpc-bp"` | cpu | Plain BP (no OSD) via `ldpc.BpDecoder`. High LER floor alone; pair with `"bposd"` or chain into `"relay-bp"` for competitive accuracy on QLDPC codes. |
 | `"relay-bp"` | cpu | Relay-BP via `relay_bp`. Handles DEM hyperedges natively (no `decompose_errors`). |
 | `"tesseract"` | cpu | Beam-search MLE via `tesseract_decoder`. Lazy import — a mismatched prebuilt wheel only affects this decoder. |
+| `"ionq-beam-search"` | cpu | Optional IonQ BP-guided beam search; [installation, configuration, and reference](../decoder/ionq_beam_search.md). |
 | `"chain"` | cpu | Multi-level escalation over other registered decoders (see below). |
 
 ### Multi-level decoder chain (hierarchical decoding)
