@@ -498,6 +498,7 @@ def test_plot_keeps_color_se_circuits_separate():
 
 def test_plot_keeps_decoder_parameters_separate():
     plt = pytest.importorskip("matplotlib.pyplot")
+    pytest.importorskip("seaborn")
     from plot_memory import plot_ler_vs_p
 
     rows = [dict(code="shyps_49_9_4", distance=4, p=p,
