@@ -247,7 +247,9 @@ supports general n, X/Z memory, dedicated/coloration SE, full-detector
 postselection, per-task CSV checkpoints, and the existing memory plotter:
 
 ```bash
-venv/bin/python benchmarks/memory/run_h_code.py --quick
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes h_code --h-n 6 8 --mode full_postselection \
+    --basis Z X --p-values 0.004 0.008 --max-shots 1000
 ```
 
 From the repository root, using the LightStim virtual environment:

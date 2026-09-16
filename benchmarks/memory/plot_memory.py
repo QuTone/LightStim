@@ -40,6 +40,8 @@ _GROUP_COLUMNS = [
     "se_circuit",
     "basis",
     "distance",
+    "h_n",
+    "mode",
     "rounds",
     "noise_model",
     "decoder_name",
@@ -59,6 +61,8 @@ def _with_group_defaults(df: pd.DataFrame) -> pd.DataFrame:
         "noise_model": "circuit_level",
         "decoder_name": "unknown",
         "detector_basis": "all",
+        "h_n": 0,
+        "mode": "decode",
     }
     for column, default in defaults.items():
         if column not in df:
@@ -79,12 +83,14 @@ def plot_ler_vs_p(df: pd.DataFrame, ax: plt.Axes, title: str = "") -> None:
     df = _with_group_defaults(df)
     groups = df.groupby(_GROUP_COLUMNS, sort=True, dropna=False)
     for i, (group, sub) in enumerate(groups):
-        code, se_circuit, basis, d, rounds, noise_model, decoder, detectors, idle, one_q = group
+        code, se_circuit, basis, d, h_n, mode, rounds, noise_model, decoder, detectors, idle, one_q = group
         sub = sub.sort_values("p")
         color  = PALETTE_DISTANCE.get(int(d), f"C{i % 10}")
         marker = _MARKERS[i % len(_MARKERS)]
         se_label = "" if se_circuit == "default" else f" {se_circuit}"
-        label = f"{code}{se_label} d={d} {basis} {decoder}"
+        size_label = f" n={int(h_n)}" if code == "h_code" else ""
+        scoring = "full postselection" if mode == "full_postselection" else decoder
+        label = f"{code}{size_label}{se_label} d={d} {basis} {scoring}"
         if df["rounds"].nunique() > 1:
             label += f" r={rounds}"
         if df["noise_model"].nunique() > 1:

@@ -10,9 +10,9 @@ import pytest
 import stim
 
 REPO = Path(__file__).resolve().parents[1]
-RUNNER = REPO / "benchmarks/memory/run_h_code.py"
+RUNNER = REPO / "benchmarks/memory/run_memory.py"
 sys.path.insert(0, str(RUNNER.parent))
-from run_h_code import sample_postselected_memory
+from run_memory import sample_postselected_memory, build_circuit, _task_key
 
 pytestmark = pytest.mark.smoke
 
@@ -41,8 +41,9 @@ def test_postselection_counts_all_detectors_and_logicals(fault, shots, accepted,
 
 def test_cli_sweeps_and_resumes_complete_configurations(tmp_path):
     output = tmp_path / "memory.csv"
-    command = [sys.executable, str(RUNNER), "--n", "6", "8", "--basis", "X", "Z",
-               "--se-circuits", "dedicated", "coloration", "--p-values", "0",
+    command = [sys.executable, str(RUNNER), "--codes", "h_code", "--h-n", "6", "8",
+               "--mode", "full_postselection", "--basis", "X", "Z",
+               "--h-se-circuits", "dedicated", "coloration", "--p-values", "0",
                "--max-shots", "37", "--max-errors", "7", "--batch-size", "16",
                "--output", str(output)]
     subprocess.run(command, check=True, capture_output=True, text=True, timeout=30)
@@ -57,11 +58,13 @@ def test_cli_sweeps_and_resumes_complete_configurations(tmp_path):
         assert int(row["n_total"]) == int(row["n_data"]) + 4
         assert row["shots"] == row["accepted"] == "37"
         assert row["errors"] == row["rejected"] == "0"
-        assert row["postselection"] == "all_detectors_including_readout"
+        assert row["mode"] == "full_postselection"
+        assert row["h_n"] == row["n_data"]
+        assert row["distance"] == "2"
         assert row["decoder_name"] == "none"
     before = output.read_bytes()
     resumed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=30)
-    assert resumed.stdout.count("Skip completed:") == 8
+    assert "8 skipped" in resumed.stdout
     assert output.read_bytes() == before
     # Noise settings belong to the checkpoint key, even at zero gate noise.
     subprocess.run(command + ["--p-idle", "0.001"], check=True, capture_output=True, timeout=30)
@@ -69,11 +72,69 @@ def test_cli_sweeps_and_resumes_complete_configurations(tmp_path):
         assert len(list(csv.DictReader(stream))) == 16
 
 
-@pytest.mark.parametrize("arguments", [["--n", "7"], ["--rounds", "0"],
-                                      ["--p-values", "nan"], ["--max-shots", "0"]])
+@pytest.mark.parametrize("arguments", [["--h-n", "7"], ["--rounds", "0"],
+                                      ["--p-values", "nan"], ["--max-shots", "0"],
+                                      ["--mode", "full_postselection", "--decoder", "mwpf"]])
 def test_cli_rejects_invalid_configuration_before_output(tmp_path, arguments):
     output = tmp_path / "invalid.csv"
-    result = subprocess.run([sys.executable, str(RUNNER), *arguments, "--output", str(output)],
+    result = subprocess.run([sys.executable, str(RUNNER), "--codes", "h_code",
+                             *arguments, "--output", str(output)],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 2
     assert not output.exists()
+
+
+@pytest.mark.parametrize("n", [6, 8, 12])
+@pytest.mark.parametrize("basis", ["X", "Z"])
+@pytest.mark.parametrize("schedule", ["dedicated", "coloration"])
+def test_unified_h_code_builder(n, basis, schedule):
+    c, n_data, n_total, k = build_circuit(
+        "h_code", distance=2, h_n=n, p=0, basis=basis, se_circuit=schedule,
+    )
+    assert (n_data, n_total, k) == (n, n + 4, n - 4)
+    assert c.num_detectors == 8
+    dets, obs = c.compile_detector_sampler(seed=98).sample(32, separate_observables=True)
+    assert not dets.any() and not obs.any()
+
+
+def test_unified_checkpoint_and_plot_keep_sizes_and_modes_separate():
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from plot_memory import plot_ler_vs_p
+
+    base = dict(code="h_code", distance=2, p=0.001, basis="Z", rounds=2,
+                se_circuit="dedicated", noise_model="circuit_level", decoder_name="none")
+    rows = [{**base, "h_n": n, "mode": mode, "p": p, "logical_error_rate": p}
+            for n in [6, 8] for mode in ["decode", "full_postselection"]
+            for p in [0.001, 0.002]]
+    assert len({_task_key(row) for row in rows}) == 8
+    fig, ax = plt.subplots()
+    try:
+        plot_ler_vs_p(pd.DataFrame(rows), ax)
+        assert len(ax.lines) == 4
+        assert len({line.get_label() for line in ax.lines}) == 4
+        assert all(len(line.get_xdata()) == 2 for line in ax.lines)
+    finally:
+        plt.close(fig)
+
+
+def test_surface_code_uses_same_postselection_mode_and_checkpoint(tmp_path):
+    import pandas as pd
+
+    output = tmp_path / "surface.csv"
+    command = [sys.executable, str(RUNNER), "--codes", "rotated_sc", "--distances", "3",
+               "--p-values", "0.001", "--max-shots", "37", "--max-errors", "100",
+               "--batch-size", "16", "--num-workers", "1", "--output", str(output)]
+    subprocess.run(command, check=True, capture_output=True, timeout=30)
+    before = pd.read_csv(output).iloc[0]
+    assert before["mode"] == "decode" and before["decoder_name"] == "pymatching"
+    postselected = command + ["--mode", "full_postselection"]
+    subprocess.run(postselected, check=True, capture_output=True, timeout=30)
+    rows = pd.read_csv(output)
+    assert len(rows) == 2
+    assert rows.iloc[1]["mode"] == "full_postselection"
+    assert rows.iloc[1]["shots"] == 37
+    assert rows.iloc[1]["accepted"] + rows.iloc[1]["rejected"] == 37
+    saved = output.read_bytes()
+    subprocess.run(postselected, check=True, capture_output=True, timeout=30)
+    assert output.read_bytes() == saved

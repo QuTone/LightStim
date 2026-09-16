@@ -119,10 +119,10 @@ lower bound.
 
 Results hold for both bases, all tested round counts, and both idle settings.
 [Full results](h_code_se_comparison.csv) and the
-[reproduction script](../../benchmarks/memory/audit_h_code_se.py) are included:
+[fault-distance tests and reproduction command](../../tests/test_H_code_fault_distance.py) are included:
 
 ```bash
-PYTHONPATH=. venv/bin/python benchmarks/memory/audit_h_code_se.py --max-n 64 --output /tmp/h-code-se-comparison.json
+PYTHONPATH=. venv/bin/python tests/test_H_code_fault_distance.py --max-n 64 --output /tmp/h-code-se-comparison.json
 ```
 
 This finite scan does not prove noisy distance two for every unbounded n.

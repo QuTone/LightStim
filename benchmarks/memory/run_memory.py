@@ -15,6 +15,12 @@ BB codes (distance fixed by code, --distances ignored):
     bb_72_12_6, bb_108_8_10, bb_144_12_12, bb_288_12_18
 HGP codes (distance fixed by code, --distances ignored):
     hgp_13_1_3, hgp_18_2_3, hgp_225_9_4
+H-code family (distance 2; size selected with --h-n):
+    h_code (even n >= 6; dedicated or coloration extraction)
+
+Use --mode full_postselection to accept only all-zero detector records,
+including final data readout, and score any logical flip without a decoder.
+The default mode, decode, keeps the existing decoding workflow.
 
 Decoders
 --------
@@ -25,9 +31,10 @@ Decoders
 
 CSV output schema (keys / data)
 ---------------------------------
-    code, distance, p, basis, rounds, se_circuit, decoder_name
+    code, distance, h_n, p, basis, rounds, se_circuit, mode, decoder_name
     layout, block_class
-    shots, errors, logical_error_rate, seconds, n_data, n_total, k
+    shots, accepted, rejected, acceptance, errors, logical_error_rate,
+    seconds, n_data, n_total, k
 
 Usage
 -----
@@ -58,6 +65,12 @@ Usage
         --p-values 1e-3 5e-3 1e-2 \\
         --decoder mwpf \\
         --output benchmarks/memory/results/color_mwpf.csv
+
+    # H-family memory with full detector postselection:
+    venv/bin/python benchmarks/memory/run_memory.py \\
+        --codes h_code --h-n 6 8 12 --mode full_postselection \\
+        --h-se-circuits dedicated coloration --basis Z X \\
+        --p-values 0.002 0.004 0.008 0.016
 """
 import argparse
 import contextlib
@@ -65,6 +78,7 @@ import io
 import sys
 import time
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 
 import numpy as np
@@ -91,6 +105,8 @@ from lightstim.qec_code.HGP import (
     hgp_18_2_3,
     hgp_225_9_4,
 )
+from lightstim.qec_code.H_code import HCode, HCodeExtractionBlock
+from lightstim.qec_code.generic_css import GenericCSSColorationExtractionBlock
 from lightstim.qec_code.color_code import (
     ColorCode,
     ColorCodeBellFlaggingBlock,
@@ -150,7 +166,12 @@ _TOPO_CODES = {
 _BB_CODES   = set(_BB_CONFIGS)
 _HGP_CODES  = set(_HGP_CONFIGS)
 _DISTANCE_CODES = _TOPO_CODES | {"bacon_shor", "subsystem_surface"}
-ALL_CODES   = sorted(_DISTANCE_CODES | _BB_CODES | _HGP_CODES)
+ALL_CODES   = sorted(_DISTANCE_CODES | _BB_CODES | _HGP_CODES | {"h_code"})
+
+H_SE_CIRCUITS = {
+    "dedicated": HCodeExtractionBlock,
+    "coloration": GenericCSSColorationExtractionBlock,
+}
 
 DEFAULT_COLOR_SE_CIRCUIT = "space_multiplexing"
 
@@ -198,7 +219,15 @@ def _color_se_spec(se_circuit: str | None) -> ColorSECircuitSpec:
         ) from ex
 
 
-def _make_code(code_name: str, distance: int, se_circuit: str | None = None):
+def _make_code(code_name: str, distance: int, se_circuit: str | None = None,
+               *, h_n: int = 6):
+    if code_name == "h_code":
+        if distance != 2:
+            raise ValueError("H-code distance is 2; select code size with h_n.")
+        name = "dedicated" if se_circuit in (None, "default") else se_circuit
+        if name not in H_SE_CIRCUITS:
+            raise ValueError(f"Unknown H-code SE circuit: {name!r}")
+        return HCode(n=h_n), H_SE_CIRCUITS[name]
     if code_name == "subsystem_surface":
         if se_circuit not in (None, "default", "dedicated"):
             raise ValueError(f"Unknown subsystem surface SE circuit: {se_circuit!r}")
@@ -328,6 +357,7 @@ def build_circuit(
     p_idle: float | None = None,
     p_1q: float | None = None,
     detector_basis: str = "all",
+    h_n: int = 6,
 ):
     """Return (circuit, n_data, n_total, k) for a noisy memory experiment.
 
@@ -343,7 +373,7 @@ def build_circuit(
     for name, rate in (("p", p), ("p_idle", p_idle), ("p_1q", p_1q)):
         if rate is not None and (not np.isfinite(rate) or not 0 <= rate <= 1):
             raise ValueError(f"{name} must be finite and between 0 and 1.")
-    code, block_cls = _make_code(code_name, distance, se_circuit)
+    code, block_cls = _make_code(code_name, distance, se_circuit, h_n=h_n)
     noise = NoiseConfig(p_idle=p if p_idle is None else p_idle,
                         p_1q=p if p_1q is None else p_1q,
                         p_2q=p, p_meas=p, p_reset=p)
@@ -404,6 +434,9 @@ def build_circuit(
 
 _RESULT_COLS = frozenset({
     "shots",
+    "accepted",
+    "rejected",
+    "acceptance",
     "errors",
     "logical_error_rate",
     "seconds",
@@ -415,13 +448,16 @@ _RESULT_COLS = frozenset({
 })
 
 _RESULT_COLUMNS = [
-    "code", "distance", "p", "basis", "rounds", "se_circuit",
+    "code", "distance", "h_n", "p", "basis", "rounds", "se_circuit", "mode",
     "p_idle", "p_1q", "p_idle_mode", "p_1q_mode", "detector_basis",
     "noise_model", "decoder_name", "decoder_time_limit",
     "on_decode_failure", "layout", "block_class", "shots", "errors",
+    "accepted", "rejected", "acceptance",
     "logical_error_rate", "seconds", "n_data", "n_total", "k",
 ]
 _RESULT_METADATA_DEFAULTS = {
+    "h_n": 0,
+    "mode": "decode",
     "decoder_time_limit": 0.0,
     "on_decode_failure": "error",
     "detector_basis": "all",
@@ -475,7 +511,31 @@ def _load_done_keys(path: Path) -> set:
 
 # ── Main runner ───────────────────────────────────────────────────────────────
 
-def run(tasks: list[dict], decoder_cfg: DecoderConfig,
+def sample_postselected_memory(circuit, *, max_shots, max_errors, batch_size, seed=0):
+    """Full detector postselection, including readout; score any logical flip.
+
+    Count errors only among accepted shots. Stop at the error target after
+    each batch, with a strict cap on total attempted shots. No decoder or
+    logical-outcome filter is applied.
+    """
+    sampler = circuit.compile_detector_sampler(seed=seed)
+    shots = accepted = errors = 0
+    while shots < max_shots and errors < max_errors:
+        dets, obs = sampler.sample(
+            min(batch_size, max_shots - shots), separate_observables=True,
+        )
+        keep = ~dets.any(axis=1)
+        shots += len(keep)
+        accepted += int(keep.sum())
+        errors += int(obs[keep].any(axis=1).sum())
+    return {
+        "shots": shots, "accepted": accepted, "rejected": shots - accepted,
+        "errors": errors, "acceptance": accepted / shots if shots else np.nan,
+        "logical_error_rate": errors / accepted if accepted else np.nan,
+    }
+
+
+def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
         max_shots: int, max_errors: int,
         num_workers: int, batch_size: int,
         output_path: Path) -> None:
@@ -491,7 +551,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
         {**_RESULT_METADATA_DEFAULTS, "p_idle": t["p"], "p_1q": t["p"],
          **{f"{name}_mode": "fixed" if name in t else "sweep" for name in ("p_idle", "p_1q")},
          "detector_basis": (
-             t["basis"] if t["code"] == "bacon_shor" and decoder_cfg.name == "pymatching"
+             t["basis"] if t["code"] == "bacon_shor"
+             and t.get("mode", "decode") == "decode"
+             and decoder_cfg is not None and decoder_cfg.name == "pymatching"
              else "all"
          ), **t}
         for t in tasks
@@ -505,6 +567,11 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
     n_skip  = len(tasks) - len(pending)
     print(f"Tasks: {len(pending)} to run" + (f", {n_skip} skipped" if n_skip else "") + "\n")
 
+    if any(t["mode"] == "decode" for t in pending) and decoder_cfg is None:
+        raise ValueError("Decode mode requires a decoder configuration.")
+    if any(t["mode"] == "full_postselection" and t["detector_basis"] != "all"
+           for t in pending):
+        raise ValueError("Full postselection requires all memory detectors.")
     pipeline = SimulationPipeline(
         decoder_config=decoder_cfg,
         max_shots=max_shots,
@@ -513,14 +580,15 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
         num_workers=1 if decoder_cfg.backend == "gpu" else num_workers,
         print_progress=True,
         progress_interval_sec=30.0,
-    )
+    ) if decoder_cfg is not None else None
 
     for i, task in enumerate(pending):
         se_label = (
-            f" se={task['se_circuit']}" if task["code"] == "color" else ""
+            f" se={task['se_circuit']}" if task["code"] in {"color", "h_code"} else ""
         )
+        size_label = f"n={task['h_n']} " if task["code"] == "h_code" else ""
         label = (f"[{i+1}/{len(pending)}] {task['code']} "
-                 f"d={task['distance']} p={task['p']:.2e} "
+                 f"{size_label}d={task['distance']} p={task['p']:.2e} "
                  f"basis={task['basis']}{se_label}")
         print(label, flush=True)
 
@@ -536,14 +604,33 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
             p_idle=task["p_idle"],
             p_1q=task["p_1q"],
             detector_basis=task["detector_basis"],
+            h_n=task["h_n"],
         )
-        stats   = pipeline.run(circuit, task)
+        if task["mode"] == "full_postselection":
+            # Validate determinism without forcing graphlike decomposition.
+            circuit.detector_error_model(decompose_errors=False)
+            result = sample_postselected_memory(
+                circuit, max_shots=max_shots, max_errors=max_errors,
+                batch_size=batch_size,
+            )
+        else:
+            stats = pipeline.run(circuit, task)
+            accepted = stats.post_selected_shots
+            result = {
+                "shots": stats.shots, "errors": stats.errors,
+                "accepted": accepted, "rejected": stats.shots - accepted,
+                "acceptance": accepted / stats.shots if stats.shots else np.nan,
+                "logical_error_rate": stats.logical_error_rate if accepted else np.nan,
+            }
         elapsed = time.perf_counter() - t0
 
         if task["code"] == "color":
             color_spec = _color_se_spec(task["se_circuit"])
             layout = color_spec.layout
             block_class = color_spec.block_class.__name__
+        elif task["code"] == "h_code":
+            layout = "code_default"
+            block_class = H_SE_CIRCUITS[task["se_circuit"]].__name__
         elif task["code"] == "rotated_sc_defect":
             layout = "center_data_defect"
             block_class = RotatedSurfaceDefectMemoryExperiment.__name__
@@ -562,11 +649,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
 
         row = {
             **task,
+            **result,
             "layout":               layout,
             "block_class":          block_class,
-            "shots":               stats.shots,
-            "errors":              stats.errors,
-            "logical_error_rate":  stats.logical_error_rate,
             "seconds":             elapsed,
             "n_data":              n_data,
             "n_total":             n_total,
@@ -575,8 +660,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig,
         pd.DataFrame([row], columns=_RESULT_COLUMNS).to_csv(
             output_path, mode="a", header=not output_path.exists(), index=False,
         )
-        print(f"  LER={stats.logical_error_rate:.2e} | "
-              f"errors={stats.errors} | shots={stats.shots:,} | {elapsed:.1f}s\n")
+        print(f"  LER={result['logical_error_rate']:.2e} | "
+              f"errors={result['errors']} | accepted={result['accepted']:,}/"
+              f"{result['shots']:,} | {elapsed:.1f}s\n")
 
     print(f"Done. Results → {output_path}")
 
@@ -594,6 +680,13 @@ def main():
     ap.add_argument("--distances", nargs="+", type=int, default=None,
                     help="Distances to sweep (required for topological / subsystem codes; "
                          "BB/HGP codes use their built-in distance)")
+    ap.add_argument("--h-n", nargs="+", type=int, default=[6],
+                    help="H-code data-qubit counts: even n >= 6 (default: 6; distance stays 2)")
+    ap.add_argument("--h-se-circuits", nargs="+", choices=list(H_SE_CIRCUITS),
+                    default=["dedicated"], help="H-code extraction circuits (default: dedicated)")
+    ap.add_argument("--mode", choices=["decode", "full_postselection"], default="decode",
+                    help="Full postselection accepts all-zero detectors including readout, "
+                         "without decoding (default: decode)")
     ap.add_argument("--p-values", nargs="+", type=float,
                     default=np.logspace(-3, -1.5, 6).tolist(),
                     help="Physical error rate values (default: 6 log-spaced points)")
@@ -615,8 +708,8 @@ def main():
     ap.add_argument("--rounds", type=int, default=None,
                     help="Complete SE cycles per memory shot (default: distance)")
     ap.add_argument("--decoder", choices=["pymatching", "mwpf", "cpu_bposd", "gpu_bposd", "mle-ilp"],
-                    default="pymatching",
-                    help="Decoder (default: pymatching)")
+                    default=None,
+                    help="Decoder for decode mode (default: pymatching)")
     ap.add_argument("--osd-order", type=int, default=10,
                     help="OSD order for cpu_bposd/gpu_bposd decoders (default: 10)")
     ap.add_argument("--max-iterations", type=int, default=1000,
@@ -644,6 +737,11 @@ def main():
                     help="Smoke test: d=3,5 and 2 p-values (1e-3, 5e-3)")
     args = ap.parse_args()
 
+    if args.mode == "full_postselection" and args.decoder is not None:
+        ap.error("--decoder applies only to --mode decode")
+    if args.decoder is None:
+        args.decoder = "pymatching" if args.mode == "decode" else "none"
+
     unknown_codes = sorted(set(args.codes) - set(ALL_CODES))
     if unknown_codes:
         ap.error(f"Unknown code(s): {unknown_codes}. Available: {ALL_CODES}")
@@ -651,6 +749,12 @@ def main():
         ap.error("--num-workers must be between 1 and 48")
     if args.batch_size < 1:
         ap.error("--batch-size must be positive")
+    if args.max_shots < 1 or args.max_errors < 1:
+        ap.error("--max-shots and --max-errors must be positive")
+    if args.rounds is not None and args.rounds < 1:
+        ap.error("--rounds must be positive")
+    if any(n < 6 or n % 2 for n in args.h_n):
+        ap.error("--h-n must contain even integers >= 6")
     for name, rates in (("--p-values", args.p_values), ("--p-idle", [args.p_idle]),
                         ("--p-1q", [args.p_1q])):
         if any(rate is not None and (not np.isfinite(rate) or not 0 <= rate <= 1)
@@ -691,10 +795,14 @@ def main():
             distances = [_BB_CONFIGS[code]["d"]]
         elif code in _HGP_CONFIGS:
             distances = [_HGP_CONFIGS[code]["d"]]
+        elif code == "h_code":
+            distances = [2]
         else:
             distances = args.distances
         if code == "color":
             se_circuits = args.color_se_circuits
+        elif code == "h_code":
+            se_circuits = args.h_se_circuits
         elif code in _HGP_CONFIGS:
             se_circuits = [_HGP_CONFIGS[code]["se_circuit"]]
         elif code == "rotated_sc_defect":
@@ -703,7 +811,8 @@ def main():
             se_circuits = ["dedicated"]
         else:
             se_circuits = ["default"]
-        for d in distances:
+        sizes = args.h_n if code == "h_code" else [0]
+        for d, h_n in product(distances, sizes):
             r = args.rounds if args.rounds is not None else d
             for se_circuit in se_circuits:
                 for p in args.p_values:
@@ -711,6 +820,8 @@ def main():
                         tasks.append({
                             "code": code,
                             "distance": d,
+                            "h_n": h_n,
+                            "mode": args.mode,
                             "p": p,
                             "p_idle": p if args.p_idle is None else args.p_idle,
                             "p_1q": p if args.p_1q is None else args.p_1q,
@@ -731,12 +842,14 @@ def main():
     # Default output path
     if args.output is None:
         tag = "_".join(args.codes[:2]) + ("_etc" if len(args.codes) > 2 else "")
-        output = SCRIPT_DIR / "results" / f"{tag}_{args.decoder}.csv"
+        suffix = args.decoder if args.mode == "decode" else args.mode
+        output = SCRIPT_DIR / "results" / f"{tag}_{suffix}.csv"
     else:
         output = Path(args.output)
 
     print(f"Output:      {output}")
     print(f"Tasks:       {len(tasks)} total")
+    print(f"Mode:        {args.mode}")
     print(f"Decoder:     {args.decoder} | noise_model={args.noise_model} | "
           f"osd_order={args.osd_order} | max_iterations={args.max_iterations}")
     if args.decoder == "mle-ilp":
@@ -744,8 +857,10 @@ def main():
         print(f"MLE budget:  {limit} | failure_policy={args.on_decode_failure}")
     if "color" in args.codes:
         print(f"Color SE:    {', '.join(args.color_se_circuits)}")
+    if "h_code" in args.codes:
+        print(f"H-code:      n={args.h_n} | SE={', '.join(args.h_se_circuits)}")
     print(f"batch_size:  {args.batch_size}")
-    effective_workers = 1 if args.decoder == "gpu_bposd" else args.num_workers
+    effective_workers = 1 if args.decoder in {"gpu_bposd", "none"} else args.num_workers
     print(f"workers:     {effective_workers}")
     print(f"max_shots:   {args.max_shots:.0e} | max_errors={args.max_errors}\n")
 
@@ -755,7 +870,7 @@ def main():
             args.max_iterations,
             args.mle_time_limit,
             args.on_decode_failure,
-        ),
+        ) if args.mode == "decode" else None,
         args.max_shots, args.max_errors,
         args.num_workers, args.batch_size,
         output)

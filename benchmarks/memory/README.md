@@ -20,9 +20,9 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 
 ## Supported Codes
 
-The decoded-memory runner below is complemented by the
-[H-family full-postselection runner](#h-family-full-postselection-memory),
-which uses the same MemoryExperiment and plotting workflow.
+All memory benchmarks use `run_memory.py` and `plot_memory.py`. Add code and
+extraction configurations to this interface rather than introducing per-code
+or per-comparison runners in this directory.
 
 | Code | `--codes` name | Requires `--distances` |
 |------|---------------|----------------------|
@@ -42,6 +42,7 @@ which uses the same MemoryExperiment and plotting workflow.
 | HGP / unrotated SC [[13,1,3]] | `hgp_13_1_3` | no (d=3 fixed) |
 | HGP / toric [[18,2,3]] | `hgp_18_2_3` | no (d=3 fixed) |
 | HGP [[225,9,4]] | `hgp_225_9_4` | no (d=4 fixed) |
+| H family [[n,n-4,2]] | `h_code` | no (d=2; use `--h-n`, default 6) |
 
 > **Not yet supported**: 4D geometric codes (`FourDGeoCode`) use an L-matrix parameter
 > interface incompatible with the `--distances` flag. See `notebooks/Memory/memory_4D_hadamard.ipynb`
@@ -49,20 +50,23 @@ which uses the same MemoryExperiment and plotting workflow.
 
 ## H-family full-postselection memory
 
-`run_h_code.py` sweeps the general H family, including H6. It accepts shots
+`run_memory.py --codes h_code --mode full_postselection` sweeps the general
+H family, including H6. It accepts shots
 only when **all detectors are zero, including final data-readout detectors**.
 It reports conditional block LER: any of the `n-4` logical observables flipping
 counts as failure. No decoder or logical-outcome postselection is applied.
 This is the bare-memory baseline; the H6 encoder is not inserted.
 
 ```bash
-# Fast smoke run: n=6,8; X/Z; two p values; up to 1000 shots per task.
-venv/bin/python benchmarks/memory/run_h_code.py --quick
+# Small workflow check: n=6,8; X/Z; up to 1000 shots per task.
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes h_code --h-n 6 8 --mode full_postselection \
+    --basis Z X --p-values 0.004 0.008 --max-shots 1000
 
 # Compare the default dedicated schedule and circuit coloration.
-venv/bin/python benchmarks/memory/run_h_code.py \
-    --n 6 8 12 --basis Z X --rounds 2 \
-    --se-circuits dedicated coloration \
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes h_code --h-n 6 8 12 --mode full_postselection \
+    --basis Z X --rounds 2 --h-se-circuits dedicated coloration \
     --p-values 0.002 0.004 0.008 0.016 --p-idle 0 \
     --max-errors 200 --max-shots 10000000 \
     --output benchmarks/memory/results/h_code_postselection.csv
@@ -74,27 +78,45 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 
 | Option | Default / meaning |
 |---|---|
-| `--n` | `6`; any even data-qubit count >= 6; code distance stays 2 |
-| `--basis` | `Z X` |
-| `--se-circuits` | `dedicated`; also accepts `coloration` |
-| `--rounds` | `2` |
-| `--p-values` | `0.002 0.004 0.008 0.016`; sets gate/reset/measurement noise |
+| `--h-n` | `6`; any even data-qubit count >= 6; code distance stays 2 |
+| `--basis` | `Z`; H-code memory supports X/Z |
+| `--h-se-circuits` | `dedicated`; also accepts `coloration` |
+| `--rounds` | Code distance, hence `2` for H-code |
+| `--mode` | `decode`; select `full_postselection` explicitly for this benchmark |
 | `--p-idle` | Each swept p; set `0` to reproduce the no-idle baseline |
 | `--noise-model` | `circuit_level`; also `phenomenological`, `code_capacity` |
-| `--max-errors`, `--max-shots` | `200`, `10000000`; stop at the first limit, checked per batch |
-| `--batch-size`, `--seed` | `10000`, `98`; sampling runs in one process |
-| `--output` | `results/h_code_postselection.csv` beside this runner |
+| `--max-errors`, `--max-shots` | `200`, `1000000`; stop at the first limit, checked per batch |
+| `--batch-size` | `1000`; full postselection samples in one process with seed 0 |
+| `--output` | `results/h_code_full_postselection.csv` by default in this mode |
 
 Each completed task is appended immediately to CSV and skipped on resumption.
 The key includes code size, basis, rounds, schedule, noise settings, acceptance
-rule, seed and sampling limits. CSV rows contain `shots`, `accepted`, `rejected`,
+mode. As with the existing decoded benchmark, resuming skips completed
+configurations; use a new output file to change sampling budgets or collect
+independent statistics. CSV rows contain `shots`, `accepted`, `rejected`,
 `errors`, `acceptance=accepted/shots`, `logical_error_rate=errors/accepted`,
 runtime, code dimensions, and the complete task configuration. With no accepted
 shots the LER is NaN, not zero. A quick run is a workflow check; zero observed
 failures do not establish zero LER or a suppression exponent.
 
-The existing `audit_h_code_se.py` separately enumerates detector-error-model
-fault signatures; it is not a Monte Carlo LER benchmark.
+`full_postselection` also works for other codes through the same entry point:
+
+```bash
+venv/bin/python benchmarks/memory/run_memory.py \
+    --codes rotated_sc --distances 3 5 --mode full_postselection \
+    --p-values 0.001 0.002 0.004
+```
+
+Omitting `--mode` retains decoding. `--decoder` applies only to decode mode;
+full postselection records `decoder_name=none` and retains all detectors,
+including both syndrome bases for Bacon–Shor. The plotter keeps code sizes
+and evaluation modes in separate curves. Older decoded CSVs are migrated on
+resume; unavailable historical acceptance counts remain blank.
+
+The exhaustive H-code fault audit lives with the
+[fault-distance tests](../../tests/test_H_code_fault_distance.py); its optional
+reproduction command is documented in the
+[SE review](../../docs/design/h_code_se_review.md).
 
 ## Supported Decoders
 

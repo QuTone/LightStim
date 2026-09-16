@@ -20,7 +20,7 @@ PR commit for subsequent work.
 | `H_six/code_patch.py` | Generalize in `H_code/code_patch.py`; retain the HSixCode name in that package | HCode(n) with even n >= 6; n=6 preserves the contributor's logical convention and coordinates |
 | `HSixExtractionBlock` | Alias dedicated concurrent family extraction | n+2 CNOT layers, simultaneous X/Z pipeline, native detector generation |
 | Memory notebook | Adapt the original PR as `memory_H_code.ipynb`; keep old-path pointer | Compact general-n configuration, X/Z memory, detector slices, and a fault check |
-| Benchmark CLI | Add `benchmarks/memory/run_h_code.py` | General n, X/Z, both SE schedules, full-detector postselection, CSV checkpoints, existing memory plotter |
+| Benchmark CLI | Extend `benchmarks/memory/run_memory.py` | General n, X/Z, both SE schedules, full-detector postselection, CSV checkpoints, existing memory plotter |
 | H6 tests | Preserve compatibility checks and extend to the family | Algebra, full extraction tableau, coordinates/global indices, active checks, memory faults, and scaling |
 | `prep_circuits.py` | Adopt Fig. 1(d) in `HSixLogicalOpSet.encode`; defer flagged preparation | Independent X/Y/Z input bases; Fig. 5's flagged \|00> preparation has a separate acceptance contract |
 | `h_six_encoded_memory.py` | Defer | Flag operations bypass the tracker; encoded X path needs correction |
@@ -184,8 +184,10 @@ by the final directory cleanup. The old H_six directory contained forwarding
 imports only; it is removed. Import HSixCode, HSixExtractionBlock, and
 HSixLogicalOpSet from lightstim.qec_code.H_code.
 
-The formal LER benchmark is benchmarks/memory/run_h_code.py, separate from
-the pre-existing fault-audit command. It reuses MemoryExperiment, samples with
+The formal LER benchmark uses benchmarks/memory/run_memory.py with
+`--codes h_code --mode full_postselection`, separate from
+the fault-audit command in `tests/test_H_code_fault_distance.py`.
+It reuses MemoryExperiment, samples with
 Stim, accepts on all detectors including final readout, and scores any logical
 observable flip without decoding. Completed parameter configurations are
 checkpointed to CSV; plot_memory.py reads that CSV. The implementation tests
