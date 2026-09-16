@@ -478,14 +478,12 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
                         "max_shots": calibration_max_shots,
                         "max_errors": 50,
                         "batch_size": min(args.batch_size, calibration_max_shots),
+                        "decoder_name": decoder_cfg.name,
+                        "decoder_params": decoder_cfg.params,
+                        "on_decode_failure": decoder_cfg.on_decode_failure,
                     }
                     if which == "tg":
-                        calibration_kwargs.update({
-                            "decoder_name": decoder_cfg.name,
-                            "backend": decoder_cfg.backend,
-                            "decoder_params": decoder_cfg.params,
-                            "on_decode_failure": decoder_cfg.on_decode_failure,
-                        })
+                        calibration_kwargs["backend"] = decoder_cfg.backend
                     p_in = p_in_fn(d, rounds_init, **calibration_kwargs)
                 else:
                     p_in = float("nan")
@@ -538,9 +536,9 @@ def _decoder_config(
     mle_time_limit: float = 0.0,
     on_decode_failure: str = "error",
 ) -> DecoderConfig:
-    if name == "pymatching":
+    if name in ("pymatching", "ionq-beam-search"):
         return DecoderConfig(
-            "pymatching", backend="cpu", on_decode_failure=on_decode_failure
+            name, backend="cpu", on_decode_failure=on_decode_failure
         )
     if name in ("bposd", "cpu_bposd"):
         return DecoderConfig(
@@ -577,7 +575,7 @@ def _decoder_config(
         )
     raise ValueError(
         f"Unknown decoder: {name!r}. "
-        "Choose: pymatching, mwpf, cpu_bposd, gpu_bposd, mle-ilp"
+        "Choose: pymatching, mwpf, cpu_bposd, gpu_bposd, mle-ilp, ionq-beam-search"
     )
 
 
@@ -646,7 +644,10 @@ def main():
     )
     ap.add_argument(
         "--decoder", default=None,
-        choices=["pymatching", "mwpf", "bposd", "cpu_bposd", "gpu_bposd", "nv-qldpc-decoder", "mle-ilp"],
+        choices=[
+            "pymatching", "mwpf", "bposd", "cpu_bposd", "gpu_bposd",
+            "nv-qldpc-decoder", "mle-ilp", "ionq-beam-search",
+        ],
         help="Override decoder for all experiments (default: per-experiment default)",
     )
     ap.add_argument(

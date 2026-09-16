@@ -228,12 +228,15 @@ def inject_noise(circuit, magic_qubits, p, p_injected, mode="full", data_indices
 
 
 def estimate_p_in(d, rounds, p_injected, p_background=0.0,
-                  max_shots=10_000_000, max_errors=100, batch_size=5_000):
+                  max_shots=10_000_000, max_errors=100, batch_size=5_000,
+                  decoder_name="pymatching", decoder_params=None,
+                  on_decode_failure="error"):
     """
     Estimate effective logical input infidelity P_in for LS |Y⟩ magic state.
 
     Calibration circuit: RX → fold_transversal_S → SE(rounds)
     → noiseless S†_L → MX logical readout.
+    Decoder parameters and failure policy match those accepted by run_simulation.
 
     Returns:
         p_in (float): logical error rate of the prepared |Y⟩ state.
@@ -276,7 +279,10 @@ def estimate_p_in(d, rounds, p_injected, p_background=0.0,
     noisy = inj.inject_noise(circuit)
 
     pipeline = SimulationPipeline(
-        decoder_config=DecoderConfig("pymatching"),
+        decoder_config=DecoderConfig(
+            decoder_name, backend="cpu", params=decoder_params or {},
+            on_decode_failure=on_decode_failure,
+        ),
         max_shots=max_shots,
         max_errors=max_errors,
         batch_size=batch_size,

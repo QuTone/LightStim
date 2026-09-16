@@ -28,6 +28,7 @@ Decoders
     gpu_bposd     GPU BP+OSD  (same algorithm, CUDA-accelerated)
     pymatching    CPU MWPM    (default for memory and surface-code LS)
     mwpf          CPU MWPF    (general purpose)
+    ionq-beam-search CPU BP-guided beam search (optional external build)
 
 CSV output schema
 -----------------
@@ -475,8 +476,8 @@ def build_tasks(gate: str, distances, p_values, rounds: int):
 # ── Decoder config ────────────────────────────────────────────────────────────
 
 def _decoder_config(name: str) -> DecoderConfig:
-    if name == "pymatching":
-        return DecoderConfig(name="pymatching", backend="cpu")
+    if name in ("pymatching", "ionq-beam-search"):
+        return DecoderConfig(name=name, backend="cpu")
     if name == "mwpf":
         return DecoderConfig(name="mwpf", backend="cpu",
                              params={"cluster_node_limit": 50})
@@ -492,7 +493,10 @@ def _decoder_config(name: str) -> DecoderConfig:
             "bp_method": "min_sum", "ms_scaling_factor": 0,
             "osd_method": "osd_cs", "use_osd": True,
         })
-    raise ValueError(f"Unknown decoder: {name!r}. Choose: cpu_bposd, gpu_bposd, pymatching, mwpf")
+    raise ValueError(
+        f"Unknown decoder: {name!r}. "
+        "Choose: cpu_bposd, gpu_bposd, pymatching, mwpf, ionq-beam-search"
+    )
 
 
 # ── Checkpointing ─────────────────────────────────────────────────────────────
@@ -658,7 +662,9 @@ def main():
         ),
     )
     ap.add_argument(
-        "--decoder", choices=["cpu_bposd", "gpu_bposd", "pymatching", "mwpf"], default=None,
+        "--decoder",
+        choices=["cpu_bposd", "gpu_bposd", "pymatching", "mwpf", "ionq-beam-search"],
+        default=None,
         help=(
             "Decoder to use (default: pymatching for memory and surface-code "
             "LS, cpu_bposd for other gates)"

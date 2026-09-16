@@ -74,7 +74,7 @@ def count_batch(
         if on_decode_failure == "discard":
             keep_mask = keep_mask & ~failed
         else:  # "error"
-            # A failed decode is a definite logical error. It must also stay in
+            # This policy counts a failed decode as an error. It must stay in
             # the denominator even if post-decode post-selection would reject its
             # (untrusted) corrected observables — otherwise a failed-and-rejected
             # shot would silently vanish (kept=0, errors=0) instead of counting,

@@ -83,6 +83,10 @@ def _append_row(path: Path, row: dict) -> None:
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
 def _decoder_config(name: str, backend: str) -> DecoderConfig:
+    if name == "ionq-beam-search":
+        if backend != "cpu":
+            raise ValueError("ionq-beam-search requires --backend cpu")
+        return DecoderConfig(name, backend="cpu")
     if name == "pymatching":
         return DecoderConfig("pymatching", backend="cpu")
     if name == "mwpf":
@@ -240,7 +244,7 @@ def main():
                     help="Rounds list for rounds experiment (default: 3 5 7)")
     ap.add_argument("--ps-mode", choices=["hybrid", "pqrm_only"], default="hybrid")
     ap.add_argument("--decoder", default="mwpf",
-                    choices=["mwpf", "bposd"],
+                    choices=["mwpf", "bposd", "ionq-beam-search"],
                     help="Decoder (default: mwpf). pymatching cannot handle CrossLS hypergraph errors.")
     ap.add_argument("--backend", default="cpu", choices=["cpu", "gpu"])
     ap.add_argument("--p-1q", type=float, default=1e-6)
@@ -252,6 +256,8 @@ def main():
     ap.add_argument("--quick", action="store_true",
                     help="Quick mode: d=[3], 1 p-value, 50k shots, 20 errors")
     args = ap.parse_args()
+    if args.decoder == "ionq-beam-search" and args.backend != "cpu":
+        ap.error("ionq-beam-search requires --backend cpu")
 
     # Parse PQRM codes
     args.pqrm_codes = [_parse_pqrm(s) for s in args.pqrm]

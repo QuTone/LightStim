@@ -113,7 +113,8 @@ def _load_done_keys(path: Path) -> set:
 
 def _run_tasks(task_list, decoder_cfg: DecoderConfig,
                max_shots: int, max_errors: int,
-               num_workers: int, output_path: Path) -> None:
+               num_workers: int, output_path: Path,
+               *, batch_size: int = 1_000) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     done_keys = _load_done_keys(output_path)
@@ -131,7 +132,7 @@ def _run_tasks(task_list, decoder_cfg: DecoderConfig,
         decoder_config=decoder_cfg,
         max_shots=max_shots,
         max_errors=max_errors,
-        batch_size=1_000,
+        batch_size=batch_size,
         num_workers=num_workers,
         print_progress=True,
     )
@@ -199,11 +200,13 @@ def main():
         help="SE rounds (default: 2)",
     )
     ap.add_argument(
-        "--decoder", choices=["pymatching", "bposd", "mwpf"], default="pymatching",
+        "--decoder", choices=["pymatching", "bposd", "mwpf", "ionq-beam-search"],
+        default="pymatching",
         help="Decoder (default: pymatching)",
     )
     ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
     ap.add_argument("--max-errors",  type=int, default=100)
+    ap.add_argument("--batch-size",  type=int, default=1_000)
     ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument(
         "--quick", action="store_true",
@@ -214,6 +217,8 @@ def main():
         help="Output CSV path (default: benchmarks/state_injection/results/state_injection_results.csv)",
     )
     args = ap.parse_args()
+    if args.batch_size < 1:
+        ap.error("--batch-size must be positive")
 
     if args.quick:
         states    = ["Z"]
@@ -256,7 +261,8 @@ def main():
     tasks = build_tasks(distances, p_values, args.rounds, states, protocols, modes)
     print(f"Total tasks: {len(tasks)}")
 
-    _run_tasks(tasks, decoder_cfg, max_shots, max_errors, args.num_workers, output_path)
+    _run_tasks(tasks, decoder_cfg, max_shots, max_errors, args.num_workers, output_path,
+               batch_size=args.batch_size)
 
     print("\n" + "=" * 60)
     print("BENCHMARK COMPLETE")

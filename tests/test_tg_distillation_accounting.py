@@ -1,4 +1,4 @@
-"""Failure-accounting regressions for TG decoding and calibration."""
+"""Failure-accounting regressions for distillation decoding and calibration."""
 
 from types import SimpleNamespace
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import stim
 
-from lightstim.protocols import tg_distillation
+from lightstim.protocols import ls_distillation, tg_distillation
 from lightstim.protocols.tg_distillation import run_simulation
 
 
@@ -24,7 +24,12 @@ def _two_observable_circuit() -> stim.Circuit:
     )
 
 
-def test_tg_calibration_propagates_decoder_failure_policy(monkeypatch):
+@pytest.mark.parametrize(
+    "protocol, rounds_arg",
+    [(ls_distillation, "rounds"), (tg_distillation, "rounds_init")],
+    ids=["ls", "tg"],
+)
+def test_calibration_propagates_decoder_failure_policy(monkeypatch, protocol, rounds_arg):
     captured = {}
 
     class FakePipeline:
@@ -34,11 +39,11 @@ def test_tg_calibration_propagates_decoder_failure_policy(monkeypatch):
         def run(self, _circuit):
             return SimpleNamespace(logical_error_rate=0.125)
 
-    monkeypatch.setattr(tg_distillation, "SimulationPipeline", FakePipeline)
+    monkeypatch.setattr(protocol, "SimulationPipeline", FakePipeline)
 
-    p_in = tg_distillation.estimate_p_in(
+    p_in = protocol.estimate_p_in(
         d=3,
-        rounds_init=1,
+        **{rounds_arg: 1},
         p_injected=1e-3,
         max_shots=1,
         decoder_name="mle-ilp",

@@ -1,8 +1,10 @@
 """Adapter contracts run without IonQ; native tests run when separately built."""
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import scipy.sparse as sp
 import stim
@@ -10,6 +12,7 @@ import stim
 from lightstim.simulation.decoder_backend import DecoderConfig, SimulationPipeline
 from lightstim.simulation.decoder_backend.decoders import ionq_beam_search as ionq
 from lightstim.simulation.decoder_backend.registry import get_decoder
+from lightstim.simulation.decoder_backend._accounting import count_batch
 
 
 class NativeStub:
@@ -97,6 +100,26 @@ def test_bitpacking_multiple_observables_empty_batch_and_noiseless(fake_native):
     assert compiled.last_flags.tolist() == [True, False]
 
 
+def test_invalid_correction_with_correct_observable_is_policy_dependent(fake_native):
+    decoder = get_decoder('ionq-beam-search')
+    compiled = decoder.compile_decoder_for_dem(
+        dem=stim.DetectorErrorModel('error(0.1) D0\nlogical_observable L0'))
+    # The stub returns correction [1] for both shots: valid for syndrome 1,
+    # invalid for syndrome 0. Neither correction changes the observable.
+    prediction = compiled.decode_shots_bit_packed(
+        bit_packed_detection_event_data=np.array([[1], [0]], dtype=np.uint8))
+    assert compiled.last_flags.tolist() == [True, False]
+    for policy, expected in [('ignore', (2, 0)), ('error', (2, 1)), ('discard', (1, 0))]:
+        assert count_batch(
+            obs_filtered=np.zeros((2, 1), dtype=np.uint8),
+            pred_packed=prediction,
+            flags=compiled.last_flags,
+            post_select_corrected_observable_indices=None,
+            target_observable_indices=None,
+            on_decode_failure=policy,
+        ) == expected
+
+
 def _require_native():
     try:
         return ionq._load_native()
@@ -144,3 +167,46 @@ def test_native_pipeline_workers(workers):
     stats = pipeline.run(circuit)
     assert stats.shots == 40
     assert stats.errors == 0
+
+
+@pytest.mark.parametrize('workload, args, output_flag', [
+    pytest.param('memory', ['--codes', 'rotated_sc'], '--output', id='memory'),
+    pytest.param('logical_ops', ['--gate', 'TwoPatchLS_rotated_ZZ'],
+                 '--output', id='rotated-ls'),
+    pytest.param('logical_circuits', ['--experiment', 'bell_tele', '--protocols', 'tg',
+                                     '--states', 'Z'], '--output-dir', id='teleportation'),
+    pytest.param('logical_circuits', ['--experiment', 'distill_ls', '--p-injected', '0.01',
+                                     '--noise-mode', 'injection', 'full'],
+                 '--output-dir', id='ls-distillation'),
+    pytest.param('logical_circuits', ['--experiment', 'distill_tg', '--p-injected', '0.01',
+                                     '--noise-mode', 'injection', 'full'],
+                 '--output-dir', id='tg-distillation'),
+    pytest.param('state_injection', ['--inject-states', 'Z', '--inject-protocols', 'corner',
+                                    '--inject-modes', 'hybrid', '--rounds', '1'],
+                 '--output', id='state-injection'),
+    pytest.param('cross_ls', ['--experiment', 'sweep', '--states', 'Z', '--pqrm', '1,2,4'],
+                 '--output-dir', id='cross-ls'),
+])
+def test_native_workload_cli(tmp_path, workload, args, output_flag):
+    _require_native()
+    repo = Path(__file__).resolve().parent.parent
+    runner = repo / 'benchmarks' / workload / f'run_{workload}.py'
+    output = tmp_path / ('result.csv' if output_flag == '--output' else 'results')
+    result = subprocess.run(
+        [sys.executable, str(runner), *args, '--distances', '3', '--p-values', '0.001',
+         '--decoder', 'ionq-beam-search', '--max-shots', '8', '--max-errors', '8',
+         '--batch-size', '8', '--num-workers', '1', output_flag, str(output)],
+        cwd=repo, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    files = [output] if output_flag == '--output' else list(output.glob('*.csv'))
+    assert files
+    for path in files:
+        rows = pd.read_csv(path)
+        decoder_column = 'decoder_name' if workload == 'memory' else 'decoder'
+        assert not rows.empty
+        assert (rows[decoder_column] == 'ionq-beam-search').all()
+        assert (rows['shots'] == 8).all()
+        assert rows['errors'].between(0, rows['shots']).all()
+        if workload == 'cross_ls':
+            assert (rows['n_ps'] > 0).all()
