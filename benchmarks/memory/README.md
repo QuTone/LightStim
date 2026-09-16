@@ -343,15 +343,19 @@ venv/bin/python benchmarks/memory/plot_memory.py results/*.csv \
 Results are saved as CSV with one row per complete benchmark configuration:
 
 ```
-code, distance, p, basis, rounds, se_circuit, p_idle, p_1q,
+code, distance, h_n, p, basis, rounds, se_circuit, mode, p_idle, p_1q,
 p_idle_mode, p_1q_mode, detector_basis,
 noise_model, decoder_name,
 decoder_time_limit, on_decode_failure, layout, block_class,
-shots, errors, logical_error_rate, seconds,
+shots, errors, accepted, rejected, acceptance, logical_error_rate, seconds,
 n_data, n_total, k
 ```
 
-Default output path: `benchmarks/memory/results/<codes>_<decoder>.csv`
+Default output path: `benchmarks/memory/results/<codes>_<decoder>.csv` for
+decoding, or `<codes>_full_postselection.csv` in the same directory for full
+postselection. `h_n` is the H-code size (zero for other codes); `mode`
+distinguishes the evaluation rules. In decode mode, `rejected` also counts
+shots discarded by the configured decoder failure policy.
 
 The `results/` directory is git-ignored. Benchmark data stays local unless it
 is deliberately published elsewhere.
@@ -360,8 +364,9 @@ is deliberately published elsewhere.
 
 The runner automatically skips tasks already present in the output CSV.
 Safe to interrupt with Ctrl+C and resume — just re-run the same command.
-The SE circuit is part of the checkpoint key, so different Color Code circuits
-can safely share one CSV. Idle/one-qubit noise rates and detector selection
+The SE circuit, H-code size, and evaluation mode are part of the checkpoint
+key, so their configurations can safely share one CSV.
+Idle/one-qubit noise rates and detector selection
 also distinguish checkpoint entries and plot curves. Older CSVs are migrated
 with their original uniform-noise and full-detector defaults.
 
