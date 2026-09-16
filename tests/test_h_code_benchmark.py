@@ -97,20 +97,27 @@ def test_unified_h_code_builder(n, basis, schedule):
     assert not dets.any() and not obs.any()
 
 
-def test_unified_checkpoint_and_plot_keep_sizes_and_modes_separate():
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    from plot_memory import plot_ler_vs_p
-
+def _size_and_mode_rows():
     base = dict(code="h_code", distance=2, p=0.001, basis="Z", rounds=2,
                 se_circuit="dedicated", noise_model="circuit_level", decoder_name="none")
-    rows = [{**base, "h_n": n, "mode": mode, "p": p, "logical_error_rate": p}
+    return [{**base, "h_n": n, "mode": mode, "p": p, "logical_error_rate": p}
             for n in [6, 8] for mode in ["decode", "full_postselection"]
             for p in [0.001, 0.002]]
-    assert len({_task_key(row) for row in rows}) == 8
+
+
+def test_unified_checkpoint_keeps_sizes_and_modes_separate():
+    assert len({_task_key(row) for row in _size_and_mode_rows()}) == 8
+
+
+def test_plot_keeps_sizes_and_modes_separate():
+    import pandas as pd
+    plt = pytest.importorskip("matplotlib.pyplot")
+    pytest.importorskip("seaborn")
+    from plot_memory import plot_ler_vs_p
+
     fig, ax = plt.subplots()
     try:
-        plot_ler_vs_p(pd.DataFrame(rows), ax)
+        plot_ler_vs_p(pd.DataFrame(_size_and_mode_rows()), ax)
         assert len(ax.lines) == 4
         assert len({line.get_label() for line in ax.lines}) == 4
         assert all(len(line.get_xdata()) == 2 for line in ax.lines)
