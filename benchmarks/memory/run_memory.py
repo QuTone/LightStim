@@ -15,6 +15,9 @@ BB codes (distance fixed by code, --distances ignored):
     bb_72_12_6, bb_108_8_10, bb_144_12_12, bb_288_12_18
 HGP codes (distance fixed by code, --distances ignored):
     hgp_13_1_3, hgp_18_2_3, hgp_225_9_4
+SHYPS codes (distance fixed by code, --distances ignored):
+    shyps_49_9_4, shyps_225_16_8, shyps_961_25_16
+    Dedicated cyclic-offset XZ extraction; r=5 memory construction is expensive.
 H-code family (distance 2; size selected with --h-n):
     h_code (even n >= 6; dedicated or coloration extraction)
 
@@ -29,6 +32,10 @@ Decoders
     cpu_bposd    CPU BP+OSD      (good for QLDPC codes, requires stimbposd)
     gpu_bposd    GPU BP+OSD      (recommended for BB/HGP codes, requires CUDA)
     ionq-beam-search  CPU BP-guided beam search (optional manual build)
+    relay-bp     CPU Relay-BP    (requires relay_bp)
+    ldpc-bp      CPU BP          (requires ldpc)
+    tesseract    CPU beam search (requires tesseract_decoder)
+    mle-ilp      CPU exact most-likely-error search
 
 CSV output schema (keys / data)
 ---------------------------------
@@ -82,6 +89,7 @@ Usage
 import argparse
 import contextlib
 import io
+import json
 import sys
 import time
 from dataclasses import dataclass
@@ -103,6 +111,7 @@ from lightstim.protocols.rotated_surface_defect import (
 )
 from lightstim.qec_code.BB_code import BBCode, BBCodeExtractionBlock
 from lightstim.qec_code.bacon_shor import BaconShorCode, BaconShorCodeExtractionBlock
+from lightstim.qec_code.shyps import SHYPSCode, SHYPSCodeExtractionBlock
 from lightstim.qec_code.subsystem_surface import (
     SubsystemSurfaceCode, SubsystemSurfaceCodeExtractionBlock,
 )
@@ -162,6 +171,12 @@ _HGP_CONFIGS = {
     },
 }
 
+_SHYPS_CONFIGS = {
+    "shyps_49_9_4": {"r": 3, "d": 4},
+    "shyps_225_16_8": {"r": 4, "d": 8},
+    "shyps_961_25_16": {"r": 5, "d": 16},
+}
+
 _TOPO_CODES = {
     "rotated_sc",
     "rotated_sc_defect",
@@ -173,7 +188,7 @@ _TOPO_CODES = {
 _BB_CODES   = set(_BB_CONFIGS)
 _HGP_CODES  = set(_HGP_CONFIGS)
 _DISTANCE_CODES = _TOPO_CODES | {"bacon_shor", "subsystem_surface"}
-ALL_CODES   = sorted(_DISTANCE_CODES | _BB_CODES | _HGP_CODES | {"h_code"})
+ALL_CODES   = sorted(_DISTANCE_CODES | _BB_CODES | _HGP_CODES | set(_SHYPS_CONFIGS) | {"h_code"})
 
 H_SE_CIRCUITS = {
     "dedicated": HCodeExtractionBlock,
@@ -228,6 +243,13 @@ def _color_se_spec(se_circuit: str | None) -> ColorSECircuitSpec:
 
 def _make_code(code_name: str, distance: int, se_circuit: str | None = None,
                *, h_n: int = 6):
+    if code_name in _SHYPS_CONFIGS:
+        cfg = _SHYPS_CONFIGS[code_name]
+        if distance != cfg["d"]:
+            raise ValueError(f"{code_name} has fixed distance {cfg['d']}.")
+        if se_circuit not in (None, "default", "dedicated"):
+            raise ValueError(f"Unknown SHYPS SE circuit: {se_circuit!r}")
+        return SHYPSCode(r=cfg["r"]), SHYPSCodeExtractionBlock
     if code_name == "h_code":
         if distance != 2:
             raise ValueError("H-code distance is 2; select code size with h_n.")
@@ -278,6 +300,8 @@ def _decoder_config(
     mle_time_limit: float = 0.0,
     on_decode_failure: str = "error",
 ) -> DecoderConfig:
+    if name in {"relay-bp", "ldpc-bp", "tesseract"}:
+        return DecoderConfig(name=name, backend="cpu", on_decode_failure=on_decode_failure)
     if name == "pymatching":
         return DecoderConfig(
             name="pymatching", backend="cpu",
@@ -320,7 +344,7 @@ def _decoder_config(
         )
     raise ValueError(
         f"Unknown decoder: {name!r}. Choose: pymatching, mwpf, cpu_bposd, "
-        "gpu_bposd, mle-ilp, ionq-beam-search"
+        "gpu_bposd, relay-bp, ldpc-bp, tesseract, mle-ilp, ionq-beam-search"
     )
 
 
@@ -462,12 +486,13 @@ _RESULT_COLS = frozenset({
 _RESULT_COLUMNS = [
     "code", "distance", "h_n", "p", "basis", "rounds", "se_circuit", "mode",
     "p_idle", "p_1q", "p_idle_mode", "p_1q_mode", "detector_basis",
-    "noise_model", "decoder_name", "decoder_time_limit",
+    "noise_model", "decoder_name", "decoder_params", "decoder_time_limit",
     "on_decode_failure", "layout", "block_class", "shots", "errors",
     "accepted", "rejected", "acceptance",
     "logical_error_rate", "seconds", "n_data", "n_total", "k",
 ]
 _RESULT_METADATA_DEFAULTS = {
+    "decoder_params": "{}",
     "h_n": 0,
     "mode": "decode",
     "decoder_time_limit": 0.0,
@@ -567,7 +592,10 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
              and t.get("mode", "decode") == "decode"
              and decoder_cfg is not None and decoder_cfg.name == "pymatching"
              else "all"
-         ), **t}
+         ), **t,
+         "decoder_params": json.dumps(
+             decoder_cfg.params if decoder_cfg is not None else {}, sort_keys=True,
+         )}
         for t in tasks
     ]
 
@@ -626,6 +654,15 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
                 batch_size=batch_size,
             )
         else:
+            if task["code"] in _SHYPS_CONFIGS and decoder_cfg.name == "pymatching":
+                try:
+                    circuit.detector_error_model(decompose_errors=True)
+                except ValueError as ex:
+                    raise ValueError(
+                        "This SHYPS memory DEM cannot be decomposed for PyMatching. "
+                        "Use cpu_bposd, gpu_bposd, relay-bp, mwpf or mle-ilp "
+                        "with the complete automatic detector set."
+                    ) from ex
             stats = pipeline.run(circuit, task)
             accepted = stats.post_selected_shots
             result = {
@@ -649,6 +686,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
         elif task["code"] in _HGP_CODES:
             layout = "canonical_interleaved_product"
             block_class = HGPProductColorationExtractionBlock.__name__
+        elif task["code"] in _SHYPS_CONFIGS:
+            layout = "cyclic_product_sector_ancillas"
+            block_class = SHYPSCodeExtractionBlock.__name__
         elif task["code"] == "bacon_shor":
             layout = "square_edge_ancillas"
             block_class = BaconShorCodeExtractionBlock.__name__
@@ -723,11 +763,13 @@ def main():
         "--decoder",
         choices=[
             "pymatching", "mwpf", "cpu_bposd", "gpu_bposd", "mle-ilp",
-            "ionq-beam-search",
+            "ionq-beam-search", "relay-bp", "ldpc-bp", "tesseract",
         ],
         default=None,
-        help="Decoder for decode mode (default: pymatching)",
+        help="Decoder for decode mode (default: cpu_bposd if SHYPS is selected, otherwise pymatching)",
     )
+    ap.add_argument("--decoder-params", default="{}",
+                    help="JSON object of decoder-specific parameter overrides; recorded in the CSV/checkpoint key")
     ap.add_argument("--osd-order", type=int, default=10,
                     help="OSD order for cpu_bposd/gpu_bposd decoders (default: 10)")
     ap.add_argument("--max-iterations", type=int, default=1000,
@@ -758,7 +800,21 @@ def main():
     if args.mode == "full_postselection" and args.decoder is not None:
         ap.error("--decoder applies only to --mode decode")
     if args.decoder is None:
-        args.decoder = "pymatching" if args.mode == "decode" else "none"
+        args.decoder = (
+            "cpu_bposd" if set(args.codes) & set(_SHYPS_CONFIGS) else "pymatching"
+        ) if args.mode == "decode" else "none"
+    try:
+        decoder_params = json.loads(args.decoder_params)
+    except ValueError:
+        ap.error("--decoder-params must be a JSON object")
+    if not isinstance(decoder_params, dict):
+        ap.error("--decoder-params must be a JSON object")
+    try:
+        json.dumps(decoder_params, allow_nan=False)
+    except ValueError:
+        ap.error("--decoder-params must contain finite JSON values")
+    if args.mode != "decode" and decoder_params:
+        ap.error("--decoder-params applies only to --mode decode")
 
     unknown_codes = sorted(set(args.codes) - set(ALL_CODES))
     if unknown_codes:
@@ -806,6 +862,21 @@ def main():
     ):
         ap.error("middle_out supports only X/Z memory experiments")
 
+    decoder_cfg = _decoder_config(
+        args.decoder, args.osd_order, args.max_iterations,
+        args.mle_time_limit, args.on_decode_failure,
+    ) if args.mode == "decode" else None
+    if decoder_cfg is not None:
+        decoder_cfg.params.update(decoder_params)
+        if args.decoder == "mle-ilp":
+            try:
+                args.mle_time_limit = float(decoder_cfg.params["time_limit"])
+            except (TypeError, ValueError):
+                ap.error("MLE time_limit must be finite and non-negative")
+            if not np.isfinite(args.mle_time_limit) or args.mle_time_limit < 0:
+                ap.error("MLE time_limit must be finite and non-negative")
+            decoder_cfg.params["time_limit"] = args.mle_time_limit
+
     # Build task list
     tasks = []
     for code in args.codes:
@@ -813,6 +884,8 @@ def main():
             distances = [_BB_CONFIGS[code]["d"]]
         elif code in _HGP_CONFIGS:
             distances = [_HGP_CONFIGS[code]["d"]]
+        elif code in _SHYPS_CONFIGS:
+            distances = [_SHYPS_CONFIGS[code]["d"]]
         elif code == "h_code":
             distances = [2]
         else:
@@ -825,7 +898,7 @@ def main():
             se_circuits = [_HGP_CONFIGS[code]["se_circuit"]]
         elif code == "rotated_sc_defect":
             se_circuits = ["alternating_defect_gauges"]
-        elif code in {"bacon_shor", "subsystem_surface"}:
+        elif code in {"bacon_shor", "subsystem_surface"} or code in _SHYPS_CONFIGS:
             se_circuits = ["dedicated"]
         else:
             se_circuits = ["default"]
@@ -868,8 +941,9 @@ def main():
     print(f"Output:      {output}")
     print(f"Tasks:       {len(tasks)} total")
     print(f"Mode:        {args.mode}")
-    print(f"Decoder:     {args.decoder} | noise_model={args.noise_model} | "
-          f"osd_order={args.osd_order} | max_iterations={args.max_iterations}")
+    print(f"Decoder:     {args.decoder} | noise_model={args.noise_model}")
+    if decoder_cfg is not None:
+        print(f"Parameters:  {json.dumps(decoder_cfg.params, sort_keys=True)}")
     if args.decoder == "mle-ilp":
         limit = "unlimited" if args.mle_time_limit == 0 else f"{args.mle_time_limit:g}s/shot"
         print(f"MLE budget:  {limit} | failure_policy={args.on_decode_failure}")
@@ -882,13 +956,7 @@ def main():
     print(f"workers:     {effective_workers}")
     print(f"max_shots:   {args.max_shots:.0e} | max_errors={args.max_errors}\n")
 
-    run(tasks, _decoder_config(
-            args.decoder,
-            args.osd_order,
-            args.max_iterations,
-            args.mle_time_limit,
-            args.on_decode_failure,
-        ) if args.mode == "decode" else None,
+    run(tasks, decoder_cfg,
         args.max_shots, args.max_errors,
         args.num_workers, args.batch_size,
         output)

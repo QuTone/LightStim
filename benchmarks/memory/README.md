@@ -42,6 +42,9 @@ or per-comparison runners in this directory.
 | HGP / unrotated SC [[13,1,3]] | `hgp_13_1_3` | no (d=3 fixed) |
 | HGP / toric [[18,2,3]] | `hgp_18_2_3` | no (d=3 fixed) |
 | HGP [[225,9,4]] | `hgp_225_9_4` | no (d=4 fixed) |
+| SHYPS [[49,9,4]] (r=3) | `shyps_49_9_4` | no (d=4 fixed) |
+| SHYPS [[225,16,8]] (r=4) | `shyps_225_16_8` | no (d=8 fixed) |
+| SHYPS [[961,25,16]] (r=5) | `shyps_961_25_16` | no (d=16 fixed; memory validation pending) |
 | H family [[n,n-4,2]] | `h_code` | no (d=2; use `--h-n`, default 6) |
 
 > **Not yet supported**: 4D geometric codes (`FourDGeoCode`) use an L-matrix parameter
@@ -137,7 +140,13 @@ shows a small circuit and CPU-MWPM decoding example.
 | `mwpf` | CPU | General QLDPC |
 | `cpu_bposd` | CPU | QLDPC codes, no GPU |
 | `gpu_bposd` | GPU (CUDA) | BB/HGP codes at scale |
+| `relay-bp` | CPU | Full-DEM Relay-BP decoding |
+| `ldpc-bp` | CPU | Plain BP baseline |
+| `tesseract` | CPU | Optional beam-search decoding |
 | `mle-ilp` | CPU | Exact reference decoding on small instances |
+
+SHYPS selects `cpu_bposd` by default. Install optional CPU decoders with
+`pip install -e '.[decoders]'` and GPU BP+OSD with `pip install -e '.[gpu]'`.
 
 `mle-ilp` has an unlimited per-shot budget by default. For practical large-DEM
 runs, set `--mle-time-limit SECONDS` and choose an explicit
@@ -213,6 +222,60 @@ For a full-syndrome comparison, choose `--decoder cpu_bposd`.
 
 The [memory notebook](../../notebooks/Memory/memory_bacon_shor.ipynb) contains
 the memory circuit diagram and live MWPM decoding.
+
+### SHYPS memory
+
+The SHYPS targets use the dedicated cyclic-offset schedule with all cyclic
+weight-3 gauges, X then Z. Each basis takes three CNOT layers. LightStim's
+Builder/Tracker generates the complete detector set and protected observables.
+
+| Target | r | Data qubits | Logical qubits | Code distance | Offsets |
+| --- | --- | --- | --- | --- | --- |
+| `shyps_49_9_4` | 3 | 49 | 9 | 4 | 0, 2, 3 |
+| `shyps_225_16_8` | 4 | 225 | 16 | 8 | 0, 1, 4 |
+| `shyps_961_25_16` | 5 | 961 | 25 | 16 | 0, 2, 5 |
+
+Distance is fixed by the selected target; `--distances` is ignored. `--rounds`
+defaults to distance, counting complete XZ cycles. The r=5 patch and SE are
+supported, but full memory/DEM validation at that size is still pending due to
+Tracker construction cost. Use r=3 for an interactive review.
+
+```bash
+python benchmarks/memory/run_memory.py \
+    --codes shyps_49_9_4 --basis Z X --p-values 0.001 \
+    --decoder cpu_bposd --num-workers 1 \
+    --max-shots 64 --max-errors 65 --batch-size 64
+
+python benchmarks/memory/run_memory.py \
+    --codes shyps_49_9_4 --basis Z X --p-values 0.001 \
+    --decoder relay-bp --num-workers 1 \
+    --decoder-params '{"pre_iter":20,"num_sets":4,"set_max_iter":20}' \
+    --max-shots 64 --max-errors 65 --batch-size 64
+
+CUDA_VISIBLE_DEVICES=0 python benchmarks/memory/run_memory.py \
+    --codes shyps_49_9_4 --basis Z X --p-values 0.001 \
+    --decoder gpu_bposd --num-workers 1 \
+    --max-shots 64 --max-errors 65 --batch-size 64
+```
+
+SHYPS defaults to `cpu_bposd` if no decoder is selected. `mwpf`, `ldpc-bp`,
+`mle-ilp` and the optional `tesseract` interface are also exposed by the shared
+runner. Install the selected optional backend first. GPU BP+OSD uses one worker;
+`CUDA_VISIBLE_DEVICES` selects the device. The standard noisy SHYPS DEM cannot
+be decomposed for PyMatching; the CLI reports this instead of dropping error
+mechanisms or detectors.
+
+The CSV goes to `benchmarks/memory/results/` through the same runner as other
+codes. Its `decoder_params` column contains effective parameter overrides and
+defaults supplied by the runner. These parameters participate in checkpointing
+and plot grouping, so different solver settings remain separate. Omitted
+backend-internal defaults follow the installed backend version.
+
+All noise rates default to each swept p, including final data readout. Use
+`--p-idle 0 --p-1q 0` to match the [memory notebook](../../notebooks/Memory/memory_shyps.ipynb),
+which displays two complete cycles. The CLI retains all X/Z detectors and
+scores any error among all protected logical observables. The commands above
+are small interface checks, not enough shots for a performance comparison.
 
 ### Rotated surface code with a center data defect
 

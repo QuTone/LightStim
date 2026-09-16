@@ -64,6 +64,7 @@ They show a small memory circuit and, optionally, a quick decoding example.
 | `memory_color.ipynb` | Triangular color code (6-6-6) |
 | `memory_bacon_shor.ipynb` | Weight-2 Bacon–Shor: dedicated four-layer SE, automatic detectors, CPU MWPM results |
 | `memory_subsystem_surface.ipynb` | Planar subsystem surface code: dedicated X/Z gauge extraction, circuit diagram and a small CPU-MWPM example |
+| `memory_shyps.ipynb` | SHYPS: fixed-offset X/Z gauge extraction, memory circuit diagram and a noiseless correctness check |
 | `memory_PQRM.ipynb` | PQRM codes (1,2,4), (1,3,5), (1,4,6) |
 | `memory_repetition.ipynb` | Repetition code (sanity check) |
 | `memory_4D_hadamard.ipynb` | 4D geometric code (Hadamard-encoded) |

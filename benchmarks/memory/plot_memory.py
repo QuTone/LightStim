@@ -45,6 +45,7 @@ _GROUP_COLUMNS = [
     "rounds",
     "noise_model",
     "decoder_name",
+    "decoder_params",
     "detector_basis",
     "p_idle_setting",
     "p_1q_setting",
@@ -60,6 +61,7 @@ def _with_group_defaults(df: pd.DataFrame) -> pd.DataFrame:
         "rounds": -1,
         "noise_model": "circuit_level",
         "decoder_name": "unknown",
+        "decoder_params": "{}",
         "detector_basis": "all",
         "h_n": 0,
         "mode": "decode",
@@ -83,7 +85,7 @@ def plot_ler_vs_p(df: pd.DataFrame, ax: plt.Axes, title: str = "") -> None:
     df = _with_group_defaults(df)
     groups = df.groupby(_GROUP_COLUMNS, sort=True, dropna=False)
     for i, (group, sub) in enumerate(groups):
-        code, se_circuit, basis, d, h_n, mode, rounds, noise_model, decoder, detectors, idle, one_q = group
+        code, se_circuit, basis, d, h_n, mode, rounds, noise_model, decoder, decoder_params, detectors, idle, one_q = group
         sub = sub.sort_values("p")
         color  = PALETTE_DISTANCE.get(int(d), f"C{i % 10}")
         marker = _MARKERS[i % len(_MARKERS)]
@@ -95,6 +97,8 @@ def plot_ler_vs_p(df: pd.DataFrame, ax: plt.Axes, title: str = "") -> None:
             label += f" r={rounds}"
         if df["noise_model"].nunique() > 1:
             label += f" {noise_model}"
+        if df["decoder_params"].nunique() > 1:
+            label += f" params={decoder_params}"
         for column, value, name in (("detector_basis", detectors, "detectors"),
                                     ("p_idle_setting", idle, "p_idle"),
                                     ("p_1q_setting", one_q, "p_1q")):

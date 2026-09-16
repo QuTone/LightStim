@@ -28,6 +28,8 @@ from run_memory import (
     COLOR_SE_CIRCUITS,
     _BB_CONFIGS,
     _HGP_CONFIGS,
+    _SHYPS_CONFIGS,
+    _make_code,
     _RESULT_COLUMNS,
     _TOPO_CODES,
     _decoder_config,
@@ -140,6 +142,51 @@ def test_hgp_rejects_unknown_se_circuit():
             p=1e-2,
             se_circuit="not_a_schedule",
         )
+
+
+@pytest.mark.parametrize("code_name", sorted(_SHYPS_CONFIGS))
+def test_shyps_cli_instances_use_dedicated_extraction(code_name):
+    from lightstim.ir.qec_system import QECSystem
+    from lightstim.qec_code.shyps import SHYPSCodeExtractionBlock
+
+    cfg = _SHYPS_CONFIGS[code_name]
+    patch, block_cls = _make_code(code_name, cfg["d"])
+    assert patch.num_data_qubits == (2**cfg["r"] - 1)**2
+    assert patch.num_logicals == cfg["r"]**2
+    assert block_cls is SHYPSCodeExtractionBlock
+    system = QECSystem()
+    system.add_patch(patch, name="shyps")
+    block = block_cls(system)
+    assert block.depth_x == block.depth_z == 3
+
+
+@pytest.mark.parametrize("basis", ["X", "Z"])
+def test_shyps_cli_memory_uses_native_full_detector_pipeline(basis):
+    from lightstim.noise.config import NoiseConfig
+    from lightstim.protocols.memory import MemoryExperiment
+    from lightstim.qec_code.shyps import SHYPSCode
+
+    circuit, n, total, k = build_circuit(
+        "shyps_49_9_4", 4, .001, basis=basis, rounds=2,
+        p_idle=0, p_1q=0,
+    )
+    native = MemoryExperiment(
+        qec_patch=SHYPSCode(3), basis=basis, rounds=2,
+        noise_params=NoiseConfig(p_2q=.001, p_meas=.001, p_reset=.001),
+    ).build()
+    assert circuit == native
+    assert (n, total, k) == (49, 147, 9)
+    assert circuit.detector_error_model().num_observables == 9
+    assert not circuit.without_noise().compile_detector_sampler(seed=71).sample(
+        32, append_observables=True,
+    ).any()
+
+
+def test_shyps_rejects_inconsistent_distance_or_schedule():
+    with pytest.raises(ValueError, match="fixed distance"):
+        _make_code("shyps_49_9_4", 3)
+    with pytest.raises(ValueError, match="Unknown SHYPS SE"):
+        _make_code("shyps_49_9_4", 4, "independent")
 
 
 def test_build_circuit_xzzx_gets_checkerboard_basis():
@@ -328,7 +375,8 @@ def test_build_circuit_middle_out_rejects_y_basis():
 
 @pytest.mark.parametrize(
     "name",
-    ["pymatching", "mwpf", "cpu_bposd", "mle-ilp", "ionq-beam-search"],
+    ["pymatching", "mwpf", "cpu_bposd", "mle-ilp", "ionq-beam-search",
+     "relay-bp", "ldpc-bp", "tesseract"],
 )
 def test_decoder_config_cpu(name):
     cfg = _decoder_config(name)
@@ -387,7 +435,7 @@ def test_legacy_result_schema_adds_decoder_metadata(tmp_path):
     path = tmp_path / "legacy.csv"
     old_columns = [
         column for column in _RESULT_COLUMNS
-        if column not in {"decoder_time_limit", "on_decode_failure"}
+        if column not in {"decoder_params", "decoder_time_limit", "on_decode_failure"}
     ]
     pd.DataFrame([{column: 0 for column in old_columns}]).to_csv(path, index=False)
 
@@ -397,6 +445,7 @@ def test_legacy_result_schema_adds_decoder_metadata(tmp_path):
     assert list(migrated.columns) == _RESULT_COLUMNS
     assert migrated["decoder_time_limit"].iloc[0] == 0.0
     assert migrated["on_decode_failure"].iloc[0] == "error"
+    assert migrated["decoder_params"].iloc[0] == "{}"
 
 
 def test_task_key_distinguishes_color_se_circuits():
@@ -444,6 +493,22 @@ def test_plot_keeps_color_se_circuits_separate():
         "color space_multiplexing d=3 Z mwpf",
         "color bell_flagging d=3 Z mwpf",
     }
+    plt.close(fig)
+
+
+def test_plot_keeps_decoder_parameters_separate():
+    plt = pytest.importorskip("matplotlib.pyplot")
+    from plot_memory import plot_ler_vs_p
+
+    rows = [dict(code="shyps_49_9_4", distance=4, p=p,
+                 decoder_name="relay-bp", decoder_params=params,
+                 logical_error_rate=p)
+            for p in (.001, .002)
+            for params in ('{"num_sets": 4}', '{"num_sets": 8}')]
+    fig, ax = plt.subplots()
+    plot_ler_vs_p(pd.DataFrame(rows), ax)
+    assert len(ax.lines) == 2
+    assert len({line.get_label() for line in ax.lines}) == 2
     plt.close(fig)
 
 
@@ -536,6 +601,69 @@ def test_cli_subsystem_surface_defaults_to_complete_cycles_and_all_detectors(tmp
     assert (rows.shots == 100).all()
     assert set(rows.se_circuit) == {"dedicated"}
     assert set(rows.block_class) == {"SubsystemSurfaceCodeExtractionBlock"}
+
+
+@pytest.mark.skipif(not _has_bposd(), reason="CPU BP+OSD not installed")
+def test_cli_shyps_defaults_and_decoder_parameter_checkpoint(tmp_path):
+    import json
+
+    out = tmp_path / "shyps.csv"
+    args = ["--codes", "shyps_49_9_4", "--basis", "Z", "X",
+            "--p-values", ".001", "--max-shots", "16", "--max-errors", "17",
+            "--batch-size", "16", "--num-workers", "1", "--osd-order", "0",
+            "--max-iterations", "20"]
+    for params in ('{"ms_scaling_factor": 0.5}', '{"ms_scaling_factor":0.5}',
+                   '{"ms_scaling_factor":0.75}'):
+        result = _run_cli(args + ["--decoder-params", params], out)
+        assert result.returncode == 0, result.stderr
+    rows = pd.read_csv(out)
+    assert len(rows) == 4  # equivalent JSON resumes; changed parameters run again
+    assert set(rows.basis) == {"X", "Z"}
+    assert (rows.rounds == 4).all()
+    assert (rows.distance == 4).all()
+    assert (rows.decoder_name == "cpu_bposd").all()
+    assert (rows.detector_basis == "all").all()
+    assert (rows.block_class == "SHYPSCodeExtractionBlock").all()
+    assert (rows.shots == 16).all()
+    assert (rows.k == 9).all()
+    assert {json.loads(s)["ms_scaling_factor"] for s in rows.decoder_params} == {0.5, 0.75}
+
+
+@pytest.mark.parametrize("params", ['[]', 'null', '{bad}', '{"x":NaN}'])
+def test_cli_rejects_invalid_decoder_parameters(tmp_path, params):
+    result = _run_cli(["--codes", "shyps_49_9_4", "--decoder-params", params],
+                      tmp_path / "invalid.csv")
+    assert result.returncode != 0
+    assert "--decoder-params" in result.stderr
+
+
+def test_cli_shyps_reports_incompatible_mwpm(tmp_path):
+    out = tmp_path / "unsupported.csv"
+    result = _run_cli([
+        "--codes", "shyps_49_9_4", "--decoder", "pymatching",
+        "--p-values", ".001", "--rounds", "2", "--num-workers", "1",
+        "--max-shots", "1", "--max-errors", "2",
+    ], out)
+    assert result.returncode != 0
+    assert "cannot be decomposed for PyMatching" in result.stderr
+    assert not out.exists()
+
+
+def test_cli_mle_parameter_override_records_effective_budget(tmp_path):
+    import json
+
+    out = tmp_path / "mle.csv"
+    result = _run_cli([
+        "--codes", "shyps_49_9_4", "--decoder", "mle-ilp",
+        "--decoder-params", '{"time_limit": 0.25}',
+        "--p-values", ".001", "--rounds", "2", "--num-workers", "1",
+        "--max-shots", "1", "--max-errors", "2", "--batch-size", "1",
+    ], out)
+    assert result.returncode == 0, result.stderr
+    row = pd.read_csv(out).iloc[0]
+    assert row.decoder_time_limit == 0.25
+    assert json.loads(row.decoder_params)["time_limit"] == 0.25
+    assert "0.25s/shot" in result.stdout
 
 
 def test_legacy_checkpoint_keeps_uniform_noise_defaults(tmp_path):
