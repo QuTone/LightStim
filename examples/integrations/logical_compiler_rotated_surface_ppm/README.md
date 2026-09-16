@@ -150,6 +150,47 @@ Generated artifacts are written under `build/examples/`:
 An empty result-record list is fixed zero parity. `null` means the result was
 not record-deterministic at that point, not that compilation failed.
 
+### Backend API and lifecycle
+
+The [code-family backend](../../../lightstim/qec_code/surface_code/rotated/ppm/)
+can also be used without `RotatedSurfacePPMExperiment`:
+
+- `lower_ppm(placements, request, system=..., ...)` returns a declarative
+  `RotatedSurfacePPMPlan` without mutating the system, builder, or tracker.
+  Cell-adjacent pairs require the live system to classify the actual seam.
+  Placements carry the current patch orientations, and routes are explicit.
+- `apply_ppm_plan(system, plan, name)` registers the coupler. Register it
+  after baseline rounds have established the logical patches, immediately
+  before its PPM. The caller owns activation, merged rounds, splitting, and
+  corridor readout.
+
+The request and plan describe rotated-surface geometry and schedules; they
+are code-family-specific backend types. The
+[driver-free composition test](../../../tests/test_rotated_surface_ppm_matrix.py)
+shows how to consume them through the measurement-block engine.
+
+### Certificates and measurement results
+
+For corridor plans, `plan.certificate.items` records the merged checks'
+commutativity, logical count, presence of the requested product, absence of
+single-target or proper-subset products, and absence of Y checks and
+weight-1 logical operators. Layouts without stretched checks also carry
+`no_mpp`, `no_tick_collision`, and `dem_valid` circuit checks. These checks
+do not by themselves certify distance-d circuit fault tolerance.
+
+`certificate.measures_exactly_the_product` requires `joint`, `no_single`,
+and `no_subjoint`: measuring a weight-w product reveals one parity bit.
+A chain of pairwise measurements would reveal additional logical information
+and implement a different measurement. Wall plans carry `certificate=None`
+and are rejected by the experiment driver.
+
+Each step's `PPMOutcome` records the joint parity before merging and after
+splitting, reconstructed from tracked measurement records. A protocol result
+does not automatically define a deterministic evaluation observable: the
+caller chooses input states, final readout bases, and how to use the parity
+for evaluation or feed-forward. The driver emits final logical observables
+and closure detectors for the certified correlations.
+
 ## Current Boundary
 
 Supported: standard/conjugate-frame rotated patches, explicit X/Z routes,

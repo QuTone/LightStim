@@ -41,6 +41,11 @@ ENV/
 CLAUDE.md
 .claude/
 
+# Local development plans and workflow records (keep originals in archive/)
+/docs/design/
+/docs/specs/
+/docs/superpowers/
+
 # Testing
 .pytest_cache/
 .coverage

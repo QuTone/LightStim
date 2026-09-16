@@ -1,7 +1,8 @@
 """
 Selectable 4-tick / 6-tick CNOT scheduling for the unrotated and toric SE blocks.
 
-Spec: docs/superpowers/specs/2026-06-05-unrotated-se-4tick-scheduling-design.md
+Schedule definitions and options are documented in each extraction block's
+class docstring and SCHEDULES mapping.
 
 Covers, for BOTH UnrotatedSurfaceCodeExtractionBlock and ToricCodeExtractionBlock:
   - default scheduling is the 6-tick Li schedule (backward compatible)

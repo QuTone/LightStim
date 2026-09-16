@@ -160,7 +160,7 @@ intersection of the tracked physical state and the gauge span, including
 products of rows. The Builder automatically classifies subsystem state before
 and after each physical measurement block; users do not update active
 stabilizers between X/Z rounds. See
-[subsystem tracking](../design/subsystem_tracking.md) for initialization and
+[subsystem state classification](#subsystem-state-classification) for initialization and
 the supported scope.
 
 ### Define-by-run (dynamic patch addition)
@@ -261,6 +261,29 @@ builder.apply_syndrome_extraction(
 **Critical constraint:** The `circuit_chunk` must use global qubit indices.
 Build it from `system.active_stabilizers` (or `_x` / `_z` subsets) and
 `system.index_map` to look up global indices.
+
+#### Physical measurement blocks and round boundaries
+
+A physical measurement block consists of input resets, Clifford gates, and
+one commuting terminal measurement layer. An SE round groups one or more
+such blocks. Terminal measurement targets, reset qubits, and patch-declared
+syndrome ancillas have distinct roles: only syndrome ancillas are discarded
+from the tracked output state. Measured data remains tracked with its
+measurement-record parity.
+
+For patches without subsystem gauges, Builder classifies the state after
+the complete round: it promotes eligible rows for a single disposable-ancilla
+block, rebases onto the code basis for multiple disposable-ancilla blocks,
+or retains the physical state basis and validates the logical count for a
+retained-data round. For subsystem gauges, classification instead runs
+before the first physical block and after each block.
+
+In Middle-Out extraction, the extraction block prepares representative data
+qubits; memory initialization prepares only passive data. Builder finds a
+Clifford frame where the active code checks are known, canonicalizes there
+while preserving record parities, and maps the state back. Repeated rounds
+use `REPEAT` only after both detector records and the tableau transition are
+verified to repeat; otherwise Builder executes them explicitly.
 
 ### D. Unitary Blocks (gates between SE rounds)
 
@@ -374,14 +397,16 @@ tracker.process_mid_measurement(
     forward_symplectic_matrix,
     back_propagated_paulis,
     reset_paulis,
-    syn_qubit_indices,
-    syn_measurement_bases,
-    syn_coords,
-    no_detector_mask,
+    measurement_qubit_indices=measurement_qubit_indices,
+    measurement_bases=measurement_bases,
+    measurement_coords=measurement_coords,
+    discarded_measurement_qubit_indices=syndrome_ancilla_indices,
+    no_detector_mask=no_detector_mask,
 )
 # Handles one physical measurement block: emits input-boundary detectors,
 # forward-propagates the post-measurement state, and writes the output tableau
-# with record parities. It does not know whether an SE round has ended.
+# with record parities. Returns rows eligible for later logical classification;
+# Builder decides when to classify them at a protocol boundary.
 
 tracker.promote_stabilizer_rows_to_logicals(row_indices)
 tracker.rebase_stabilizers_onto_code_basis(system)
@@ -412,19 +437,54 @@ tracker.reset_records_for_qubits(qubit_indices)
 
 ### The Logical Count Guardrail
 
-After every `process_mid_measurement`, the tracker checks:
+At Builder-requested classification checkpoints and SE-round boundaries,
+the stabilizer-code path checks:
 
 ```
-num_absorbed_by_gauge + tracker.logicals.count == expected_num_logicals
+tracker.num_absorbed_dof() + tracker.logicals.count == tracker.expected_num_logicals
 ```
 
-If this fails, it raises `RuntimeError: Logical Count Mismatch!`. Common causes:
+If this fails, it raises `RuntimeError` with the checkpoint and actual versus
+expected counts. Common causes:
 
 | Error pattern | Likely cause |
 |---|---|
-| `Found M ≫ N` | Coupler data qubits accidentally initialized (see gotchas 1-A) |
-| `Found 0` | Wrong SE circuit (ancilla indices don't match system) |
+| Too many logical constraints | Coupler data qubits accidentally initialized (see gotchas 1-A) |
+| Missing logical constraints | Wrong SE circuit (ancilla indices don't match system) |
 | `commutes with all rows but is linearly independent` | Data qubit not initialized before SE |
+
+### Subsystem state classification
+
+For a declared subsystem code, let `S` be its stabilizer centre, `G` its
+gauge span, and `T` the complete tracked conditional-state span (both tracker
+tables). Declaring `S` and `G` does not establish their eigenvalues;
+initialization and physical measurements do.
+
+`classify_subsystem_state(system)` derives the known gauge constraints
+`A = T ∩ G` and the data-supported constraints `B = T ∩ G^perp` that commute
+with every gauge. Independent representatives of `B` modulo `A` form the
+protected logical-state constraints. These are intersections of row spaces,
+so products of tracked rows are included and their measurement records are
+XORed consistently. Valid existing logical representatives are preserved
+where possible; observable IDs follow the resulting tracker basis, not
+the patch's `logical_id` metadata.
+
+During preparation, the state may not yet contain all of `S`. Residual
+preparation constraints remain in the stabilizer bank without inserting
+unmeasured checks. Once the centre is known, classification requires the
+declared number of initialized protected logical constraints. Final data
+readout requires the centre to be established. The read-only
+`infer_gauge_fixed_stabilizers(system)` snapshot returns `A`, which can be
+smaller than the stabilizer bank during preparation.
+
+This path supports fixed-algebra CSS subsystem memory. Mixed protected
+states, logical/gauge-entangled inputs, pending absorbed logical relations,
+and row-index post-selection metadata require additional support and are
+rejected by the classifier. Use the full detector pipeline for both X and Z
+memories; the `z_only` shortcut is rejected for subsystem gauges.
+Gauge-bearing coupler lifecycles and changes to the declared code algebra
+are outside this supported scope. Successful circuit and DEM construction
+alone does not establish fault distance or single-shot error correction.
 
 ### Post-selection
 

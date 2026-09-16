@@ -220,6 +220,21 @@ paper-reproducibility artifacts:
 "clean up while I'm here," split that into a separate `chore: ...` PR.
 Mixed PRs are harder to review and harder to revert if needed.
 
+### Documentation placement
+
+- Put setup instructions in `docs/getting_started.md`, shared API contracts in
+  `docs/api/`, and project direction in `docs/vision.md`.
+- Document component-specific usage and limits in the relevant module's
+  `README.md` or docstrings. Put runnable walkthroughs alongside the example
+  or notebook they explain.
+- Keep dated implementation plans, review/session notes, assistant workflow
+  output, and exploratory results in the local, gitignored `archive/`.
+  `docs/design/`, `docs/specs/`, and `docs/superpowers/` are also ignored;
+  do not use them for public documentation.
+- When a development note contains a lasting API contract, verify it against
+  the implementation and summarize it in the appropriate public reference.
+  Keep implementation history in Git and local notes.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under
