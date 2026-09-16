@@ -212,9 +212,7 @@ single-worker pipeline). Its output is the usual
 For a full-syndrome comparison, choose `--decoder cpu_bposd`.
 
 The [memory notebook](../../notebooks/Memory/memory_bacon_shor.ipynb) contains
-the memory circuit diagram and live MWPM decoding. Historical research, circuit-distance
-audits and figure-generation helpers live in
-[playground/subsystem](../../playground/subsystem/README.md).
+the memory circuit diagram and live MWPM decoding.
 
 ### Rotated surface code with a center data defect
 

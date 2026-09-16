@@ -71,8 +71,7 @@ Thumbs.db
 
 # Local simulation outputs (not pushed; archived separately)
 benchmarks/*/results/
-playground/subsystem/**/results/
-playground/subsystem/**/literature/
+playground/subsystem/
 playground/subsystem_artifacts/
 notebooks/Memory/assets/
 archive/

@@ -69,9 +69,8 @@ They show a small memory circuit and, optionally, a quick decoding example.
 | `memory_4D_hadamard.ipynb` | 4D geometric code (Hadamard-encoded) |
 | `memory_H_code.ipynb` | `[[n,n-4,2]]` H family: SE configuration, X/Z memory, detector slices, and a single-fault check; set `N=6` for H6 |
 
-The earlier subsystem prototype is kept locally in `archive/memory_subsystem.ipynb`.
-A dedicated SHYPS memory notebook will accompany its later integration.
-Generated experiment assets stay in playground, outside this directory.
+Generated experiment assets stay in local, ignored playground directories,
+outside this directory.
 
 ### System/
 
