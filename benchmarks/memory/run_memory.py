@@ -28,6 +28,7 @@ Decoders
     mwpf         CPU MWPF        (general purpose)
     cpu_bposd    CPU BP+OSD      (good for QLDPC codes, requires stimbposd)
     gpu_bposd    GPU BP+OSD      (recommended for BB/HGP codes, requires CUDA)
+    ionq-beam-search  CPU BP-guided beam search (optional manual build)
 
 CSV output schema (keys / data)
 ---------------------------------
@@ -57,6 +58,12 @@ Usage
         --p-values 1e-3 2e-3 3e-3 \\
         --basis Z X \\
         --decoder gpu_bposd
+
+    # BB memory with the separately built IonQ beam-search extension:
+    PYTHONPATH=/path/to/BeamSearchDecoder/decoder venv/bin/python \
+        benchmarks/memory/run_memory.py \
+        --codes bb_72_12_6 --p-values 3e-3 --basis X Z \
+        --decoder ionq-beam-search --max-shots 1000
 
     # Color code with MWPF, save to custom path:
     venv/bin/python benchmarks/memory/run_memory.py \\
@@ -306,9 +313,14 @@ def _decoder_config(
             params={"time_limit": mle_time_limit},
             on_decode_failure=on_decode_failure,
         )
+    if name == "ionq-beam-search":
+        return DecoderConfig(
+            name="ionq-beam-search", backend="cpu",
+            on_decode_failure=on_decode_failure,
+        )
     raise ValueError(
         f"Unknown decoder: {name!r}. Choose: pymatching, mwpf, cpu_bposd, "
-        "gpu_bposd, mle-ilp"
+        "gpu_bposd, mle-ilp, ionq-beam-search"
     )
 
 
@@ -707,9 +719,15 @@ def main():
     )
     ap.add_argument("--rounds", type=int, default=None,
                     help="Complete SE cycles per memory shot (default: distance)")
-    ap.add_argument("--decoder", choices=["pymatching", "mwpf", "cpu_bposd", "gpu_bposd", "mle-ilp"],
-                    default=None,
-                    help="Decoder for decode mode (default: pymatching)")
+    ap.add_argument(
+        "--decoder",
+        choices=[
+            "pymatching", "mwpf", "cpu_bposd", "gpu_bposd", "mle-ilp",
+            "ionq-beam-search",
+        ],
+        default=None,
+        help="Decoder for decode mode (default: pymatching)",
+    )
     ap.add_argument("--osd-order", type=int, default=10,
                     help="OSD order for cpu_bposd/gpu_bposd decoders (default: 10)")
     ap.add_argument("--max-iterations", type=int, default=1000,

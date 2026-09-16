@@ -326,7 +326,10 @@ def test_build_circuit_middle_out_rejects_y_basis():
 
 # ── Layer 2: decoder config + checkpointing ───────────────────────────────────
 
-@pytest.mark.parametrize("name", ["pymatching", "mwpf", "cpu_bposd", "mle-ilp"])
+@pytest.mark.parametrize(
+    "name",
+    ["pymatching", "mwpf", "cpu_bposd", "mle-ilp", "ionq-beam-search"],
+)
 def test_decoder_config_cpu(name):
     cfg = _decoder_config(name)
     assert cfg.backend == "cpu"
