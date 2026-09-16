@@ -23,7 +23,7 @@ class HCodeExtractionBlock:
     also prevent unchecked interior hook tails in the audited memory circuits.
     An individual round can still leave an unflagged weight-two data residual;
     the distance-two validation includes later checks and final memory readout.
-    See docs/design/h_code_se_review.md for the output-boundary counterexample.
+    See tests/test_H_code_fault_distance.py for the output-boundary regression.
 
     x_layers/z_layers share the same time axis and contain (syndrome,data)
     pairs; cnot_layers contains directed (control,target) pairs. depth_x/z

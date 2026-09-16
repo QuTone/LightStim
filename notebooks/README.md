@@ -67,7 +67,7 @@ They show a small memory circuit and, optionally, a quick decoding example.
 | `memory_PQRM.ipynb` | PQRM codes (1,2,4), (1,3,5), (1,4,6) |
 | `memory_repetition.ipynb` | Repetition code (sanity check) |
 | `memory_4D_hadamard.ipynb` | 4D geometric code (Hadamard-encoded) |
-| `memory_H_code.ipynb` | `[[n,n-4,2]]` H family: explicit SE configuration, X/Z memory, detector slices, and a single-fault check (`memory_H_six.ipynb` redirects here) |
+| `memory_H_code.ipynb` | `[[n,n-4,2]]` H family: SE configuration, X/Z memory, detector slices, and a single-fault check; set `N=6` for H6 |
 
 The earlier subsystem prototype is kept locally in `archive/memory_subsystem.ipynb`.
 A dedicated SHYPS memory notebook will accompany its later integration.

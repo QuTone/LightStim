@@ -113,10 +113,13 @@ including both syndrome bases for Bacon–Shor. The plotter keeps code sizes
 and evaluation modes in separate curves. Older decoded CSVs are migrated on
 resume; unavailable historical acceptance counts remain blank.
 
-The exhaustive H-code fault audit lives with the
-[fault-distance tests](../../tests/test_H_code_fault_distance.py); its optional
-reproduction command is documented in the
-[SE review](../../docs/design/h_code_se_review.md).
+The [H-code fault-distance tests](../../tests/test_H_code_fault_distance.py)
+check single-fault detection, independent two-fault witnesses, and the
+final-readout boundary. Run them through pytest:
+
+```bash
+venv/bin/python -m pytest tests/test_H_code_fault_distance.py -m "not slow"
+```
 
 ## Supported Decoders
 
