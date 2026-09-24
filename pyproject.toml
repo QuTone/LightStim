@@ -53,6 +53,10 @@ decoders = [
 gpu = [
     "cudaq-qec",
 ]
+deq = [
+    "deq",                       # Microsoft's DEQ circuit model, parser, and spec validators
+    "deq_runtime",                # compiled transpiler/simulator backend for `python -m deq transpile`/`sample`
+]
 dev = [
     "pytest",
     "jupyter",
