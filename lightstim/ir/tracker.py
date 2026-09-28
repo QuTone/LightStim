@@ -449,6 +449,15 @@ class SyndromeTracker:
         """
         if not getattr(system, "active_gauges", ()):
             return
+        stabilizers, logicals = self._subsystem_classification(system, require_complete=require_complete)
+        # Commit only after all checks, retaining exactly the same physical span.
+        self.stabilizers.matrix, self.stabilizers.records = stabilizers
+        self.logicals.matrix, self.logicals.records = logicals
+
+    def _subsystem_classification(self, system, *, require_complete: bool = False):
+        """The checks and result of :meth:`classify_subsystem_state` without
+        committing it: ``((stabilizer_rows, records), (logical_rows, records))``.
+        Read-only, so the record-tableau backend can run it on its tracker view."""
         self._reject_pending_row_metadata("subsystem classification")
         if self.absorbed_ops.count or self._gauge_logical_vectors:
             raise RuntimeError("Subsystem classification does not yet support pending absorbed logical relations.")
@@ -499,11 +508,8 @@ class SyndromeTracker:
             np.vstack([classified, state])) if idx >= classified_count]
         stabilizer_rows = np.vstack([gauge_rows, state[residual_indices]])
         stabilizer_coefficients = np.vstack([gauge_coefficients, identity[residual_indices]])
-        # Commit only after all checks, retaining exactly the same physical span.
-        self.stabilizers.matrix = stabilizer_rows
-        self.stabilizers.records = combine_records(stabilizer_coefficients, records)
-        self.logicals.matrix = logical_rows
-        self.logicals.records = combine_records(logical_coefficients, records)
+        return ((stabilizer_rows, combine_records(stabilizer_coefficients, records)),
+                (logical_rows, combine_records(logical_coefficients, records)))
 
     def logical_canonicalization(
         self,
@@ -646,6 +652,8 @@ class SyndromeTracker:
 
     def process_unitary_block(self, circuit_chunk: stim.Circuit):
         """Forward-propagate the tracked state through a Clifford circuit."""
+        if not (self.stabilizers.count or self.logicals.count or self.absorbed_ops.count):
+            return      # nothing tracked (e.g. the record-tableau detector backend)
         self._apply_symplectic_matrix(
             self.get_forward_symplectic_matrix(circuit_chunk, self.num_qubits)
         )

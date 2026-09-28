@@ -22,6 +22,20 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "smoke: fast tests (<60s total), safe for every commit")
     config.addinivalue_line("markers", "integration: moderate tests (<5min), run before merge")
     config.addinivalue_line("markers", "slow: long-running tests (>5min), run manually")
+    config.addinivalue_line(
+        "markers",
+        "tracker_only: asserts SyndromeTracker internals; skipped under "
+        "LIGHTSTIM_DETECTOR_BACKEND=record_tableau")
+
+
+def pytest_collection_modifyitems(config, items):
+    import os
+    if os.environ.get("LIGHTSTIM_DETECTOR_BACKEND") != "record_tableau":
+        return
+    skip = pytest.mark.skip(reason="tests SyndromeTracker internals; the record_tableau backend does not run the tracker")
+    for item in items:
+        if "tracker_only" in item.keywords:
+            item.add_marker(skip)
 
 
 # ── Safe native-import guard (importable by all test modules) ─────────────────

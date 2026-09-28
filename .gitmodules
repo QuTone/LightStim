@@ -1,0 +1,4 @@
+[submodule "third_party/stim"]
+	path = third_party/stim
+	url = https://github.com/quantumlib/Stim.git
+	shallow = true

@@ -91,6 +91,7 @@ def test_empty_intersections_have_consistent_shapes(left_count, right_count):
     assert coefficients.shape == (0, left_count)
 
 
+@pytest.mark.tracker_only
 def test_bell_preparation_requires_span_intersection_and_both_tableaus():
     builder = make_builder(bells=True)
     tracker = builder.tracker
@@ -178,6 +179,7 @@ def test_logical_gauge_entanglement_is_not_counted_as_two_known_logicals():
     np.testing.assert_array_equal(tracker.stabilizers.matrix, before)
 
 
+@pytest.mark.tracker_only
 @pytest.mark.parametrize("metadata", ["post_select_row_indices", "stabilizer_with_logical_components"])
 def test_pending_row_metadata_is_rejected_before_recombination(metadata):
     builder = make_builder(bells=True)
@@ -189,6 +191,7 @@ def test_pending_row_metadata_is_rejected_before_recombination(metadata):
     assert builder.circuit == before
 
 
+@pytest.mark.tracker_only
 def test_unmeasured_placeholder_cannot_supply_gauge_knowledge():
     builder = make_builder(bells=True)
     builder.tracker.stabilizers.records[0] = [-1]
@@ -216,6 +219,7 @@ def test_absorbed_logical_metadata_is_not_silently_dropped():
     np.testing.assert_array_equal(builder.tracker.stabilizers.matrix, before)
 
 
+@pytest.mark.tracker_only
 def test_unverified_compression_falls_back_to_full_subsystem_updates(monkeypatch):
     builder = make_builder()
     block = GenericCSSGaugeExtractionBlock(builder.system)
