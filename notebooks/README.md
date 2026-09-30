@@ -35,6 +35,7 @@ notebooks/
 | `ghz_state_prep.ipynb` | `protocols/ghz.py` | Multi-patch GHZ state preparation |
 | `ls_distillation.ipynb` | `protocols/ls_distillation.py` | Steane 7-to-1 \|Y⟩ distillation (LS variant) |
 | `tg_distillation.ipynb` | `protocols/tg_distillation.py` | 7-to-1 \|Y⟩ distillation (TG/PQRM hypercube variant) |
+| `h6_distillation.ipynb` | `protocols/h6_distillation.py` | H6 0-level magic-state distillation (arXiv:2506.14688); post-selected quadratic scaling |
 
 ### LogicalOps/
 
