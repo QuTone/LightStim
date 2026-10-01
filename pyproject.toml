@@ -124,7 +124,6 @@ dependencies = [
     "frozendict>=2.4.7",
     "frozenlist>=1.8.0",
     "relay-bp[stim]>=0.2.2",
-    "tesseract-decoder>=0.1.1.dev20260910235247",
     "seaborn>=0.13.2",
     "terminado==0.18.1",
     "tinycss2==1.5.1",
@@ -140,6 +139,7 @@ dependencies = [
     "webencodings==0.6.1",
     "websocket-client==1.9.2",
     "widgetsnbextension==4.0.16",
+    "tesseract-decoder>=0.1.1.dev20260822020007",
 ]
 
 [project.optional-dependencies]
@@ -176,6 +176,11 @@ dev = [
 ]
 
 [tool.uv]
+# Wheel-only packages must publish a Python 3.11 linux wheel. Later
+# tesseract-decoder builds are 3.12+ only.
+required-environments = [
+    "python_version == '3.11' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 # Rebuild the C++ extensions (setup.py) when their sources change, not only
 # when the project metadata does.
 cache-keys = [

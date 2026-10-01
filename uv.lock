@@ -2,12 +2,14 @@ version = 1
 revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14'",
-    "python_full_version == '3.11.*'",
+    "(python_full_version == '3.11.*' and platform_machine != 'x86_64') or (python_full_version == '3.11.*' and sys_platform != 'linux')",
+    "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version < '3.11'",
+]
+required-markers = [
+    "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 
 [[package]]
@@ -637,11 +639,10 @@ name = "cudaq-qec"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14'",
-    "python_full_version == '3.11.*'",
+    "(python_full_version == '3.11.*' and platform_machine != 'x86_64') or (python_full_version == '3.11.*' and sys_platform != 'linux')",
+    "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/4d/d9/842b8c3cf40488b30ca7a0a001d4eb3a5c2afd0b165473ee69cd0d0c823f/cudaq_qec-0.8.0.tar.gz", hash = "sha256:358e709bf63a71bb5ee5fa56d6184adbbb8a3d4326fa6084788da5809683076f", size = 18734, upload-time = "2026-09-12T20:11:29.631Z" }
 
@@ -1468,7 +1469,7 @@ dependencies = [
     { name = "overrides", marker = "python_full_version < '3.12'" },
     { name = "packaging" },
     { name = "prometheus-client" },
-    { name = "pywinpty", marker = "os_name == 'nt'" },
+    { name = "pywinpty", marker = "(python_full_version != '3.11.*' and os_name == 'nt') or (os_name == 'nt' and platform_machine != 'x86_64') or (os_name == 'nt' and sys_platform != 'linux')" },
     { name = "pyzmq" },
     { name = "send2trash" },
     { name = "terminado" },
@@ -1486,7 +1487,7 @@ name = "jupyter-server-terminals"
 version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywinpty", marker = "os_name == 'nt'" },
+    { name = "pywinpty", marker = "(python_full_version != '3.11.*' and os_name == 'nt') or (os_name == 'nt' and platform_machine != 'x86_64') or (os_name == 'nt' and sys_platform != 'linux')" },
     { name = "terminado" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f4/a7/bcd0a9b0cbba88986fe944aaaf91bfda603e5a50bda8ed15123f381a3b2f/jupyter_server_terminals-0.5.4.tar.gz", hash = "sha256:bbda128ed41d0be9020349f9f1f2a4ab9952a73ed5f5ac9f1419794761fb87f5", size = 31770, upload-time = "2026-01-14T16:53:20.213Z" }
@@ -1869,7 +1870,8 @@ dependencies = [
     { name = "stim" },
     { name = "stimbposd" },
     { name = "terminado" },
-    { name = "tesseract-decoder" },
+    { name = "tesseract-decoder", version = "0.1.1.dev20260822020007", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "tesseract-decoder", version = "0.1.1.dev20260910235247", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.11.*' or platform_machine != 'x86_64' or sys_platform != 'linux'" },
     { name = "tinycss2" },
     { name = "tomli" },
     { name = "tornado" },
@@ -1893,7 +1895,8 @@ decoders = [
     { name = "mwpf" },
     { name = "relay-bp", extra = ["stim"] },
     { name = "stimbposd" },
-    { name = "tesseract-decoder" },
+    { name = "tesseract-decoder", version = "0.1.1.dev20260822020007", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "tesseract-decoder", version = "0.1.1.dev20260910235247", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.11.*' or platform_machine != 'x86_64' or sys_platform != 'linux'" },
 ]
 dev = [
     { name = "ipykernel" },
@@ -2039,7 +2042,7 @@ requires-dist = [
     { name = "stimbposd", specifier = ">=0.2.0" },
     { name = "stimbposd", marker = "extra == 'decoders'" },
     { name = "terminado", specifier = "==0.18.1" },
-    { name = "tesseract-decoder", specifier = ">=0.1.1.dev20260910235247" },
+    { name = "tesseract-decoder", specifier = ">=0.1.1.dev20260822020007" },
     { name = "tesseract-decoder", marker = "extra == 'decoders'" },
     { name = "tinycss2", specifier = "==1.5.1" },
     { name = "tomli", specifier = "==2.4.1" },
@@ -2342,7 +2345,8 @@ name = "networkx"
 version = "3.6.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version == '3.11.*'",
+    "(python_full_version == '3.11.*' and platform_machine != 'x86_64') or (python_full_version == '3.11.*' and sys_platform != 'linux')",
+    "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6a/51/63fe664f3908c97be9d2e4f1158eb633317598cfa6e1fc14af5383f17512/networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509", size = 2517025, upload-time = "2025-12-08T17:02:39.908Z" }
 wheels = [
@@ -2354,9 +2358,7 @@ name = "networkx"
 version = "3.7"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/dc/76/3af777226b63a5e64a6b36b1ec5855c14e2b94a37096d4760e595fc43511/networkx-3.7.tar.gz", hash = "sha256:fd77a511bd90f39f3d016351345b52cf5319b813bdca01de3f755d3cca62e96a", size = 1866482, upload-time = "2026-09-21T16:45:16.974Z" }
@@ -3516,7 +3518,8 @@ name = "scipy"
 version = "1.17.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version == '3.11.*'",
+    "(python_full_version == '3.11.*' and platform_machine != 'x86_64') or (python_full_version == '3.11.*' and sys_platform != 'linux')",
+    "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 dependencies = [
     { name = "numpy", marker = "python_full_version == '3.11.*'" },
@@ -3590,9 +3593,7 @@ name = "scipy"
 version = "1.18.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14'",
 ]
 dependencies = [
@@ -3796,7 +3797,7 @@ version = "0.18.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ptyprocess", marker = "os_name != 'nt'" },
-    { name = "pywinpty", marker = "os_name == 'nt'" },
+    { name = "pywinpty", marker = "(python_full_version != '3.11.*' and os_name == 'nt') or (os_name == 'nt' and platform_machine != 'x86_64') or (os_name == 'nt' and sys_platform != 'linux')" },
     { name = "tornado" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8a/11/965c6fd8e5cc254f1fe142d547387da17a8ebfd75a3455f637c663fb38a0/terminado-0.18.1.tar.gz", hash = "sha256:de09f2c4b85de4765f7714688fff57d3e75bad1f909b589fde880460c753fd2e", size = 32701, upload-time = "2024-03-12T14:34:39.026Z" }
@@ -3806,15 +3807,39 @@ wheels = [
 
 [[package]]
 name = "tesseract-decoder"
+version = "0.1.1.dev20260822020007"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "numpy", marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "stim", marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/8e/77c0541c58989b11473af6689bf7cf38880c8502938305a42d14d9881dba/tesseract_decoder-0.1.1.dev20260822020007-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:520f5889f16171ad4b6fc68b3eda07ef41b992444feb342a3a91081ee90a9d22", size = 3328900, upload-time = "2026-08-22T02:15:56.096Z" },
+    { url = "https://files.pythonhosted.org/packages/31/5f/538e55d58c4a5e44ab952090c267ad891e74fe0bd4a24539ad92605ad1d5/tesseract_decoder-0.1.1.dev20260822020007-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2760b794c2c02e0a053b56d932c866de11bbb283ac1f064959a7bbc918d933b1", size = 3330039, upload-time = "2026-08-22T02:15:58.817Z" },
+    { url = "https://files.pythonhosted.org/packages/49/ce/5df6c4c28d9bd99dab63465b06da1a1cb59ae83411514ff252dd4646a890/tesseract_decoder-0.1.1.dev20260822020007-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:627fe74d31248d8f21403408c87c257b44eb27bac858866bfb4c2c6e25d4e563", size = 3330594, upload-time = "2026-08-22T02:16:01.673Z" },
+]
+
+[[package]]
+name = "tesseract-decoder"
 version = "0.1.1.dev20260910235247"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14'",
+    "python_full_version >= '3.12' and python_full_version < '3.14'",
+    "(python_full_version == '3.11.*' and platform_machine != 'x86_64') or (python_full_version == '3.11.*' and sys_platform != 'linux')",
+    "python_full_version < '3.11'",
+]
 dependencies = [
-    { name = "numpy" },
+    { name = "numpy", marker = "python_full_version != '3.11.*' or platform_machine != 'x86_64' or sys_platform != 'linux'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and platform_machine != 'x86_64') or (python_full_version == '3.11.*' and sys_platform != 'linux')" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "sinter" },
-    { name = "stim" },
+    { name = "sinter", marker = "python_full_version != '3.11.*' or platform_machine != 'x86_64' or sys_platform != 'linux'" },
+    { name = "stim", marker = "python_full_version != '3.11.*' or platform_machine != 'x86_64' or sys_platform != 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/3f/1fafc54d113b08d399aa71d42a41ef851f248ccd8484a88f6bb58ce1970d/tesseract_decoder-0.1.1.dev20260910235247-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:816bfa8807314c1ea37f4e3cfe3904184d70e2fd37f47905e685410267153b78", size = 2958053, upload-time = "2026-09-10T23:58:54.187Z" },
