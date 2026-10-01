@@ -14,8 +14,10 @@ Usage:
     venv/bin/python paper_artifact/table/comprehensive_benchmark.py
     venv/bin/python paper_artifact/table/comprehensive_benchmark.py --trials 3
     venv/bin/python paper_artifact/table/comprehensive_benchmark.py --backend python
+    venv/bin/python paper_artifact/table/comprehensive_benchmark.py --detector-backend record_tableau
 """
 import argparse
+import os
 import sys, time, json, signal
 from pathlib import Path
 
@@ -39,10 +41,21 @@ def parse_args():
     parser.add_argument("--timeout-sec", type=int, default=1200, help="Per-trial timeout for marked slow rows.")
     parser.add_argument("--force", action="store_true", help="Rerun rows already present in the checkpoint.")
     parser.add_argument("--keys", nargs="*", help="Optional specific benchmark keys to run.")
+    parser.add_argument(
+        "--detector-backend",
+        choices=["tracker", "record_tableau"],
+        default="tracker",
+        help="Detector construction: SyndromeTracker (paper) or the stim record tableau.",
+    )
+    parser.add_argument("--save-circuits", type=Path, default=None,
+                        help="Write each built circuit to DIR/<key>.stim (for verification).")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="Checkpoint path (allows independent regression runs).")
     return parser.parse_args()
 
 
 ARGS = parse_args()
+os.environ["LIGHTSTIM_DETECTOR_BACKEND"] = ARGS.detector_backend
 
 
 def configure_backend(backend: str):
@@ -76,7 +89,9 @@ CPP_AVAILABLE = configure_backend(ARGS.backend)
 # The canonical reference data lives in precompute/table3.json (committed).
 OUT_DIR = Path(__file__).resolve().parent / 'results'
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-CKPT_PATH = OUT_DIR / f'table3_{ARGS.backend}.json'
+CKPT_PATH = ARGS.output or OUT_DIR / (
+    'table3_record_tableau.json' if ARGS.detector_backend == 'record_tableau'
+    else f'table3_{ARGS.backend}.json')
 
 N_TRIALS = ARGS.trials
 TIMEOUT_SEC = ARGS.timeout_sec
@@ -158,9 +173,13 @@ def bench(key, label, build_fn, d_label="", timeout=False):
             'num_observables': circuit.num_observables,
             'annotation_loc': ann_loc,
             'backend': ARGS.backend,
+            'detector_backend': ARGS.detector_backend,
             'trials': N_TRIALS,
             'times_ms': [round(t * 1000, 1) for t in times],
         }
+        if ARGS.save_circuits is not None:
+            ARGS.save_circuits.mkdir(parents=True, exist_ok=True)
+            (ARGS.save_circuits / f"{key}.stim").write_text(str(circuit))
         print(f"  {label} d={d_label}: {circuit.num_qubits}q, "
               f"{circuit.num_detectors}det, {circuit.num_observables}obs, "
               f"annot={ann_loc}, compile={t_med*1000:.1f}ms")
@@ -172,7 +191,7 @@ def bench(key, label, build_fn, d_label="", timeout=False):
 
 
 print(
-    f"\n=== Table 3 benchmark: backend={ARGS.backend}, "
+    f"\n=== Table 3 benchmark: detector_backend={ARGS.detector_backend}, backend={ARGS.backend}, "
     f"cpp_available={CPP_AVAILABLE}, trials={N_TRIALS}, "
     f"timeout={TIMEOUT_SEC}s ==="
 )

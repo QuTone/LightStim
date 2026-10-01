@@ -48,7 +48,7 @@ LightStim/
 ### 1) Install
 
 ```bash
-git clone https://github.com/QuTone/LightStim.git
+git clone --recursive https://github.com/QuTone/LightStim.git   # --recursive: third_party/stim
 cd LightStim
 
 python3 -m venv venv
@@ -60,6 +60,13 @@ pip install -e ".[server]"         # optional FastAPI server for the web UI
 pip install -e ".[dev]"            # development / notebook environment
 pip install -e ".[gpu]"            # optional NVIDIA GPU decoder (requires CUDA)
 ```
+
+> **C++ extensions.** `pip install` also compiles two optional C++ extensions: the GF(2)
+> RREF and the record-tableau detector engine. The engine is built from the `third_party/stim`
+> submodule (run `git submodule update --init` if you cloned without `--recursive`) and needs a
+> C++20 compiler (set `CXX=g++` if the default compiler is older). Without them the install
+> still succeeds; select the faster detector backend with `LIGHTSTIM_DETECTOR_BACKEND=record_tableau`.
+> Set `LIGHTSTIM_NATIVE_ARCH` (default `native`) to a portable `-march` target when building wheels.
 
 > **GPU decoder** (`nv-qldpc-decoder`) requires NVIDIA GPU + CUDA 12.x. Install it only with
 > `pip install -e ".[gpu]"` on compatible systems.

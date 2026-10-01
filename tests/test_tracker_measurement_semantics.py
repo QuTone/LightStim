@@ -1,5 +1,7 @@
 import inspect
 
+import pytest
+
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.tracker import SyndromeTracker
@@ -39,6 +41,7 @@ def test_tracker_measurement_update_has_no_round_finalization_policy():
     )
 
 
+@pytest.mark.tracker_only
 def test_builder_owns_measurement_group_classification(monkeypatch):
     events = []
     original_promote = SyndromeTracker.promote_stabilizer_rows_to_logicals
