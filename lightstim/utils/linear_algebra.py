@@ -6,7 +6,7 @@ from typing import Tuple, List
 # --- Optional C++ acceleration ---
 # Try to import the bitpacked GF(2) RREF backend.
 # Falls back to pure Python if not available (e.g., no C++ compiler).
-# Build with: python src/utils/cpp/build.py
+# Built by `pip install` (setup.py); manual build: python lightstim/utils/cpp/build.py
 _CPP_AVAILABLE = False
 try:
     from lightstim.utils.cpp._gf2_rref_cpp import row_echelon as _row_echelon_cpp

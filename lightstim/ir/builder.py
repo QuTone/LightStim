@@ -1,5 +1,6 @@
 import copy
 import logging
+import os
 import stim
 import numpy as np
 from typing import List, Dict, Any, Optional, Union, Literal, Set, Tuple
@@ -54,7 +55,8 @@ class CircuitBuilder:
     def __init__(self,
                  tracker: SyndromeTracker,
                  system_config: Any,
-                 if_detector: bool = True):
+                 if_detector: bool = True,
+                 detector_backend: Optional[str] = None):
         """
         Args:
             tracker: Initialized SyndromeTracker instance.
@@ -63,15 +65,57 @@ class CircuitBuilder:
                            - data_indices: List[int]
                            - syndrome_indices: List[int]
                            - syndrome_coords: List[List[float]]
+            detector_backend: ``"tracker"`` (SyndromeTracker, the default) or
+                ``"record_tableau"`` (stim-tableau engine that annotates the
+                physical circuit; see lightstim.record_tableau). Defaults to
+                the LIGHTSTIM_DETECTOR_BACKEND environment variable.
         """
         self.tracker = tracker
         self.system = system_config
-        self.circuit = stim.Circuit()
+        self._circuit = stim.Circuit()
         self.if_detector = if_detector
+        backend = detector_backend or os.environ.get("LIGHTSTIM_DETECTOR_BACKEND", "tracker")
+        if backend not in ("tracker", "record_tableau"):
+            raise ValueError(f"Unknown detector backend {backend!r}.")
+        self._annotator = None
+        if backend == "record_tableau" and if_detector:
+            from ..record_tableau import RecordTableauAnnotator
+            self._annotator = RecordTableauAnnotator()
+            # The builder emits the physical circuit only; the annotator
+            # derives detectors and observables from it.
+            self.if_detector = False
+            if tracker is not None:
+                from ..record_tableau.tracker_view import attach_tracker_view
+                # Observable ids come from the tracker (reserved ids stay
+                # reserved), and tracker state reads come from the tableau.
+                self._annotator.allocate_observable = tracker.allocate_observable
+                attach_tracker_view(tracker, self)
         # State set by apply_syndrome_extraction(z_only=True) for use by apply_data_readout
         self._z_only_syn_qubit_indices = None
         self._z_only_no_detector_mask  = None
         self._z_only_n_meas_per_round  = None
+
+    @property
+    def circuit(self) -> stim.Circuit:
+        """The circuit built so far (annotated first on the record-tableau backend)."""
+        if self._annotator is not None:
+            self._circuit = self._annotator.sync(self._circuit)
+        return self._circuit
+
+    @circuit.setter
+    def circuit(self, value: stim.Circuit) -> None:
+        self._circuit = value
+
+    def _active_stabilizer_rows(self, stabilizer_uids: Optional[Set[int]] = None) -> np.ndarray:
+        """[X|Z] rows of the code stabilizers (active set, or the given uids)."""
+        from ..utils.tableau_utils import stabilizers_to_symplectic
+        if stabilizer_uids is not None:
+            stab_dicts = [self.system.effective_stabilizer(i)
+                          for i in range(len(self.system.stabilizers)) if i in stabilizer_uids]
+        else:
+            stab_dicts = [self.system.effective_stabilizer(i)
+                          for i in sorted(self.system.active_stabilizer_indices)]
+        return stabilizers_to_symplectic(self.system, stab_dicts, self.system.num_qubits)
 
     # --------------------------------------------------------------------------
     # A. Setup & Initialization
@@ -117,6 +161,8 @@ class CircuitBuilder:
                     new_coords_circuit.append("QUBIT_COORDS", [q_index], list(coords))
         # Insert at position start_index (first n_old instructions are existing coords)
         self.circuit = self.circuit[:start_index] + new_coords_circuit + self.circuit[start_index:]
+        if self._annotator is not None:
+            self._annotator.shift_synced(start_index, len(new_coords_circuit))
 
     def initialize(self, init_dict: Dict[int, str], n: int, noiseless: bool = False):
         """
@@ -141,9 +187,13 @@ class CircuitBuilder:
         if qubit_indices_y:
             self.circuit.append("RY", qubit_indices_y, tag=tag)
 
-        init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
-
-        self.tracker.process_initialization(init_tableau)
+        if self._annotator is None:
+            init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
+            self.tracker.process_initialization(init_tableau)
+        elif self.tracker is not None:
+            # Same guard as process_initialization: relations banked on the
+            # tracker must not be silently destroyed by a re-initialisation.
+            self.tracker._reject_reset_over_banked(set(init_dict), context="process_initialization")
 
         # Track active qubits (logical lifetime)
         self.system.active_qubit_indices.update(init_dict.keys())
@@ -156,7 +206,27 @@ class CircuitBuilder:
         This can be used after encoding or to finalize a composite SE round
         whose explicit measurement blocks were processed separately.
         """
+        if self._annotator is not None:
+            _ = self.circuit        # bring the record tableau up to this point
+            if getattr(self.system, "active_gauges", ()):
+                if stabilizer_uids is not None:
+                    raise ValueError("Subsystem classification uses the full active S/G declaration.")
+                self._classify_subsystem_record()
+                return
+            self._annotator.stabilizer_canonicalization(
+                self._active_stabilizer_rows(stabilizer_uids), self.system.num_logicals)
+            return
         self.tracker.stabilizer_canonicalization(self.system, stabilizer_uids)
+
+    def _classify_subsystem_record(self, require_complete: bool = False) -> None:
+        """Record-tableau counterpart of tracker.classify_subsystem_state: the
+        tracker's checks run on its view of the record tableau (same errors,
+        nothing changed on failure), and the bare logical constraints found
+        become the tableau's logical generators."""
+        _ = self.circuit
+        _, (logical_rows, _) = self.tracker._subsystem_classification(
+            self.system, require_complete=require_complete)
+        self._annotator.adopt_subsystem_logicals(logical_rows)
 
     def logical_canonicalization(self, canonical_logicals: Dict[int, "np.ndarray"]) -> None:
         """
@@ -166,6 +236,8 @@ class CircuitBuilder:
         Args:
             canonical_logicals: {logical_index: pauli_vector (2n,)}
         """
+        if self._annotator is not None:
+            return          # representatives only change observables by detectors
         self.tracker.logical_canonicalization(canonical_logicals)
 
     # --------------------------------------------------------------------------
@@ -223,18 +295,50 @@ class CircuitBuilder:
         """
         if rounds < 1:
             return
-        if z_only and self.if_detector and getattr(self.system, "active_gauges", ()):
+        if z_only and (self.if_detector or self._annotator is not None) and getattr(self.system, "active_gauges", ()):
             raise ValueError("z_only readout is not supported for subsystem gauges; use the full detector pipeline.")
 
         blocks = tuple(measurement_blocks or (circuit_chunk,))
         if not blocks:
             raise ValueError("measurement_blocks must not be empty.")
+        if z_only and self._annotator is not None:
+            if len(blocks) != 1:
+                raise ValueError(
+                    "z_only readout currently supports one measurement block per SE round."
+                )
+            measured = [t.value for inst in blocks[0].flattened()
+                        if stim.gate_data(inst.name).produces_measurements
+                        for t in inst.targets_copy()]
+            x_ancillas = set(self.system.active_syndrome_indices_x)
+            self._z_only_syn_qubit_indices = measured
+            self._z_only_no_detector_mask = [q in x_ancillas for q in measured]
+            self._z_only_n_meas_per_round = len(measured)
+            base = self._circuit.num_measurements
+            self._annotator.suppressed_detectors.update(
+                base + r * len(measured) + i
+                for r in range(rounds) for i, q in enumerate(measured)
+                if q in x_ancillas
+            )
         if noiseless:
             blocks = tuple(_make_noiseless(block) for block in blocks)
         circuit_chunk = self._join_measurement_blocks(blocks)
 
         if not self.if_detector:
+            if self._annotator is not None:
+                # Same round layout as the tracker path: SHIFT_COORDS after the
+                # first measurement block of every round.
+                circuit_chunk = blocks[0].copy()
+                circuit_chunk.append("SHIFT_COORDS", [], [0, 0, 1])
+                for block in blocks[1:]:
+                    circuit_chunk += block
+                self._register_record_blocks(blocks, rounds)
             self.circuit += circuit_chunk
+            if self._annotator is not None:
+                # Classification boundary after the first round (as the
+                # tracker's promote/validate step at the round boundary).
+                self._annotator.mark_round_end(
+                    self._circuit.num_measurements, self.system.num_logicals,
+                    self._active_stabilizer_rows(), self._logical_rows(), self._auxiliary_rows())
             if rounds > 1:
                 steady_round_body = stim.Circuit()
                 steady_round_body.append("TICK")
@@ -383,6 +487,77 @@ class CircuitBuilder:
             persistent_logical_components.update(
                 self.tracker.stabilizer_with_logical_components
             )
+
+    def _register_record_blocks(self, blocks: Tuple[stim.Circuit, ...], rounds: int) -> None:
+        """Register output checks, retained-data code frames, and dependencies."""
+        annotator = self._annotator
+        base = self._circuit.num_measurements
+        per_round = sum(block.num_measurements for block in blocks)
+        syndrome = set(self.system.active_syndrome_indices)
+        check_retained_frames = self.system.num_logicals and not getattr(self.system, "active_gauges", ())
+        frame_starts = []
+        offset = 0
+        for block in blocks:
+            measured = {
+                t.value
+                for inst in block.flattened()
+                if stim.gate_data(inst.name).produces_measurements
+                for t in inst.targets_copy()
+            }
+            starts = [base + r * per_round + offset for r in range(rounds)]
+            if measured and measured <= syndrome:
+                annotator.mark_disposable_block(
+                    block, starts, self.system.num_qubits,
+                    self._active_stabilizer_rows, self._logical_rows)
+            elif check_retained_frames and block.num_measurements and not (measured & syndrome):
+                annotator.mark_retained_block(block, starts, self.system.num_qubits)
+                frame_starts.extend(starts)
+            offset += block.num_measurements
+        if frame_starts:
+            annotator.mark_stateful_code_frames(
+                frame_starts, self._active_stabilizer_rows(), self._logical_rows(), self.system.num_logicals,
+                self._auxiliary_rows())
+        annotator.mark_dependency_region(
+            base, base + rounds * per_round, self._active_stabilizers_redundant())
+
+    def _active_stabilizers_redundant(self) -> bool:
+        """Whether the active code stabilizers are linearly dependent (BB,
+        toric), i.e. whether measured checks can lack a generator of their own."""
+        key = frozenset(self.system.active_stabilizer_indices)
+        cache = self.__dict__.setdefault("_redundancy_cache", {})
+        if key not in cache:
+            rows = self._active_stabilizer_rows()
+            n = self.system.num_qubits
+            paulis = [stim.PauliString.from_numpy(xs=r[:n].astype(bool), zs=r[n:].astype(bool)) for r in rows]
+            try:
+                stim.Tableau.from_stabilizers(paulis, allow_underconstrained=True, allow_redundant=False)
+                cache[key] = False
+            except ValueError:
+                cache[key] = True
+        return cache[key]
+
+    def _logical_rows(self) -> np.ndarray:
+        """[X|Z] rows of the declared logical operators, plus Y_j = X_j Z_j
+        for each patch's j-th X/Z pair (the constraint of a Y-basis state)."""
+        from ..utils.tableau_utils import stabilizers_to_symplectic
+        ops = self.system.logical_ops
+        rows = stabilizers_to_symplectic(self.system, ops, self.system.num_qubits)
+        pairs = {}
+        for i, op in enumerate(ops):
+            pairs.setdefault(op.get("patch_name"), {"X": [], "Z": []}).get(op.get("type"), []).append(i)
+        extra = [rows[x] ^ rows[z] for p in pairs.values() for x, z in zip(p["X"], p["Z"])]
+        return np.vstack([rows] + extra) if extra else rows
+
+    def _auxiliary_rows(self) -> np.ndarray:
+        """Single-qubit Z and X rows on every non-data qubit."""
+        n = self.system.num_qubits
+        data = set(self.system.data_indices)
+        aux = [q for q in range(n) if q not in data]
+        rows = np.zeros((2 * len(aux), 2 * n), dtype=np.uint8)
+        for i, q in enumerate(aux):
+            rows[2 * i, n + q] = 1          # Z_q
+            rows[2 * i + 1, q] = 1          # X_q
+        return rows
 
     @staticmethod
     def _join_measurement_blocks(
@@ -1113,7 +1288,8 @@ class CircuitBuilder:
             self.circuit += unitary_block
 
         # Update the tracker's tableau to reflect the unitary transformation
-        self.tracker.process_unitary_block(unitary_block)
+        if self._annotator is None:
+            self.tracker.process_unitary_block(unitary_block)
 
     # --------------------------------------------------------------------------
     # D. Logical Coupler Activity, Stabilizer Masking/Unmasking
@@ -1225,6 +1401,8 @@ class CircuitBuilder:
                 shift_round=True,
             )
         else:
+            if self._annotator is not None:
+                self._annotator.mark_readout(self._circuit.num_measurements, len(normalized))
             self.circuit += block
             self.circuit.append("SHIFT_COORDS", [], [0, 0, 1])
 
@@ -1246,10 +1424,13 @@ class CircuitBuilder:
         """
         if final_measurements is None:
             final_measurements = {q: 'Z' for q in self.system.data_indices}
-        if self.if_detector and getattr(self.system, "active_gauges", ()):
+        if (self.if_detector or self._annotator is not None) and getattr(self.system, "active_gauges", ()):
             if z_only:
                 raise ValueError("z_only readout is not supported for subsystem gauges; use the full detector pipeline.")
-            self.tracker.classify_subsystem_state(self.system, require_complete=True)
+            if self._annotator is not None:
+                self._classify_subsystem_record(require_complete=True)
+            else:
+                self.tracker.classify_subsystem_state(self.system, require_complete=True)
 
         # Final destructive data readout must start in a fresh moment. Some
         # extraction blocks, such as middle-out color-code circuits, end with
@@ -1262,6 +1443,13 @@ class CircuitBuilder:
         zs = [q for q, b in final_measurements.items() if b == 'Z']
 
         tag = "noiseless" if noiseless else ""
+
+        if self._annotator is not None:
+            start = self._circuit.num_measurements
+            count = len(xs) + len(ys) + len(zs)
+            self._annotator.mark_readout(start, count)
+            if z_only:
+                self._annotator.suppressed_detectors.update(range(start, start + count))
 
         # Append gates (No manual noise here)
         if xs: self.circuit.append("MX", xs, tag=tag)
@@ -1284,7 +1472,7 @@ class CircuitBuilder:
                 final_paulis[i, n + q] = 1
 
         # Call Tracker — or, for z_only, build DETECTORs/OBSERVABLEs manually
-        if self.if_detector:
+        if self.if_detector or (self._annotator is not None and z_only):
             if z_only:
                 syn_qubit_indices = self._z_only_syn_qubit_indices
                 no_detector_mask  = self._z_only_no_detector_mask
@@ -1300,6 +1488,12 @@ class CircuitBuilder:
                     recs = [stim.target_rec(-n_data + data_pos[q]) for q in stab['data_indices']]
                     recs.append(stim.target_rec(-n_data - n_meas_per_round + z_anc_pos[stab['syn_idx']]))
                     self.circuit.append("DETECTOR", recs)
+
+                if self._annotator is not None:
+                    # Readout already emitted the tableau's observables. Keep
+                    # the explicit Z-check closures, including redundant rows.
+                    self.system.active_qubit_indices.difference_update(final_measurements)
+                    return
 
                 # Delegate observable generation to the tracker so it handles
                 # periodic-boundary codes (e.g. toric) correctly. We snapshot
