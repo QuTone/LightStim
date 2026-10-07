@@ -330,9 +330,10 @@ class PPMOutcome:
 
     This is deliberately distinct from an EVALUATION observable: whether
     and how a protocol output enters a deterministic, decodable quantity
-    (an OBSERVABLE_INCLUDE, a closure detector, a feed-forward dependency)
-    is the caller's evaluation choice, made from input states, these
-    record parities, and the final measurement bases.
+    (an OBSERVABLE_INCLUDE, a feed-forward dependency) is the caller's
+    evaluation choice, made from input states, these record parities, and
+    the final measurement bases; the tracker itself emits the parities that
+    check an outcome against the preparation or the readout as observables.
     """
     step: int
     targets: Tuple[Tuple[str, str], ...]

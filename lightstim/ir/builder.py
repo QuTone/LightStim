@@ -644,6 +644,12 @@ class CircuitBuilder:
             or tracker.post_select_row_indices
             or self.circuit.num_observables > 0
             or tracker.total_observables > 0
+            # compressed rounds bypass the tracker's per-record labels
+            or any(
+                tracker.records_tag(records)
+                for tableau in (tracker.stabilizers, tracker.logicals)
+                for records in tableau.records
+            )
         ):
             return None
 
@@ -701,6 +707,15 @@ class CircuitBuilder:
                 probe_round_bodies.append(probe_round_body)
                 previous_logical_records = logical_records
         except (RuntimeError, ValueError):
+            return None
+
+        if probe.record_tags != tracker.record_tags or any(
+            getattr(instruction, "name", "") == "OBSERVABLE_INCLUDE"
+            for body in probe_round_bodies
+            for instruction in body
+        ):
+            # a round that mints a logical-outcome label or emits an
+            # observable is not a steady round
             return None
 
         first_matrix, first_stabilizer_offsets, first_logical_delta = probe_states[0]

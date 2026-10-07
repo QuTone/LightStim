@@ -3,10 +3,12 @@
 The tracker's stabilizer bank is not a canonical basis: row updates during
 measurement processing multiply rows together, so a bank row can be a
 product of local checks whose Pauli support exceeds any single physical
-check.  Its terminal closure is legitimate syndrome information and must be
-emitted like every other determined row's — suppressing it by a support
-weight threshold silently costs decoder information (paired-noise MWPM LER
-is ~30% worse without the closure; PR #68 review, blocker #1).
+check.  For a row that carries no logical-outcome label its terminal
+closure is legitimate syndrome information and must be emitted like every
+other determined row's — suppressing it by a support weight threshold
+silently costs decoder information (paired-noise MWPM LER is ~30% worse
+without the closure; PR #68 review, blocker #1).  A labelled row (the
+closure of a logical measurement outcome) is an observable instead.
 
 This test drives SyndromeTracker directly with a deliberately non-canonical
 bank so the contract is pinned at the tracker layer, not via any lattice
@@ -63,6 +65,48 @@ def test_high_weight_product_row_still_emits_closure_detector():
 
     # The assembled history is physically consistent: silent at p=0.
     assert not circuit.compile_detector_sampler(seed=0).sample(1024).any()
+
+
+def test_labelled_row_closes_as_observable():
+    """A stabilizer row whose records carry a logical-outcome label (the
+    tracker's record_tags, minted when a measurement produced a logical
+    outcome) closes as an OBSERVABLE at the terminal readout, not as a
+    DETECTOR; an unlabelled row of the same bank still closes as a
+    DETECTOR.  Same bank as the test above, with record 1 labelled."""
+    n = 6
+    circuit = stim.Circuit("""
+        R 0 1 2 3 4 5
+        MPP Z3*Z4*Z5
+        MPP Z0*Z1*Z2*Z3
+        M 0 1 2 3 4 5
+    """)
+    tracker = SyndromeTracker(n, 0)
+    tracker.total_measurements = 2
+    row_a = np.zeros(2 * n, dtype=np.uint8)
+    row_a[[n + 3, n + 4, n + 5]] = 1
+    row_b = np.zeros(2 * n, dtype=np.uint8)
+    row_b[[n + 0, n + 1, n + 2, n + 4, n + 5]] = 1
+    tracker.stabilizers.matrix = np.vstack([row_a, row_b])
+    tracker.stabilizers.records = [[0], [0, 1]]
+    tracker.record_tags[1] = 1          # record 1 carries a logical outcome
+    assert tracker.records_tag([0]) == 0 and tracker.records_tag([0, 1]) == 1
+
+    final_paulis = np.zeros((n, 2 * n), dtype=np.uint8)
+    for q in range(n):
+        final_paulis[q, n + q] = 1
+    tracker.process_data_measurement(
+        circuit, final_paulis,
+        idx_to_coord_map={q: (float(q), 0.0) for q in range(n)},
+    )
+
+    detectors = [i for i in circuit.flattened() if i.name == "DETECTOR"]
+    observables = [i for i in circuit.flattened() if i.name == "OBSERVABLE_INCLUDE"]
+    assert [len(i.targets_copy()) for i in detectors] == [4]      # row A
+    assert [len(i.targets_copy()) for i in observables] == [7]    # row B
+    assert tracker.total_observables == 1
+    det, obs = circuit.compile_detector_sampler(seed=0).sample(
+        1024, separate_observables=True)
+    assert not det.any() and not obs.any()
 
 
 def test_sentinel_tagged_gauge_row_emits_no_detector():

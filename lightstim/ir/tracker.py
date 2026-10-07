@@ -7,7 +7,7 @@ from ..utils.subsystem_algebra import (
 )
 from ..utils.tableau_utils import stabilizers_to_symplectic
 from .tableau import PauliTableau
-from typing import List, Dict, Tuple, Optional, Set, Any
+from typing import List, Dict, Tuple, Optional, Set, Any, Iterable
 
 # Tag for post-selection: detectors with this tag are used for post-selection filtering
 POST_SELECT_TAG = "post-select"
@@ -128,6 +128,15 @@ class SyndromeTracker:
         self.absorbed_ops = PauliTableau(num_qubits)
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
+        # Logical-outcome labels on measurement RECORDS (absolute record index ->
+        # bitmask of outcome ids; absent = 0).  A parity's label is the XOR of its
+        # records' labels, so it follows rows through every recombination, call
+        # boundary and readout split.  Labels are minted where a measurement
+        # produces a logical outcome and inherited by syndrome comparisons, so
+        # every emitted DETECTOR has label 0; a parity with a nonzero label
+        # checks a logical outcome and is emitted as an OBSERVABLE.
+        self.record_tags = {}
+        self._next_outcome_id = 0
         self.post_select_detector_coords = post_select_detector_coords or set()
         self.post_select_row_indices = set()  # Stabilizer row indices to post-select in process_data_measurement
 
@@ -187,6 +196,29 @@ class SyndromeTracker:
                     if A.count else op)
         return True
 
+    def records_tag(self, records: Iterable[int]) -> int:
+        """Logical-outcome label of a record parity (XOR over its records).
+
+        Sentinel (negative) records carry no label."""
+        tag = 0
+        for r in records:
+            if r >= 0:
+                tag ^= self.record_tags.get(r, 0)
+        return tag
+
+    def _new_outcome_tag(self) -> int:
+        """Mint the label of a fresh logical outcome (one bit per outcome)."""
+        tag = 1 << self._next_outcome_id
+        self._next_outcome_id += 1
+        return tag
+
+    def _set_record_tag(self, record: int, tag: int) -> None:
+        """Label a measurement record; a zero label is stored as absence."""
+        if tag:
+            self.record_tags[record] = tag
+        else:
+            self.record_tags.pop(record, None)
+
     def allocate_observable(self) -> int:
         """Reserve and return the next OBSERVABLE_INCLUDE index.
 
@@ -221,8 +253,8 @@ class SyndromeTracker:
         Every deletion of stabilizer rows must come through here (or rebuild
         the sets itself, as the measurement-block paths do): both
         post_select_row_indices and stabilizer_with_logical_components hold
-        ROW indices, and a stale index silently post-selects or reclassifies
-        a different row.  stabilizer_with_logical_components pairs
+        ROW indices, and a stale index silently post-selects a different row
+        or skews the readout pivot preference.  stabilizer_with_logical_components pairs
         positionally with _gauge_logical_vectors via sorted order, so
         entries dropped here drop their paired vector too (the shift is
         monotone, so surviving pairs stay aligned).
@@ -1049,12 +1081,21 @@ class SyndromeTracker:
             if len(anti_comm_indices) > 0:
                 # --- Case A: Anti-commutes (State Update) ---
                 pivot = anti_comm_indices[0]
+                # A random outcome is a logical outcome when the direction it
+                # destroys is a logical row or a row that already carries a
+                # logical outcome (e.g. an earlier PPM's closure).
+                is_logical_outcome = (
+                    pivot >= num_stabs
+                    or self.records_tag(
+                        [r for r in full_records[pivot] if r < current_base_idx]))
                 # Update other anti-commuting rows
                 for other in anti_comm_indices[1:]:
                     temp_full.update_row(other, pivot) # (target, source)
 
                 # Replace the pivot with the back_propagated_paulis
                 temp_full.replace_row(pivot, meas_pauli, [meas_abs_idx])
+                self._set_record_tag(
+                    meas_abs_idx, self._new_outcome_tag() if is_logical_outcome else 0)
 
                 if pivot >= num_stabs:
                     # If the pivot is a logical operator and is replaced by a measurement, decreases one degree of freedom
@@ -1095,6 +1136,8 @@ class SyndromeTracker:
                             )
                         # Directly construct the detector
                         row_idx = matching_rows[0]  # Take the first matching row
+                        self._set_record_tag(
+                            meas_abs_idx, self.records_tag(full_records[row_idx]))
                         args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
                         for r in full_records[row_idx]:
                             if r >= 0:
@@ -1133,6 +1176,23 @@ class SyndromeTracker:
                                     if c >= num_stabs:
                                         log_vec[c - num_stabs] = 1
                                 self._gauge_logical_vectors.append(log_vec)
+                                # The measured value checks a logical outcome
+                                # against the prepared/earlier logical value:
+                                # emit that parity as an OBSERVABLE.
+                                rest_records = set()
+                                for c in comp_indices:
+                                    rest_records ^= set(full_records[c])
+                                self._set_record_tag(
+                                    meas_abs_idx,
+                                    self.records_tag(rest_records) ^ self._new_outcome_tag())
+                                if (not any(UNMEASURED_STAB_RECORD in full_records[c]
+                                            for c in comp_indices)
+                                        and (no_detector_mask is None or not no_detector_mask[i])):
+                                    circuit.append("OBSERVABLE_INCLUDE", sorted(
+                                        [stim.target_rec(meas_abs_idx - self.total_measurements)]
+                                        + [stim.target_rec(r - self.total_measurements) for r in rest_records],
+                                        key=lambda target: target.value),
+                                        [self.allocate_observable()])
                                 continue
                             # Otherwise, purely depends on stabilizers, construct a detector
                             # Use set-based XOR for O(1) toggle instead of O(n) list scan
@@ -1151,6 +1211,21 @@ class SyndromeTracker:
                                 args_set,
                                 key=lambda target: target.value,
                             )
+                            rest_records = set()
+                            for c_idx in comp_indices:
+                                rest_records ^= set(r for r in full_records[c_idx] if r >= 0)
+                            if self.records_tag([r for r in rest_records if r < current_base_idx]):
+                                # Re-measures an operator whose value carries an
+                                # earlier logical outcome (e.g. the same joint
+                                # Pauli measured again): a logical check.
+                                self._set_record_tag(
+                                    meas_abs_idx,
+                                    self.records_tag(rest_records) ^ self._new_outcome_tag())
+                                if (no_detector_mask is None or not no_detector_mask[i]):
+                                    circuit.append("OBSERVABLE_INCLUDE", args,
+                                                   [self.allocate_observable()])
+                                continue
+                            self._set_record_tag(meas_abs_idx, self.records_tag(rest_records))
 
                             if no_detector_mask is None or not no_detector_mask[i]:
                                 coords = list(measurement_coords[i]) + [0]
@@ -1884,10 +1959,13 @@ class SyndromeTracker:
                 det_coord = syndrome_coord
 
             # 3. Output:
-            if k < num_stabs and k not in self.stabilizer_with_logical_components:
-                # Measurement-promoted joint closures (support > check weight)
-                # are emitted like every other row because their long-range
-                # parity is real syndrome information.
+            if k < num_stabs and (self.records_tag(full_records[k]) == 0
+                                  or UNMEASURED_STAB_RECORD in full_records[k]):
+                # A label-0 stabilizer row (including a high-weight product of
+                # local checks) is a DETECTOR: its parity is syndrome
+                # information whatever its support weight.  A labelled row is
+                # the closure of a logical outcome and is emitted as an
+                # OBSERVABLE below.
                 if -1 in full_records[k]:
                     # An UNWATCHED gauge direction's close-out (sentinel-
                     # tagged row = WriteBack's no-slot gauge branch).  Its

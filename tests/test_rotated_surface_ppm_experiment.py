@@ -120,20 +120,26 @@ def test_explicit_corridor_zz_full_distance():
                    _spec("B", 2, 0, "X_horizontal")],
                   [("A", "Z"), ("B", "Z")], {"A": "Z", "B": "Z"},
                   route=[(1, 0)])
-    assert c.num_observables == 1
+    # the PPM outcome checked against the preparation and against the
+    # terminal readout are observables (parities that check a logical
+    # measurement outcome), next to the logical product itself
+    assert c.num_observables == 3
     _verify(exp, c)
 
 
-def test_joint_closure_detector_emitted():
-    # A measurement-promoted joint has a legitimate long-range terminal
-    # closure detector; support weight alone must not suppress it.
+def test_joint_closure_is_observable():
+    # A measurement-promoted joint's long-range terminal closure checks the
+    # PPM outcome against the readout: a parity that checks a logical
+    # measurement outcome is an OBSERVABLE, never a long-range DETECTOR
+    # (support weight alone must not suppress it either).
     exp, c = _run([_spec("A", 0, 0, "X_horizontal"),
                    _spec("B", 2, 0, "X_horizontal")],
                   [("A", "Z"), ("B", "Z")], {"A": "Z", "B": "Z"},
                   route=[(1, 0)])
-    longrange = [inst for inst in c.flattened() if inst.name == "DETECTOR"
-                 and len(inst.targets_copy()) > 2 * D + 2]
-    assert longrange, "joint-closure long-range detector was not emitted"
+    longrange = lambda name: [inst for inst in c.flattened() if inst.name == name
+                              and len(inst.targets_copy()) > 2 * D + 2]
+    assert longrange("OBSERVABLE_INCLUDE"), "joint closure was not emitted as an observable"
+    assert not longrange("DETECTOR")
     _verify(exp, c)
 
 
@@ -146,7 +152,7 @@ def test_three_target_one_step_t_corridor():
                   [("q1", "Z"), ("q2", "Z"), ("q3", "Z")],
                   {"q1": "Z", "q2": "Z", "q3": "Z"},
                   route=[(1, 0), (2, 0), (3, 0)])
-    assert c.num_observables == 2
+    assert c.num_observables == 4  # + the two outcome checks (vs preparation / readout)
     _verify(exp, c)
 
 
