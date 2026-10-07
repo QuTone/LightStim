@@ -6,6 +6,10 @@ from ..utils.subsystem_algebra import (
     combine_records, independent_row_indices, intersect_row_spaces, reduce_modulo,
 )
 from ..utils.tableau_utils import stabilizers_to_symplectic
+from .logical_history import (
+    LogicalHistoryRelation,
+    append_logical_history_observables,
+)
 from .tableau import PauliTableau
 from typing import List, Dict, Tuple, Optional, Set, Any
 
@@ -104,6 +108,10 @@ class SyndromeTracker:
         self.total_measurements = 0
         self.total_observables = 0
         self.meas_rec_to_idx_map = {}
+        # Immutable record-only dependencies survive changes to the live
+        # tableau. They are separate from both the logical DOF census and the
+        # protocol's native choice of scored observables.
+        self.logical_history: List[LogicalHistoryRelation] = []
 
         # Track the current stabilizers and logicals of the system
         # Note 1: Technically, logicals are also stabilizers of the system, define the logical states
@@ -201,6 +209,18 @@ class SyndromeTracker:
         idx = self.total_observables
         self.total_observables += 1
         return idx
+
+    def append_logical_history_observables(self, circuit: stim.Circuit) -> List[int]:
+        """Explicitly export independent historical parities at circuit end.
+
+        Candidates already spanned by detectors and native observables are
+        omitted. Existing observable IDs and the logical DOF census are not
+        changed. Return the IDs allocated for newly appended observables.
+
+        This is opt-in: tracking history alone never changes the protocol's
+        default evaluation targets. Call after the physical circuit is built.
+        """
+        return append_logical_history_observables(self, circuit)
 
     def expand(self, delta: int):
         """
@@ -1061,9 +1081,10 @@ class SyndromeTracker:
                     self.expected_num_logicals -= 1
 
             else:
-                # --- Case B: Commutes (Detector) ---
-                # Detector is formed by decomposing Back-propagated Pauli Measurements into existing STABILIZERS only (rows in the stabilizer tableau).
-                # (Logicals do not contribute to the decomposition)
+                # --- Case B: Commutes (Record dependency) ---
+                # Decompose using the full state tableau. Stabilizer-only
+                # dependencies can emit detectors; logical involvement is
+                # archived separately before the live basis is refreshed.
 
                 # A measurement that reduces to identity after removing known
                 # reset-ancilla factors is a flag. Its expected value is fixed,
@@ -1079,7 +1100,7 @@ class SyndromeTracker:
                         )
                     continue
 
-                if num_stabs > 0:
+                if full_matrix.shape[0] > 0:
                     # First check if meas_row is exactly one row in curr_stab_matrix
                     # Directly compare meas_row against current stabilizer rows
                     curr_stab_matrix = full_matrix[:num_stabs]
@@ -1107,7 +1128,7 @@ class SyndromeTracker:
                                 post_select=tuple(coords) in self.post_select_detector_coords,
                             )
                     else: # meas_row is not exactly one row in curr_stab_matrix, but a linear combination of rows in the full matrix
-                        # decompose meas_row into existing stabilizers
+                        # Decompose meas_row into existing stabilizers and logicals.
                         coeffs, is_dependent, _ = solve_linear_decomposition(
                             basis=full_matrix,
                             targets=meas_row
@@ -1123,9 +1144,35 @@ class SyndromeTracker:
                         if is_dependent[0]:
                             args = [stim.target_rec(meas_abs_idx - self.total_measurements)]
                             comp_indices = np.where(coeffs[0])[0]
-                            if max(comp_indices) >= num_stabs:
+                            if np.any(comp_indices >= num_stabs):
                                 # The measurement contains a logical component, and cannot be a detector
                                 # Flag this row for further logical observable construction
+                                # Preserve the complete record dependency BEFORE
+                                # writeback refreshes the live representatives.
+                                # A negative record denotes an unknown input,
+                                # not a known zero that can be discarded.
+                                history_records = {meas_abs_idx}
+                                for c_idx in comp_indices:
+                                    for record in full_records[c_idx]:
+                                        if record < 0:
+                                            raise ValueError(
+                                                "Cannot capture logical history "
+                                                f"at measurement {meas_abs_idx}: "
+                                                "the decomposition contains an "
+                                                f"unmeasured record {record}."
+                                            )
+                                        if record in history_records:
+                                            history_records.remove(record)
+                                        else:
+                                            history_records.add(record)
+                                self.logical_history.append(LogicalHistoryRelation(
+                                    records=tuple(sorted(history_records)),
+                                    measurement_index=meas_abs_idx,
+                                    logical_indices=tuple(
+                                        int(c - num_stabs)
+                                        for c in comp_indices if c >= num_stabs
+                                    ),
+                                ))
                                 self.stabilizer_with_logical_components.add(i)
                                 # Track which logical indices this measurement involves (for rank computation)
                                 log_vec = np.zeros(num_logs, dtype=np.uint8)

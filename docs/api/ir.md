@@ -453,6 +453,56 @@ expected counts. Common causes:
 | Missing logical constraints | Wrong SE circuit (ancilla indices don't match system) |
 | `commutes with all rows but is linearly independent` | Data qubit not initialized before SE |
 
+### Historical logical relations and explicit observable export
+
+The live logical-DOF census is different from the number of historical
+measurement parities available for evaluation. A joint logical measurement
+can expose an additional deterministic record relation even when it does
+not increase the number of encoded qubits.
+
+When a mid-measurement dependency uses logical-tableau rows, the tracker
+stores its complete record XOR in `tracker.logical_history` **before**
+writeback changes the live representatives. These immutable
+`LogicalHistoryRelation` entries have absolute zero-based `records`, a
+`measurement_index`, and capture-time `logical_indices`. Those logical
+indices are provenance, not stable logical-qubit identifiers. The archive
+is separate from `absorbed_ops`, which remains an operator-only DOF ledger.
+Random measurements do not create deterministic historical relations.
+
+Ordinary protocol construction preserves its existing observable selection.
+After finishing a circuit, explicitly extend that selection if desired:
+
+```python
+new_observable_ids = builder.append_logical_history_observables()
+# Equivalently, for a complete circuit matching this tracker's record stream:
+# new_observable_ids = tracker.append_logical_history_observables(circuit)
+```
+
+This appends a subset of the archived relations independent modulo the
+**joint span of existing detectors and observables**, without changing any
+existing annotation or gate. It respects reserved observable IDs and is
+idempotent on the same circuit. Before export, Stim verifies that the
+archived parities are deterministic in the supplied physical circuit. The
+unsigned tracker does not assert that their ideal XOR is zero: Stim's
+reference sample supplies the fixed offset, including an ideal value of one.
+Unknown record sentinels are rejected rather than interpreted as zero.
+
+For unrotated distance-3 two-patch Z/Z preparation, one-round ZZ surgery,
+and Z/Z readout, native DET+OBS rank is 50; exporting the history adds one
+observable, reaching the full fixed-input parity rank of 51. With Z/X
+preparation and X/Z readout, the teleportation circuit already has full rank
+49 and keeps its one observable. Tests compare row spaces against Stim's
+record-only flow generators, not merely observable counts.
+
+The archive covers the logical-dependent mid-measurement path; it is not
+a claim of complete history generation for arbitrary circuits or unsupported
+protocols. Protocol intent still determines which available observables to
+score. Exporting new IDs changes that evaluation task: regenerate DEMs and
+decoder artifacts, and rescore/redecode (or rerun) affected experiments.
+Tracking alone does not change the default task. When a protocol build
+returns a separate noisy circuit, export into that circuit using the tracker,
+or export into the builder's clean circuit **before** creating the noisy copy.
+
 ### Subsystem state classification
 
 For a declared subsystem code, let `S` be its stabilizer centre, `G` its

@@ -73,6 +73,14 @@ class CircuitBuilder:
         self._z_only_no_detector_mask  = None
         self._z_only_n_meas_per_round  = None
 
+    def append_logical_history_observables(self) -> List[int]:
+        """Append independent history observables after building the circuit.
+
+        This explicit export extends the scored targets; ordinary circuit
+        construction retains the protocol's existing observable selection.
+        """
+        return self.tracker.append_logical_history_observables(self.circuit)
+
     # --------------------------------------------------------------------------
     # A. Setup & Initialization
     # --------------------------------------------------------------------------
@@ -640,6 +648,7 @@ class CircuitBuilder:
             or tracker.expected_num_logicals != 1
             or tracker.stabilizer_with_logical_components
             or tracker._gauge_logical_vectors
+            or tracker.logical_history
             or tracker.absorbed_ops.count
             or tracker.post_select_row_indices
             or self.circuit.num_observables > 0
@@ -679,6 +688,11 @@ class CircuitBuilder:
                     shift_round=True,
                     tracker=probe,
                 )
+                # Compression advances the real tracker without visiting each
+                # measurement. Historical parities need their absolute record
+                # indices from those visits, so use the ordinary update path.
+                if probe.logical_history:
+                    return None
                 probe.logical_canonicalization(canonical_logical)
 
                 logical_records = set(probe.logicals.records[0])
