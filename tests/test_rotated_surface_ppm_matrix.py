@@ -205,7 +205,7 @@ def test_kernel_api_composes_with_measurement_block_engine():
     c = builder.circuit
     # same as the driver's ZZ flow: two logical DOFs, one consumed by the
     # joint (its value is the protocol output), one standing observable
-    assert c.num_observables == 1
+    assert c.num_observables == 3  # PPM outcome checks (vs preparation / readout) are observables
     det, obs = c.compile_detector_sampler(seed=0).sample(
         1024, separate_observables=True)
     assert not det.any() and not obs.any()

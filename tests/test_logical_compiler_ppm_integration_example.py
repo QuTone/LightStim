@@ -149,7 +149,14 @@ def test_checkerboard_3x3_program_compiles_three_distant_ppms():
         p_reset=1e-3,
         p_idle=1e-3,
     )
-    noisy = result.experiment.builder.build_noisy_circuit(
+    # Distance is checked with d merge rounds.  With a single merge round the
+    # PPM outcome records enter no DETECTOR (no second merge round compares
+    # them); they are checked only by the two outcome observables (outcome
+    # vs preparation, outcome vs terminal readout), so a single error on a
+    # seam check or a seam-side corner data qubit is a weight-1 logical
+    # error rather than a detection event.
+    result_d = compile_program(program, rounds=3)
+    noisy = result_d.experiment.builder.build_noisy_circuit(
         noise_params=noise,
         noise_model="circuit_level",
     )
