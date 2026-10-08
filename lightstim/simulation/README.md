@@ -6,10 +6,16 @@
 
 **Pipeline (4 steps)**:
 
-1. **Sampling** - `dem.compile_sampler().sample(batch_size)`
+1. **Sampling** - `circuit.compile_detector_sampler().sample(batch_size, separate_observables=True)`
 2. **Post-selection** - Discard samples where any detector tagged `["post-select"]` flips; record keep/discard counts and post-selection rate
 3. **Decoding** - Pass surviving samples to Decoder; compare predictions with logical observables to compute LER
 4. **Parallel execution** - Batch tasks across multiple workers (CPU/GPU) to maximize throughput
+
+Both single- and multi-worker runs sample detector events and observable flips
+from the supplied noisy circuit. The DEM configures the decoder; its decomposition
+or decoder-side preprocessing must not change the distribution being sampled.
+Changing `num_workers` does not change this contract, but does not guarantee
+identical random samples or stopping counts.
 
 ---
 
@@ -100,6 +106,7 @@ prediction.
 - `post_select_observable_indices`: Optional[List[int]] — discard shots where any listed observable is wrong (pre-decode)
 - `post_select_corrected_observable_indices`: Optional[List[int]] — discard shots where corrected observable is non-zero (post-decode)
 - `target_observable_indices`: Optional[List[int]] — count errors only on these observables (None = all)
+- `allow_gauge_detectors`: permit non-deterministic detectors in the decoder DEM; also enables decomposition and retains undecomposed errors on failure, consistently for all worker counts
 - `output_dir`, `output_filename`, `output_format` — optional CSV/JSON/Parquet output
 - `progress_enabled`, `progress_output`, `progress_interval_sec`, `progress_min_delta_shots` — unified progress controls
 - `progress_file_path` (+ rotating options) — optional file logging sink
@@ -116,6 +123,7 @@ prediction.
 - **CPU/GPU, with or without post-selection**: unified custom loop; each worker performs sample → post-select → decode
 - **Single-process**: one process executes the full loop
 - **Multi-process**: worker processes only update shared counters; main process aggregates and emits progress
+- A worker process failure raises `RuntimeError` instead of returning partial or zero-shot results as a successful simulation
 - Progress output is unified across all paths (`shots kept errors LER elapsed ETA`) with dual-threshold throttling (time + shot delta)
 
 ---

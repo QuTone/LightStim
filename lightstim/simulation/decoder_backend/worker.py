@@ -1,8 +1,4 @@
-"""
-Worker functions for parallel simulation (CPU and GPU).
-
-Used when post-selection is required; otherwise sinter.collect handles parallelism.
-"""
+"""Parallel circuit sampling, post-selection, and CPU/GPU decoding."""
 
 import os
 from multiprocessing import Manager
@@ -32,6 +28,7 @@ def _decode_worker_cpu(
     gpu_id: Optional[int] = None,
     on_decode_failure: str = "error",
     completed_counter=None,
+    allow_gauge_detectors: bool = False,
 ) -> None:
     """
     Single worker process: reserve shots -> sample -> post-select -> decode.
@@ -52,10 +49,13 @@ def _decode_worker_cpu(
 
     decoder = get_decoder(decoder_name, backend=decoder_backend, **decoder_params)
     dem = circuit.detector_error_model(
-        decompose_errors=getattr(decoder, "decompose_errors", False),
+        decompose_errors=getattr(decoder, "decompose_errors", False) or allow_gauge_detectors,
+        allow_gauge_detectors=allow_gauge_detectors,
+        ignore_decomposition_failures=allow_gauge_detectors,
     )
     compiled = decoder.compile_decoder_for_dem(dem=dem)
-    sampler = dem.compile_sampler(seed=os.getpid() + worker_id * 10000)
+    # The circuit defines the sampled noise; the DEM only configures the decoder.
+    sampler = circuit.compile_detector_sampler(seed=os.getpid() + worker_id * 10000)
 
     while True:
         with lock:
@@ -65,9 +65,10 @@ def _decode_worker_cpu(
             shots_to_take = min(batch_size, remaining)
             shots_counter.value += shots_to_take
 
-        det_data, obs_data, _ = sampler.sample(
+        det_data, obs_data = sampler.sample(
             shots=shots_to_take,
             bit_packed=False,
+            separate_observables=True,
         )
 
         det_filtered, obs_filtered = apply_post_selection(

@@ -132,9 +132,9 @@ class SimulationPipeline:
         """Warn about DEM/decoder combinations that can silently affect LER."""
         if self.config.allow_gauge_detectors:
             warnings.warn(
-                "allow_gauge_detectors=True: decomposition failures are silently "
-                "ignored (ignore_decomposition_failures=True). Hyperedges that cannot "
-                "be decomposed are dropped, which can underestimate LER.",
+                "allow_gauge_detectors=True permits non-deterministic detectors "
+                "and sets ignore_decomposition_failures=True. Undecomposed "
+                "hyperedges remain in the DEM; the decoder must support them.",
                 stacklevel=4,
             )
             return
@@ -202,6 +202,7 @@ class SimulationPipeline:
                     self.config.decoder.on_decode_failure,
                     completed_counter,
                 ),
+                kwargs={"allow_gauge_detectors": self.config.allow_gauge_detectors},
             )
             p.start()
             procs.append(p)
@@ -219,6 +220,12 @@ class SimulationPipeline:
 
         for p in procs:
             p.join()
+        failed_workers = [p for p in procs if p.exitcode != 0]
+        if failed_workers:
+            failures = ", ".join(
+                f"pid={p.pid} exitcode={p.exitcode}" for p in failed_workers
+            )
+            raise RuntimeError(f"Simulation worker failed: {failures}")
 
         elapsed = time.perf_counter() - start
         final_snapshot = self._build_snapshot(
