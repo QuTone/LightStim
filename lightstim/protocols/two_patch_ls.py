@@ -225,4 +225,4 @@ class TwoPatchLSExperiment:
             )
             return noisy_circuit
         else:
-            return self.builder.circuit
+            return self.builder.to_stim_circuit()

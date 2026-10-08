@@ -60,10 +60,6 @@ sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # repo root
 from lightstim.noise.config import NoiseConfig
 from lightstim.noise.injector import NoiseInjector
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
-from lightstim.simulation.observable_analysis import (
-    build_obs_patch_matrix,
-    identify_distillation_observables,
-)
 
 # Bell teleportation builders — direct protocol imports
 from lightstim.protocols.bell_teleportation import (
@@ -86,6 +82,7 @@ def _build_bell_circuit(protocol: str, d: int, state: str) -> "stim.Circuit":
 
 # Distillation builders
 from lightstim.protocols.ls_distillation import (
+    analyze_observables as _analyze_ls_distill,
     build_distillation_circuit as _build_ls_distill,
     inject_noise as _inject_ls,
     estimate_p_in as _estimate_p_in_ls,
@@ -93,6 +90,7 @@ from lightstim.protocols.ls_distillation import (
     _LS_MAGIC_NAMES,
 )
 from lightstim.protocols.tg_distillation import (
+    analyze_observables as _analyze_tg_distill,
     build_distillation_circuit as _build_tg_distill,
     inject_noise as _inject_tg,
     estimate_p_in as _estimate_p_in_tg,
@@ -402,13 +400,13 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
         p_in_fn     = _estimate_p_in_ls
         magic_names = _LS_MAGIC_NAMES
         build_kwargs = {}
-        obs_target   = ["W4"]
+        analyze_fn   = _analyze_ls_distill
     else:
         build_fn    = _build_tg_distill
         p_in_fn     = _estimate_p_in_tg
         magic_names = _TG_MAGIC_NAMES
         build_kwargs = {"rounds_gate": 1}
-        obs_target   = ["W0"]
+        analyze_fn   = _analyze_tg_distill
 
     noise_modes = args.noise_mode or ["injection"]
     p_injected_list = args.p_injected or [1e-3, 5e-3, 2e-2]
@@ -431,10 +429,7 @@ def _run_distillation(args, which: str, output_path: Path) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
             circuit, info, system = build_fn(d, rounds_init, **build_kwargs)
 
-        matrix, patch_names = build_obs_patch_matrix(circuit, system)
-        T, target_obs, ps_obs = identify_distillation_observables(
-            matrix, patch_names, obs_target
-        )
+        T, target_obs, ps_obs, _, _ = analyze_fn(circuit, system)
         magic_qubits = {q for q, owner in system.index_to_owner_map.items()
                         if owner in magic_names}
         magic_data = magic_qubits & system.data_indices

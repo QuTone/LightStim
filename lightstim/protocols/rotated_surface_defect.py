@@ -236,7 +236,7 @@ class RotatedSurfaceDefectMemoryExperiment:
         self.builder = builder
         self.defect_qubit = defect_qubit
         self.defect = defect
-        self.clean_circuit = builder.circuit.copy()
+        self.clean_circuit = builder.to_stim_circuit().copy()
 
         if self.noise_params is None:
             return self.clean_circuit

@@ -11,19 +11,13 @@ This generalizes the manual observable assignment used in LS_distillation
 (where each observable maps to exactly 1 patch) to the TG_distillation case
 (where observables span multiple patches and need GF(2) row operations).
 """
-from typing import List, Tuple, Set, Optional, Dict
+from typing import List, Tuple, Optional, Dict
 import numpy as np
 import stim
 
-
-def _count_measurements_in_body(body: stim.Circuit) -> int:
-    """Count measurement instructions in a single-level circuit (no recursion)."""
-    count = 0
-    for inst in body:
-        if isinstance(inst, stim.CircuitInstruction):
-            if inst.name in ('M', 'MX', 'MY', 'MR', 'MRX'):
-                count += len(inst.targets_copy())
-    return count
+from lightstim.ir.logical_history import (
+    logical_history_observable_indices as _logical_history_observable_indices,
+)
 
 
 def build_obs_patch_matrix(
@@ -33,8 +27,10 @@ def build_obs_patch_matrix(
     """
     Build the observable-to-patch binary matrix.
 
-    For each OBSERVABLE_INCLUDE instruction, determines which patches are
-    involved by mapping measurement record references → qubit indices → patches.
+    For each observable ID, combines all of its OBSERVABLE_INCLUDE contributions
+    by XOR and maps the remaining records to qubits and patches. References are
+    resolved at the annotation's location, including inside nested repeats.
+    This is a support summary, not a proof of an observable's logical role.
 
     Args:
         circuit: Stim circuit with OBSERVABLE_INCLUDE instructions.
@@ -45,58 +41,60 @@ def build_obs_patch_matrix(
             matrix: (num_obs × num_patches) GF(2) binary matrix.
             patch_names: ordered list of patch names (column labels).
     """
-    # Step 1: Build absolute measurement index → qubit index mapping
+    # Resolve each annotation at its own circuit location. Several instructions
+    # may contribute to one observable, including annotations inside REPEAT.
     meas_to_qubit: Dict[int, int] = {}
     meas_counter = 0
-
-    for inst in circuit:
-        if isinstance(inst, stim.CircuitInstruction):
-            if inst.name in ('M', 'MX', 'MY', 'MR', 'MRX'):
-                for t in inst.targets_copy():
-                    if t.is_qubit_target:
-                        meas_to_qubit[meas_counter] = t.value
-                        meas_counter += 1
-        elif isinstance(inst, stim.CircuitRepeatBlock):
-            body = inst.body_copy()
-            body_meas_per_rep = _count_measurements_in_body(body)
-            for _ in range(inst.repeat_count):
-                for sub in body:
-                    if isinstance(sub, stim.CircuitInstruction):
-                        if sub.name in ('M', 'MX', 'MY', 'MR', 'MRX'):
-                            for t in sub.targets_copy():
-                                if t.is_qubit_target:
-                                    meas_to_qubit[meas_counter] = t.value
-                                    meas_counter += 1
-
-    total_meas = meas_counter
+    records_by_observable = [set() for _ in range(circuit.num_observables)]
+    for inst in circuit.flattened():
+        if inst.name in ('M', 'MX', 'MY', 'MR', 'MRX', 'MRY'):
+            for t in inst.targets_copy():
+                if t.is_qubit_target:
+                    meas_to_qubit[meas_counter] = t.value
+                    meas_counter += 1
+        elif inst.num_measurements:
+            raise ValueError(
+                f"Patch-support analysis does not support {inst.name} measurements."
+            )
+        elif inst.name == 'OBSERVABLE_INCLUDE':
+            row = records_by_observable[int(inst.gate_args_copy()[0])]
+            for t in inst.targets_copy():
+                if not t.is_measurement_record_target:
+                    raise ValueError("Patch-support analysis requires record-only observables.")
+                absolute = meas_counter + t.value
+                if not 0 <= absolute < meas_counter:
+                    raise ValueError("Observable refers to an unavailable measurement.")
+                row.symmetric_difference_update((absolute,))
 
     # Step 2: Collect patch names (columns) from the system
     patch_names = sorted(set(system.index_to_owner_map.values()))
     patch_to_col = {name: i for i, name in enumerate(patch_names)}
 
-    # Step 3: For each OBSERVABLE_INCLUDE, resolve rec[-k] → qubit → patch
-    obs_list = []
-    for inst in circuit:
-        if isinstance(inst, stim.CircuitInstruction) and inst.name == 'OBSERVABLE_INCLUDE':
-            row = [0] * len(patch_names)
-            for t in inst.targets_copy():
-                # rec[-k] has t.value = -k (negative)
-                abs_idx = total_meas + t.value
-                qubit = meas_to_qubit.get(abs_idx)
-                if qubit is not None:
-                    patch = system.index_to_owner_map.get(qubit)
-                    if patch is not None and patch in patch_to_col:
-                        row[patch_to_col[patch]] = 1
-            obs_list.append(row)
-
-    matrix = np.array(obs_list, dtype=int) if obs_list else np.zeros((0, len(patch_names)), dtype=int)
+    matrix = np.zeros((circuit.num_observables, len(patch_names)), dtype=int)
+    for observable, records in enumerate(records_by_observable):
+        for record in records:
+            patch = system.index_to_owner_map.get(meas_to_qubit[record])
+            if patch in patch_to_col:
+                matrix[observable, patch_to_col[patch]] = 1
     return matrix, patch_names
+
+
+def logical_history_observable_indices(circuit: stim.Circuit) -> List[int]:
+    """IDs of automatically exported history, distinct from protocol targets.
+
+    A deterministic history relation is not automatically a distillation
+    acceptance check. Distillation protocols use this list to preserve their
+    specified output and outer-code postselection policy.
+    """
+    return list(_logical_history_observable_indices(circuit))
 
 
 def identify_distillation_observables(
     obs_patch_matrix: np.ndarray,
     patch_names: List[str],
     target_patch_names: List[str],
+    *,
+    excluded_observable_indices: Optional[List[int]] = None,
 ) -> Tuple[np.ndarray, List[int], List[int]]:
     """
     Identify target and post-select observables via GF(2) Gaussian elimination.
@@ -109,6 +107,9 @@ def identify_distillation_observables(
         obs_patch_matrix: (num_obs × num_patches) GF(2) binary matrix.
         patch_names: ordered list of patch names (column labels).
         target_patch_names: patch name(s) that define the distillation output.
+        excluded_observable_indices: IDs retained in the circuit but excluded
+            from this protocol's output and acceptance policy, e.g. diagnostic
+            logical-history relations. Their rows remain unchanged in T.
 
     Returns:
         (T, target_indices, post_select_indices):
@@ -117,6 +118,10 @@ def identify_distillation_observables(
             post_select_indices: observable indices for post-selection.
     """
     n_obs = obs_patch_matrix.shape[0]
+    excluded = set(excluded_observable_indices or ())
+    if any(not 0 <= i < n_obs for i in excluded):
+        raise ValueError("Excluded observable index is outside the observable matrix.")
+    eligible = [i for i in range(n_obs) if i not in excluded]
     T = np.eye(n_obs, dtype=int)
     M = obs_patch_matrix.copy()
 
@@ -127,7 +132,7 @@ def identify_distillation_observables(
 
         # Find pivot row (first row with 1 in target column)
         pivot = None
-        for i in range(n_obs):
+        for i in eligible:
             if M[i, col] == 1:
                 pivot = i
                 break
@@ -138,15 +143,15 @@ def identify_distillation_observables(
             )
 
         # Eliminate all other rows with 1 in this column
-        for i in range(n_obs):
+        for i in eligible:
             if i != pivot and M[i, col] == 1:
                 M[i] = (M[i] + M[pivot]) % 2
                 T[i] = (T[i] + T[pivot]) % 2
 
     # Classify: rows with any 1 in target columns → target, others → post-select
     target_cols = {patch_names.index(n) for n in target_patch_names}
-    target_indices = [i for i in range(n_obs) if any(M[i, c] for c in target_cols)]
-    ps_indices = [i for i in range(n_obs) if i not in target_indices]
+    target_indices = [i for i in eligible if any(M[i, c] for c in target_cols)]
+    ps_indices = [i for i in eligible if i not in target_indices]
 
     return T, target_indices, ps_indices
 

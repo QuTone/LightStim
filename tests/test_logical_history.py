@@ -12,6 +12,7 @@ import pytest
 import stim
 
 from lightstim.ir.tracker import SyndromeTracker, UNMEASURED_STAB_RECORD
+from lightstim.ir.logical_history import LOGICAL_HISTORY_TAG, logical_history_observable_indices
 from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
 
 
@@ -95,12 +96,20 @@ def _two_patch_zz(rounds, *, teleport=False, first_readout=None):
 def test_joint_zz_history_closes_missing_parity_without_changing_native_targets(rounds):
     experiment, circuit = _two_patch_zz(rounds)
     tracker = experiment.tracker
-    before = circuit.copy()
-    native_detectors, native_observables = _annotation_rows(circuit)
+    # Remove only the explicitly tagged new targets to inspect preserved
+    # native target supports. The public build has already exported history.
+    before = stim.Circuit()
+    for instruction in circuit:
+        if not (isinstance(instruction, stim.CircuitInstruction)
+                and instruction.name == "OBSERVABLE_INCLUDE"
+                and instruction.tag == LOGICAL_HISTORY_TAG):
+            before.append(instruction)
+    native_detectors, native_observables = _annotation_rows(before)
     native_rows = native_detectors + list(native_observables.values())
     expected = _all_fixed_input_parities(circuit)
 
-    assert circuit.num_observables == 2
+    assert circuit.num_observables == 3
+    assert logical_history_observable_indices(circuit) == (2,)
     assert _rank(native_rows) + 1 == _rank(expected)
     assert len(tracker.logical_history) == 1
     relation = tracker.logical_history[0]
@@ -118,7 +127,7 @@ def test_joint_zz_history_closes_missing_parity_without_changing_native_targets(
         assert any(isinstance(inst, stim.CircuitRepeatBlock) for inst in circuit)
 
     added = tracker.append_logical_history_observables(circuit)
-    assert added == [2]
+    assert added == []
     assert circuit.num_observables == 3
     assert circuit[:len(before)] == before
     detectors, observables = _annotation_rows(circuit)
@@ -161,7 +170,8 @@ def test_joint_history_survives_incompatible_terminal_readout():
     relation = experiment.tracker.logical_history[0]
     assert relation.records == (48, 49, 50)
     assert circuit.has_flow(stim.Flow(measurements=relation.records), unsigned=True)
-    assert len(experiment.tracker.append_logical_history_observables(circuit)) == 1
+    assert len(logical_history_observable_indices(circuit)) == 1
+    assert experiment.tracker.append_logical_history_observables(circuit) == []
     _assert_complete_parity_space(circuit)
 
 

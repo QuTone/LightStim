@@ -73,13 +73,23 @@ class CircuitBuilder:
         self._z_only_no_detector_mask  = None
         self._z_only_n_meas_per_round  = None
 
-    def append_logical_history_observables(self) -> List[int]:
-        """Append independent history observables after building the circuit.
+    def append_logical_history_observables(self, *, independent_only: bool = False) -> List[int]:
+        """Export history without changing the existing observable selection."""
+        return self.tracker.append_logical_history_observables(
+            self.circuit, independent_only=independent_only
+        )
 
-        This explicit export extends the scored targets; ordinary circuit
-        construction retains the protocol's existing observable selection.
+    def _finalize_logical_history(self, circuit: stim.Circuit) -> stim.Circuit:
+        """Finalize this complete circuit without replacing the build buffer.
+
+        Independent output copies share the captured history but must not
+        consume one another's observable IDs. The exporter only changes its
+        tracker's allocator, so a shallow tracker copy isolates that counter.
         """
-        return self.tracker.append_logical_history_observables(self.circuit)
+        if self.if_detector and self.tracker is not None:
+            tracker = self.tracker if circuit is self.circuit else copy.copy(self.tracker)
+            tracker.append_logical_history_observables(circuit)
+        return circuit
 
     # --------------------------------------------------------------------------
     # A. Setup & Initialization
@@ -151,7 +161,17 @@ class CircuitBuilder:
 
         init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
 
-        self.tracker.process_initialization(init_tableau)
+        # Auxiliary preparation does not introduce a protected logical input.
+        # Its known constraint must retain its stabilizer role even before it
+        # has a measurement record (notably lattice-surgery bridge data).
+        stabilizer_qubits = set(getattr(self.system, "syndrome_indices", ()))
+        for name, patch in getattr(self.system, "coupler_patches", {}).items():
+            if patch.num_logicals == 0:
+                mapping = self.system.local_to_global_map[name]
+                stabilizer_qubits.update(mapping[q] for q in patch.data_indices)
+        self.tracker.process_initialization(
+            init_tableau, stabilizer_qubits=stabilizer_qubits,
+        )
 
         # Track active qubits (logical lifetime)
         self.system.active_qubit_indices.update(init_dict.keys())
@@ -774,20 +794,14 @@ class CircuitBuilder:
             return None
 
         if first_logical_delta:
-            # Accumulation into ID 0 (the observable the terminal readout
-            # allocates for this same logical) — the legal exception spelled
-            # out in tracker.allocate_observable, not a second allocation.
-            # Sound only because the guard above refused compression when
-            # tracker.total_observables > 0: with no reservation ahead of
-            # it, the sole logical's terminal readout is guaranteed to
-            # allocate ID 0.
-            repeated_round_body.append(
-                "OBSERVABLE_INCLUDE",
-                [stim.target_rec(offset) for offset in first_logical_delta],
-                [0],
-            )
+            # A future measurement may need the complete logical record
+            # expression. Offloading part of it to OBS0 makes the live tracker
+            # incomplete for that consumer. Use the ordinary update path for
+            # these rounds until repeat-aware record expressions are supported.
+            return None
 
         tracker.stabilizers.matrix = first_matrix
+        tracker._classified_stabilizer_rows = set(probe._classified_stabilizer_rows)
         tracker.stabilizers.records = final_stabilizer_records
         tracker.logicals.matrix = canonical_logical[0].reshape(1, -1)
         tracker.logicals.records = [sorted(baseline_logical_records)]
@@ -1353,7 +1367,9 @@ class CircuitBuilder:
     def build_noisy_circuit(
         self,
         noise_params: NoiseConfig,
-        noise_model: str = 'circuit_level'
+        noise_model: str = 'circuit_level',
+        *,
+        circuit: Optional[stim.Circuit] = None,
     ) -> stim.Circuit:
         """
         Consumes the clean circuit and applies noise using the specified model strategy.
@@ -1364,6 +1380,9 @@ class CircuitBuilder:
                          e.g., 'circuit_level' -> calls NoiseInjector.from_circuit_level(...)
                          e.g., 'circuit_level_with_idling' -> adds idle noise every moment
                          e.g., 'custom_test'   -> calls NoiseInjector.from_custom_test(...)
+            circuit: Optional complete clean circuit with the same record
+                stream as the tracker. Its historical targets are finalized
+                before noise injection; the builder's buffer is not replaced.
         """
         # 1. Construct the expected factory method name
         method_name = f"from_{noise_model}"
@@ -1376,6 +1395,9 @@ class CircuitBuilder:
                              f"Expected one of: {valid_methods}")
 
         factory_method = getattr(NoiseInjector, method_name)
+        clean_circuit = self._finalize_logical_history(
+            self.circuit if circuit is None else circuit,
+        )
 
         # 3. Inject noise
         # Most models target data qubits for idle noise. The per-moment model
@@ -1383,12 +1405,12 @@ class CircuitBuilder:
         # take the complement of each moment's operated qubits.
         data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
         target_indices = (
-            list(range(self.circuit.num_qubits))
+            list(range(clean_circuit.num_qubits))
             if noise_model == "circuit_level_with_idling"
             else data_indices
         )
         injector = factory_method(noise_params, target_indices)
-        noisy_circuit = injector.inject_noise(self.circuit)
+        noisy_circuit = injector.inject_noise(clean_circuit)
 
         return noisy_circuit
 
@@ -1434,5 +1456,14 @@ class CircuitBuilder:
         return np.vstack([t_x, t_z, t_y])
 
 
-    def to_stim_circuit(self) -> stim.Circuit:
+    def to_stim_circuit(self, *, include_logical_history: bool = True) -> stim.Circuit:
+        """Return the finished circuit, including historical targets by default.
+
+        ``circuit`` remains the mutable construction buffer. Call this method
+        only after constructing the protocol; it appends new targets after the
+        native readout observables, preserving their IDs. A false option leaves
+        the current buffer unchanged (it does not retract earlier exports).
+        """
+        if self.if_detector and include_logical_history:
+            self._finalize_logical_history(self.circuit)
         return self.circuit

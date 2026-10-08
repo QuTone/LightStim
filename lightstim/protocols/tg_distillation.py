@@ -40,6 +40,7 @@ from lightstim.noise.rules import FlipAfterYResetFiltered
 from lightstim.simulation.observable_analysis import (
     build_obs_patch_matrix,
     identify_distillation_observables,
+    logical_history_observable_indices,
     transform_observables,
 )
 
@@ -183,7 +184,7 @@ def build_distillation_circuit(d, rounds_init=None, rounds_gate=1):
         final_meas[q] = 'X' if owner.startswith('W') else 'Z'
     builder.apply_data_readout(final_measurements=final_meas)
 
-    circuit = builder.circuit
+    circuit = builder.to_stim_circuit()
     circuit_info = {
         'num_qubits': circuit.num_qubits,
         'num_detectors': circuit.num_detectors,
@@ -269,7 +270,7 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
     op_set.fold_transversal_s_dag(builder, sys1.patches['cal'][0], noiseless=True)
     builder.apply_data_readout(final_measurements={q: 'X' for q in sys1.data_indices})
 
-    circuit = builder.circuit
+    circuit = builder.to_stim_circuit()
     all_qubits = list(range(circuit.num_qubits))
 
     if p_background > 0:
@@ -423,6 +424,10 @@ def analyze_observables(circuit, system, target_patch_names=None):
     """
     Analyze observables using obs-to-patch matrix and GF(2) elimination.
 
+    Automatically exported history remains available in the circuit, but its
+    IDs are excluded from this protocol's output and acceptance policy. A new
+    deterministic relation is not necessarily an outer-code acceptance check.
+
     Returns:
         (T, target_indices, ps_indices, obs_patch_matrix, patch_names)
     """
@@ -430,7 +435,11 @@ def analyze_observables(circuit, system, target_patch_names=None):
         target_patch_names = ['W0']
 
     matrix, patch_names = build_obs_patch_matrix(circuit, system)
-    T, target, ps = identify_distillation_observables(matrix, patch_names, target_patch_names)
+    history = logical_history_observable_indices(circuit)
+    T, target, ps = identify_distillation_observables(
+        matrix, patch_names, target_patch_names,
+        excluded_observable_indices=history,
+    )
 
     print(f"  Observables: {circuit.num_observables}")
     w_cols = [i for i, n in enumerate(patch_names) if n.startswith('W')]
@@ -443,8 +452,10 @@ def analyze_observables(circuit, system, target_patch_names=None):
     print(f"  After GF(2) elimination (target={target_patch_names}):")
     for i in range(M_new.shape[0]):
         involved_w = [patch_names[j] for j in w_cols if M_new[i, j]]
-        label = 'TARGET' if i in target else 'PS'
+        label = 'TARGET' if i in target else ('PS' if i in ps else 'HISTORY (not scored)')
         print(f"    L{i}': {involved_w} [{label}]")
 
     print(f"  -> Target obs: {target}, Post-select obs: {ps}")
+    if history:
+        print(f"  -> History obs retained separately: {history}")
     return T, target, ps, matrix, patch_names

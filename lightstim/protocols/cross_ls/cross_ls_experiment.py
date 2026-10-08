@@ -260,6 +260,7 @@ class CrossLSExperiment(QECExperiment):
                     self.tracker.post_select_detector_coords.add((x, y, 1))
 
         builder.apply_data_readout(final_measurements=final_measurements)
+        builder.to_stim_circuit()
 
         # --- 11. Noise (optional) ---
         if self.noise_params is not None:
@@ -275,7 +276,7 @@ class CrossLSExperiment(QECExperiment):
                 noisy_suffix = injector.inject_noise(clean_suffix)
                 return clean_prefix + noisy_suffix
             return self._inject_noise(builder.circuit)
-        return builder.circuit
+        return builder.to_stim_circuit()
 
     def _build_canonical_pqrm_logical(self, pqrm_patch: PQRMPatch) -> Optional[Dict[int, np.ndarray]]:
         """

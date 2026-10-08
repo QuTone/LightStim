@@ -720,7 +720,7 @@ class TestColorCodeMemory:
         assert explicit.compile_detector_sampler().sample(100).sum() == 0
 
     @pytest.mark.parametrize("basis", ["X", "Y", "Z"])
-    def test_bell_multiplexing_repeat_compresses_logical_frame(self, basis):
+    def test_bell_multiplexing_repeat_keeps_complete_logical_frame(self, basis):
         def build(rounds):
             return MemoryExperiment(
                 qec_patch=ColorCode(distance=5, layout="superdense"),
@@ -731,27 +731,25 @@ class TestColorCodeMemory:
             ).build()
 
         short = build(3)
-        long = build(1000)
+        # Zero-delta X frames remain fully compressible. Y/Z frames need
+        # explicit tracker updates (the physical REPEAT can still be compact)
+        # so a later block can use every prior logical-frame record.
+        long_rounds = 1000 if basis == "X" else 12
+        long = build(long_rounds)
         repeat_blocks = [
             inst for inst in long
             if isinstance(inst, stim.CircuitRepeatBlock)
         ]
         assert len(repeat_blocks) == 1
-        assert repeat_blocks[0].repeat_count == 998
+        assert repeat_blocks[0].repeat_count == long_rounds - 2
 
         body_observables = [
             inst for inst in repeat_blocks[0].body_copy()
             if not isinstance(inst, stim.CircuitRepeatBlock)
             and inst.name == "OBSERVABLE_INCLUDE"
         ]
-        if basis == "X":
-            assert body_observables == []
-        else:
-            assert len(body_observables) == 1
-            assert tuple(
-                target.value
-                for target in body_observables[0].targets_copy()
-            ) == (-8, -5)
+        # No part of a live tracker expression may be offloaded to OBS0.
+        assert body_observables == []
 
         def top_level_observable_target_count(circuit):
             return sum(
@@ -761,10 +759,12 @@ class TestColorCodeMemory:
                 and inst.name == "OBSERVABLE_INCLUDE"
             )
 
-        assert (
-            top_level_observable_target_count(long)
-            == top_level_observable_target_count(short)
-        )
+        if basis == "X":
+            assert (top_level_observable_target_count(long)
+                    == top_level_observable_target_count(short))
+        else:
+            assert (top_level_observable_target_count(long)
+                    > top_level_observable_target_count(short))
         dets, observables = long.compile_detector_sampler().sample(
             100,
             separate_observables=True,

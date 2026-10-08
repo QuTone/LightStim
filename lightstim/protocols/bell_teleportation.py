@@ -109,7 +109,7 @@ class BellTeleportTG:
             return builder.build_noisy_circuit(
                 noise_params=self.noise_params, noise_model=self.noise_model
             )
-        return builder.circuit
+        return builder.to_stim_circuit()
 
 
 class BellTeleportZZLS:
@@ -215,7 +215,7 @@ class BellTeleportZZLS:
             return builder.build_noisy_circuit(
                 noise_params=self.noise_params, noise_model=self.noise_model
             )
-        return builder.circuit
+        return builder.to_stim_circuit()
 
 
 class BellTeleportXXLS:
@@ -318,4 +318,4 @@ class BellTeleportXXLS:
             return builder.build_noisy_circuit(
                 noise_params=self.noise_params, noise_model=self.noise_model
             )
-        return builder.circuit
+        return builder.to_stim_circuit()

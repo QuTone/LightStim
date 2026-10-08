@@ -25,10 +25,10 @@ def test_export_uses_complete_accumulated_observable_not_its_fragments():
     tracker = _tracker(circuit, (0,), (1,))
     original = circuit.copy()
     # Existing OBS0 spans 11, not its two individual contributions 10 and 01.
-    assert tracker.append_logical_history_observables(circuit) == [1]
+    assert tracker.append_logical_history_observables(circuit, independent_only=True) == [1]
     assert circuit[:len(original)] == original
     assert circuit[-1].targets_copy() == [stim.target_rec(-2)]
-    assert tracker.append_logical_history_observables(circuit) == []
+    assert tracker.append_logical_history_observables(circuit, independent_only=True) == []
     assert circuit.num_observables == 2
 
 
@@ -36,7 +36,7 @@ def test_export_reduces_modulo_detectors_and_handles_repeat_offsets():
     circuit = stim.Circuit("R 0\nREPEAT 3 {\nM 0\nDETECTOR rec[-1]\n}")
     tracker = _tracker(circuit, (0,), (0, 2))
     original = circuit.copy()
-    assert tracker.append_logical_history_observables(circuit) == []
+    assert tracker.append_logical_history_observables(circuit, independent_only=True) == []
     assert circuit == original
 
 
@@ -103,3 +103,48 @@ def test_history_is_not_shared_by_tracker_copies():
     assert len(tracker.logical_history) == 1
     with pytest.raises(AttributeError):
         tracker.logical_history[0].records = ()
+
+
+def test_default_export_retains_logical_relations_even_when_linearly_dependent():
+    circuit = stim.Circuit("R 0 1\nM 0 1\nOBSERVABLE_INCLUDE(0) rec[-2] rec[-1]")
+    tracker = _tracker(circuit, (0,), (1,))
+    # Both task outcomes are exported, even though either one plus native
+    # OBS0 could generate the other. Basis pruning must be an explicit choice.
+    assert tracker.append_logical_history_observables(circuit) == [1, 2]
+    assert circuit.num_observables == 3
+    assert tracker.append_logical_history_observables(circuit) == []
+
+
+def test_default_export_does_not_hide_a_relation_in_detector_span():
+    circuit = stim.Circuit("R 0\nM 0\nDETECTOR rec[-1]")
+    tracker = _tracker(circuit, (0,))
+    assert tracker.append_logical_history_observables(circuit) == [0]
+    assert circuit.num_observables == 1
+
+
+def test_large_sparse_export_fits_bounded_memory():
+    # A single-record detector at late time must not allocate all the zero
+    # bits preceding its absolute index. Old dense-int elimination exceeds
+    # 512MiB for this compressed, valid 100k-detector example.
+    import os
+    import subprocess
+    import sys
+    if sys.platform != "linux":
+        pytest.skip("Linux address-space limit regression")
+    program = """
+import resource
+import stim
+from lightstim.ir.tracker import SyndromeTracker
+from lightstim.ir.logical_history import LogicalHistoryRelation
+c = stim.Circuit('R 0\\nM 0\\nREPEAT 100000 {\\nM 0\\nDETECTOR rec[-1]\\n}')
+t = SyndromeTracker(1)
+t.total_measurements = c.num_measurements
+t.logical_history = [LogicalHistoryRelation((0,), 0, (0,))]
+resource.setrlimit(resource.RLIMIT_AS, (512 << 20, 512 << 20))
+assert t.append_logical_history_observables(c, independent_only=True) == [0]
+assert c.num_observables == 1
+"""
+    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    result = subprocess.run([sys.executable, "-c", program], env=env,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

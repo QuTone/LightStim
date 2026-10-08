@@ -6,7 +6,7 @@ reference sample supplies that affine offset when observables are sampled.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Iterable, List, Tuple
+from typing import TYPE_CHECKING, Dict, FrozenSet, Iterable, List, Tuple
 
 import stim
 
@@ -29,81 +29,105 @@ class LogicalHistoryRelation:
     logical_indices: Tuple[int, ...]
 
 
-def _record_word(records: Iterable[int], num_measurements: int) -> int:
-    word = 0
+LOGICAL_HISTORY_TAG = "logical-history"
+
+
+def _record_support(records: Iterable[int], num_measurements: int) -> FrozenSet[int]:
+    support = set()
     for record in records:
         if not 0 <= record < num_measurements:
             raise ValueError(
                 f"Logical history requires known measurement indices; got {record} "
                 f"for a circuit with {num_measurements} measurements."
             )
-        word ^= 1 << int(record)
-    return word
+        record = int(record)
+        if record in support:
+            support.remove(record)
+        else:
+            support.add(record)
+    return frozenset(support)
 
 
-def _insert_row(pivots: Dict[int, int], word: int) -> bool:
-    """Insert a sparse GF(2) row, returning whether it adds a direction."""
-    while word:
-        pivot = word.bit_length() - 1
+def _insert_row(pivots: Dict[int, FrozenSet[int]], support: FrozenSet[int]) -> bool:
+    """Sparse GF(2) elimination; storage follows support, not absolute index."""
+    row = set(support)
+    while row:
+        pivot = max(row)
         if pivot not in pivots:
-            pivots[pivot] = word
+            pivots[pivot] = frozenset(row)
             return True
-        word ^= pivots[pivot]
+        row.symmetric_difference_update(pivots[pivot])
     return False
 
 
-def _annotation_basis(circuit: stim.Circuit) -> Dict[int, int]:
-    """Span of detector rows and complete (possibly accumulated) OBS rows."""
-    pivots: Dict[int, int] = {}
-    observables: Dict[int, int] = {}
+def _annotations(circuit: stim.Circuit, *, include_detectors: bool):
+    pivots: Dict[int, FrozenSet[int]] = {}
+    observables: Dict[int, FrozenSet[int]] = {}
+    history_ids = set()
     offset = 0
     for instruction in circuit.flattened():
-        if instruction.name in ("DETECTOR", "OBSERVABLE_INCLUDE"):
+        if instruction.name == "OBSERVABLE_INCLUDE" or (
+            include_detectors and instruction.name == "DETECTOR"
+        ):
             targets = instruction.targets_copy()
             if any(not target.is_measurement_record_target for target in targets):
                 raise ValueError("Logical-history export requires record-only annotations.")
-            word = _record_word(
-                (offset + target.value for target in targets), offset
-            )
+            support = _record_support((offset + t.value for t in targets), offset)
             if instruction.name == "DETECTOR":
-                _insert_row(pivots, word)
+                _insert_row(pivots, support)
             else:
                 key = int(instruction.gate_args_copy()[0])
-                observables[key] = observables.get(key, 0) ^ word
+                observables[key] = observables.get(key, frozenset()) ^ support
+                if instruction.tag == LOGICAL_HISTORY_TAG:
+                    history_ids.add(key)
         offset += instruction.num_measurements
-    for word in observables.values():
-        _insert_row(pivots, word)
+    return pivots, observables, history_ids
+
+
+def _annotation_basis(circuit: stim.Circuit) -> Dict[int, FrozenSet[int]]:
+    pivots, observables, _ = _annotations(circuit, include_detectors=True)
+    for support in observables.values():
+        _insert_row(pivots, support)
     return pivots
 
 
+def logical_history_observable_indices(circuit: stim.Circuit) -> Tuple[int, ...]:
+    """IDs emitted as historical targets, available to task-selection policies."""
+    return tuple(sorted({
+        int(instruction.gate_args_copy()[0])
+        for instruction in circuit.flattened()
+        if instruction.name == "OBSERVABLE_INCLUDE"
+        and instruction.tag == LOGICAL_HISTORY_TAG
+    }))
+
+
 def append_logical_history_observables(
-    tracker: "SyndromeTracker", circuit: stim.Circuit
+    tracker: "SyndromeTracker", circuit: stim.Circuit, *, independent_only: bool = False
 ) -> List[int]:
-    """Explicitly append independent historical targets to a finished circuit.
+    """Append all captured logical-history relations to the finished circuit.
 
-    Existing gates, detectors, and observable IDs/supports are preserved.
-    Candidates already in their joint span are omitted. All archived
-    dependencies are checked against the ideal circuit before either the
-    circuit or observable allocator is modified. The check permits a fixed
-    nonzero parity; Stim reports errors relative to its ideal reference.
+    Native observable IDs/supports are preserved. Only identical previously
+    emitted history supports are skipped by default; linear dependencies with
+    native targets or detectors do not silently remove a task outcome.
+    ``independent_only=True`` explicitly requests the former basis-extension
+    policy. It uses sparse supports rather than dense absolute-index bitsets.
 
-    This changes the evaluation target when new IDs are returned. It is
-    deliberately opt-in and does not claim to enumerate dependencies from
-    tracker paths other than the archived mid-measurement logical branch.
-    Calling it again on the same circuit adds nothing.
+    Validation precedes mutation. Fixed nonzero ideal parity is permitted;
+    Stim evaluates errors against its reference sample. This covers the
+    archived mid-measurement logical branch, not arbitrary-protocol completeness.
+    Repeated calls on an unchanged circuit are idempotent.
     """
+    if not tracker.logical_history:
+        return []
     if circuit.num_measurements != tracker.total_measurements:
         raise ValueError(
             "Logical-history export needs the complete circuit matching the tracker: "
             f"circuit has {circuit.num_measurements} measurements, "
             f"tracker has {tracker.total_measurements}."
         )
-    if not tracker.logical_history:
-        return []
-
     num_measurements = circuit.num_measurements
-    words = [
-        _record_word(relation.records, num_measurements)
+    supports = [
+        _record_support(relation.records, num_measurements)
         for relation in tracker.logical_history
     ]
     flows = [stim.Flow(measurements=relation.records) for relation in tracker.logical_history]
@@ -113,11 +137,21 @@ def append_logical_history_observables(
             "Check circuit provenance and the tracker state at capture time."
         )
 
-    pivots = _annotation_basis(circuit)
-    selected = [
-        relation for relation, word in zip(tracker.logical_history, words)
-        if _insert_row(pivots, word)
-    ]
+    pivots, observables, history_ids = _annotations(
+        circuit, include_detectors=independent_only
+    )
+    already_emitted = {observables[index] for index in history_ids}
+    if independent_only:
+        for support in observables.values():
+            _insert_row(pivots, support)
+    selected = []
+    for relation, support in zip(tracker.logical_history, supports):
+        if support in already_emitted:
+            continue
+        if independent_only and not _insert_row(pivots, support):
+            continue
+        selected.append(relation)
+        already_emitted.add(support)
     if not selected:
         return []
 
@@ -131,6 +165,7 @@ def append_logical_history_observables(
             "OBSERVABLE_INCLUDE",
             [stim.target_rec(record - num_measurements) for record in relation.records],
             observable_id,
+            tag=LOGICAL_HISTORY_TAG,
         )
         new_ids.append(observable_id)
     return new_ids
