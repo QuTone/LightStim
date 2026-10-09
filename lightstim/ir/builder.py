@@ -83,8 +83,9 @@ class CircuitBuilder:
         """Finalize this complete circuit without replacing the build buffer.
 
         Independent output copies share the captured history but must not
-        consume one another's observable IDs. The exporter only changes its
-        tracker's allocator, so a shallow tracker copy isolates that counter.
+        consume one another's observable IDs. The exporter reuses allocated
+        history IDs and replaces its ID mapping on update, so a shallow copy
+        isolates both that mapping and the allocator from the build buffer.
         """
         if self.if_detector and self.tracker is not None:
             tracker = self.tracker if circuit is self.circuit else copy.copy(self.tracker)

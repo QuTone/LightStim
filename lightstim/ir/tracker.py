@@ -11,7 +11,7 @@ from .logical_history import (
     append_logical_history_observables,
 )
 from .tableau import PauliTableau
-from typing import List, Dict, Tuple, Optional, Set, Any
+from typing import List, Dict, Tuple, Optional, Set, FrozenSet, Any
 
 # Tag for post-selection: detectors with this tag are used for post-selection filtering
 POST_SELECT_TAG = "post-select"
@@ -112,6 +112,10 @@ class SyndromeTracker:
         # tableau. They are separate from both the logical DOF census and the
         # protocol's native choice of scored observables.
         self.logical_history: List[LogicalHistoryRelation] = []
+        # Re-exporting the same relation into a complete circuit copy reuses
+        # its allocated ID. The exporter replaces this mapping on updates so
+        # shallow tracker copies keep independent export state.
+        self._logical_history_observable_ids: Dict[FrozenSet[int], int] = {}
 
         # Track the current stabilizers and logicals of the system
         # Note 1: Technically, logicals are also stabilizers of the system, define the logical states

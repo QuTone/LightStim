@@ -492,6 +492,15 @@ carry the Stim tag `logical-history`; use
 `lightstim.ir.logical_history.logical_history_observable_indices(circuit)`
 to identify them. The live logical-DOF census is unchanged.
 
+Finalizing a saved complete copy with the same native annotations reuses the
+history IDs assigned to the original, including when the original was exported
+first and the copy is later passed to `build_noisy_circuit(circuit=...)`.
+Native reservations are preserved. If a custom copy adds a native observable
+at a previously assigned history ID, that copy receives a fresh history ID
+instead of overwriting or XORing into the native target.
+Default export also preserves native `OBSERVABLE_INCLUDE` Pauli targets
+(such as `Z0 Z1`); the exported history itself uses measurement records.
+
 For an explicit basis-extension audit, use the following on a completed
 construction buffer **before** its default export:
 
@@ -501,7 +510,10 @@ audit_circuit = builder.to_stim_circuit(include_logical_history=False)
 ```
 
 This optional policy adds only directions independent modulo the joint span
-of existing detectors and observables. Its elimination uses sparse record
+of existing detectors and observables. This is a measurement-record-space
+audit and requires record-only annotations; it explicitly rejects Pauli-target
+observables instead of silently ignoring their Pauli contributions.
+Its elimination uses sparse record
 supports rather than integers whose size grows with the absolute record index.
 Before either export policy, Stim verifies that the
 archived parities are deterministic in the supplied physical circuit. The
