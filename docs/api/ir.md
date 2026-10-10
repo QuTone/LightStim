@@ -88,6 +88,67 @@ patch._get_bounds()                # → (min_x, max_x, min_y, max_y)
 patch.get_info()                   # → dict of code metadata
 ```
 
+### Interactive visualization
+
+```python
+from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
+
+patch = RotatedSurfaceCode(distance=3)
+view = patch.visualize()
+view  # Last expression in a notebook cell displays the interactive HTML.
+```
+
+`visualize(*, title=None, overlays=None)` returns a `PatchVisualization` HTML
+snapshot for a self-contained patch. It displays coordinates,
+data/syndrome roles, stabilizer generators, logical operators, and declared gauges.
+X support is red, Z blue, and Y green. Operator names are optional; unnamed records
+receive generated labels. No code-specific JSON or protocol metadata is required.
+
+The viewer accepts at most **500 registered qubits**, counting data and auxiliary
+qubits together. Exactly 500 is allowed; larger patches raise `ValueError` before
+generating or saving HTML. This keeps the interactive view small enough to inspect.
+
+Operator support must use integer IDs with coordinates stored in the patch (or
+a signed `stim.PauliString` over those IDs). `LogicalCouplerPatch` is currently
+unsupported and raises a descriptive `ValueError`: its coordinate-based or
+external-qubit references require geometry from the surrounding `QECSystem`.
+A system-level viewer is outside this patch-only API's scope. Subclasses inherit
+the method, but their data must satisfy these requirements.
+
+```python
+view.save_html("patch.html")  # Save one standalone file for viewing or sharing.
+html = view.html             # Full document as a Python string; also str(view).
+```
+
+In a notebook, either leave `view` as the final expression or call
+`display(view)`. Each output uses an isolated iframe so several views can coexist
+without conflicting HTML IDs, scripts or styles. The notebook frontend must
+allow trusted HTML/JavaScript output. The saved HTML opens directly in a browser;
+no server, extension, or Python process is needed to view it. IPython is not a
+required dependency for constructing or saving a view.
+
+Optional `overlays` are explicit caller annotations: a sequence of dictionaries
+with a display `name`, a collection of existing `qubits`, and an optional
+six-digit hex `color`. They are empty by default and do not change the code.
+Creating a view does not mutate the patch; regenerate it after changing geometry
+or operators. This API displays code structure; circuit operations and detector
+slices remain available through Stim's circuit diagrams.
+
+See the executed [patch visualization notebook](../../notebooks/System/qec_patch_visualization.ipynb).
+
+The Python regression tests run with
+`python -m pytest tests/frontend/test_patch_html.py tests/frontend/test_patch_visualize.py`.
+Optional browser regressions check filtering and independent notebook frames:
+
+```bash
+python -m pip install playwright
+python -m playwright install chromium
+python -m pytest tests/frontend/test_patch_html_browser.py
+```
+
+Browser tests skip when Playwright or its Chromium binary is not installed;
+neither is a runtime dependency of the viewer.
+
 ---
 
 ## 2. `QECSystem` — Global Canvas
