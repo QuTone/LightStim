@@ -16,6 +16,8 @@ from lightstim.ir.tracker import SyndromeTracker
 from lightstim.ir.qec_system import QECSystem
 from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock, UnrotatedSurfaceCodeLogicalOpSet
 from lightstim.noise.config import NoiseConfig
+from lightstim.utils.linear_algebra import solve_linear_decomposition
+from lightstim.utils.tableau_utils import stabilizers_to_symplectic
 
 from lightstim.qec_code.PQRM.pqrm_patch import PQRMPatch, LOG_PQRM_LEN_DICT
 from lightstim.qec_code.PQRM.pqrm_operation import PQRMLogicalOpSet
@@ -95,6 +97,49 @@ class CrossLSExperiment(QECExperiment):
         self.PQRM_state = PQRM_state
         self.surf_state = surf_state
         self.rx, self.rz, self.m = rx, rz, m
+
+    def _mark_terminal_pqrm_x_checks_for_postselection(self) -> None:
+        """Select the PQRM X-check closures in the final tracker basis.
+
+        Combined SE dresses some PQRM X checks with bridge-data X factors.
+        They have no syndrome ancillas and are checked by the terminal MX.
+        Identify their current representatives by their PQRM projection and
+        physical support, not by a record sentinel or an earlier row index.
+        The optional surface/hybrid coordinate selection remains separate.
+        """
+        checks = [
+            stab for stab in self.system.stabilizers
+            if stab.get("patch_name") == "pqrm" and stab.get("type") == "X"
+        ]
+        x_space = stabilizers_to_symplectic(
+            self.system, checks, self.system.num_qubits)
+        rows = self.tracker.stabilizers.matrix
+        n = self.system.num_qubits
+        pqrm = self.system.patches["pqrm"][0]
+        l2g = self.system.local_to_global_map["pqrm"]
+        pqrm_data = {l2g[q] for q in pqrm.data_indices}
+        mx_data = set(_get_pqrm_and_ancilla_data_indices(self.system))
+        outside_pqrm = sorted(set(range(n)) - pqrm_data)
+        outside_mx = sorted(set(range(n)) - mx_data)
+        projected = rows.copy()
+        projected[:, outside_pqrm] = 0
+        projected[:, n:] = 0
+        _, in_x_space, _ = solve_linear_decomposition(
+            basis=x_space, targets=projected, reduce_weight=False)
+        selected = [
+            int(k) for k in np.flatnonzero(in_x_space)
+            if projected[k].any()
+            and not rows[k, n:].any()
+            and not rows[k, outside_mx].any()
+            and k not in self.tracker.stabilizer_with_logical_components
+        ]
+        _, captured, _ = solve_linear_decomposition(
+            basis=projected[selected], targets=x_space, reduce_weight=False)
+        if not captured.all():
+            raise RuntimeError(
+                "CrossLS terminal MX is missing a representative of the "
+                "PQRM X-check subspace required for postselection.")
+        self.tracker.post_select_row_indices.update(selected)
 
     def build(self) -> stim.Circuit:
         """
@@ -201,23 +246,6 @@ class CrossLSExperiment(QECExperiment):
         }
         self.system.active_stabilizer_indices.update(pqrm_stab_uids)
 
-        # --- 8c. Mark PQRM X-stab rows for post-selection BEFORE combined SE ---
-        from lightstim.ir.tracker import UNMEASURED_STAB_RECORD
-        n = self.system.num_qubits
-        pqrm_data_globals = set()
-        if "pqrm" in self.system.local_to_global_map:
-            l2g = self.system.local_to_global_map["pqrm"]
-            pqrm_patch = self.system.patches["pqrm"][0]
-            pqrm_data_globals = {l2g[i] for i in pqrm_patch.data_indices if i in l2g}
-        for k in range(self.tracker.stabilizers.count):
-            row = self.tracker.stabilizers.matrix[k]
-            x_support = set(np.where(row[:n])[0])
-            records = self.tracker.stabilizers.records[k]
-            has_unmeasured = UNMEASURED_STAB_RECORD in records
-            has_pqrm_x_support = bool(x_support & pqrm_data_globals)
-            if has_unmeasured and has_pqrm_x_support:
-                self.tracker.post_select_row_indices.add(k)
-
         # --- 9. SE rounds ---
         se_block = SurfacePQRMSEBlock(self.system)
         builder.apply_syndrome_extraction(se_block.circuit, rounds=self.rounds)
@@ -259,7 +287,10 @@ class CrossLSExperiment(QECExperiment):
                 if x in (-2, -3) or y in (2, 3):
                     self.tracker.post_select_detector_coords.add((x, y, 1))
 
+        if self.if_detector:
+            self._mark_terminal_pqrm_x_checks_for_postselection()
         builder.apply_data_readout(final_measurements=final_measurements)
+        builder.to_stim_circuit()
 
         # --- 11. Noise (optional) ---
         if self.noise_params is not None:
@@ -275,7 +306,7 @@ class CrossLSExperiment(QECExperiment):
                 noisy_suffix = injector.inject_noise(clean_suffix)
                 return clean_prefix + noisy_suffix
             return self._inject_noise(builder.circuit)
-        return builder.circuit
+        return builder.to_stim_circuit()
 
     def _build_canonical_pqrm_logical(self, pqrm_patch: PQRMPatch) -> Optional[Dict[int, np.ndarray]]:
         """

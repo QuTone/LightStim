@@ -138,7 +138,7 @@ def build_gate_verification_circuit(
 
     if noise_params is not None:
         return builder.build_noisy_circuit(noise_params, noise_model)
-    return builder.circuit
+    return builder.to_stim_circuit()
 
 
 def build_s_roundtrip_circuit(
@@ -201,7 +201,7 @@ def build_s_roundtrip_circuit(
 
     if noise_params is not None:
         return builder.build_noisy_circuit(noise_params, noise_model)
-    return builder.circuit
+    return builder.to_stim_circuit()
 
 
 def build_s_oneway_circuit(
@@ -266,7 +266,7 @@ def build_s_oneway_circuit(
 
     if noise_params is not None:
         return builder.build_noisy_circuit(noise_params, noise_model)
-    return builder.circuit
+    return builder.to_stim_circuit()
 
 
 def build_bell_circuit(
@@ -334,4 +334,4 @@ def build_bell_circuit(
 
     if noise_params is not None:
         return builder.build_noisy_circuit(noise_params, noise_model)
-    return builder.circuit
+    return builder.to_stim_circuit()

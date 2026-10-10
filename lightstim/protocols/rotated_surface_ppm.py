@@ -380,4 +380,4 @@ class RotatedSurfacePPMExperiment:
         if self.noise_params is not None:
             return self.builder.build_noisy_circuit(
                 noise_params=self.noise_params, noise_model=self.noise_model)
-        return self.builder.circuit
+        return self.builder.to_stim_circuit()

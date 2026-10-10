@@ -192,7 +192,7 @@ def build_hgp_gate_verification_circuit(
 
     if noise_params is not None:
         return builder.build_noisy_circuit(noise_params, noise_model)
-    return builder.circuit
+    return builder.to_stim_circuit()
 
 
 __all__ = ["GateSpec", "build_hgp_gate_verification_circuit"]

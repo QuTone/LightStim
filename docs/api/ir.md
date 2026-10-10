@@ -453,6 +453,102 @@ expected counts. Common causes:
 | Missing logical constraints | Wrong SE circuit (ancilla indices don't match system) |
 | `commutes with all rows but is linearly independent` | Data qubit not initialized before SE |
 
+### Historical logical relations and default observable export
+
+The live logical-DOF census is different from the number of historical
+measurement parities available for evaluation. A joint logical measurement
+can expose an additional deterministic record relation even when it does
+not increase the number of encoded qubits.
+
+When a mid-measurement dependency uses logical-tableau rows, the tracker
+stores its complete record XOR in `tracker.logical_history` **before**
+writeback changes the live representatives. These immutable
+`LogicalHistoryRelation` entries have absolute zero-based `records`, a
+`measurement_index`, and capture-time `logical_indices`. Those logical
+indices are provenance, not stable logical-qubit identifiers. The archive
+is separate from `absorbed_ops`, which remains an operator-only DOF ledger.
+Random measurements do not create deterministic historical relations.
+
+Finished protocol circuits export all captured historical relations by
+default. The export step preserves existing observable IDs and record
+supports; new IDs are appended after them. For a custom builder workflow, finalize after the
+last physical operation and native readout:
+
+```python
+circuit = builder.to_stim_circuit()
+# Noise injection through the builder also finalizes before making a noisy copy.
+```
+
+`builder.circuit` is the mutable construction buffer, not a finalization
+call. `to_stim_circuit(include_logical_history=False)` is an explicit legacy
+selection option when used before any export; it does not remove targets
+already exported. Avoid finalizing a protocol in the middle of construction.
+
+The default does **not** prune a relation because it is linearly dependent
+on other observables or detectors. Such relations can represent distinct
+evaluation targets. Exact duplicate history supports are emitted once, and
+repeated finalization on the same circuit is idempotent. New annotations
+carry the Stim tag `logical-history`; use
+`lightstim.ir.logical_history.logical_history_observable_indices(circuit)`
+to identify them. The live logical-DOF census is unchanged.
+
+Finalizing a saved complete copy with the same native annotations reuses the
+history IDs assigned to the original, including when the original was exported
+first and the copy is later passed to `build_noisy_circuit(circuit=...)`.
+Native reservations are preserved. If a custom copy adds a native observable
+at a previously assigned history ID, that copy receives a fresh history ID
+instead of overwriting or XORing into the native target.
+
+For an explicit basis-extension audit, use the following on a completed
+construction buffer **before** its default export:
+
+```python
+new_ids = builder.append_logical_history_observables(independent_only=True)
+audit_circuit = builder.to_stim_circuit(include_logical_history=False)
+```
+
+This optional policy adds only directions independent modulo the joint span
+of existing detectors and observables. Its elimination uses sparse record
+supports rather than integers whose size grows with the absolute record index.
+Before either export policy, Stim verifies that the
+archived parities are deterministic in the supplied physical circuit. The
+unsigned tracker does not assert that their ideal XOR is zero: Stim's
+reference sample supplies the fixed offset, including an ideal value of one.
+Unknown record sentinels are rejected rather than interpreted as zero.
+
+For unrotated distance-3 two-patch Z/Z preparation, one-round ZZ surgery,
+and Z/Z readout, native DET+OBS rank is 50; exporting the history adds one
+observable, reaching the full fixed-input parity rank of 51. With Z/X
+preparation and X/Z readout, the teleportation circuit already has full rank
+49 and keeps its one observable. Tests compare row spaces against Stim's
+record-only flow generators, not merely observable counts.
+
+Canonical basis changes preserve known record expressions, including empty
+expressions for known preparation constraints. Unknown eigenvalues remain
+explicitly unknown. The tracker keeps stabilizer-role metadata separately
+from record emptiness, so a known code check is not mistaken for a fresh
+logical preparation. The optimized repeated-round tracker advance declines
+blocks whose logical records accumulate across rounds; those blocks use
+explicit updates so later history capture can still access their complete
+record expressions. A physical Stim `REPEAT` can still be retained.
+
+Preserving known canonical constraints can also restore previously omitted
+closure detectors. This is separate from appending historical observables:
+CrossLS, for example, can acquire additional checks, a different native
+observable representative modulo those checks, and a stronger hybrid
+postselection condition. Its previous acceptance/LER data must not be reused
+as results for the updated annotations without reevaluation.
+
+The archive covers the logical-dependent mid-measurement path; it is not
+a claim of complete history generation for arbitrary circuits or unsupported
+protocols. Protocol intent still determines which available observables to
+score. Exporting new IDs changes that evaluation task: regenerate DEMs and
+decoder artifacts, and rescore/redecode (or rerun) affected experiments.
+Distillation is one example of an explicit task policy: its analysis helpers
+retain the native distilled output and outer-code postselection checks.
+Additional history targets remain in the circuit but are not automatically
+made into acceptance checks. This choice is separate from circuit export.
+
 ### Subsystem state classification
 
 For a declared subsystem code, let `S` be its stabilizer centre, `G` its

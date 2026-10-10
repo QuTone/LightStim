@@ -212,7 +212,7 @@ class MemoryExperiment:
             )
             return noisy_circuit
         else:
-            return self.builder.circuit
+            return self.builder.to_stim_circuit()
 
     def _infer_extraction_block_class(self) -> Type:
         defaults = set()
