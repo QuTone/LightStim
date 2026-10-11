@@ -187,15 +187,15 @@ def _require_symmetric(patch: HGPCode) -> None:
 def _global_index(builder: Optional[CircuitBuilder], patch: HGPCode, local_index: int) -> int:
     """Map a local data index of ``patch`` to its index in the builder's system.
 
-    ``QECSystem.add_patch`` deep-copies the patch and shifts its coordinates,
-    so the returned patch's ``qubit_coords`` are global coordinates while its
-    ``vv_qubits``/``cc_qubits`` values stay local.  The system's ``index_map``
-    turns a global coordinate into the global qubit index.  With
-    ``builder=None`` the local index is returned unchanged.
+    ``QECSystem.add_patch`` translates the returned patch's geometry and
+    operators to global IDs, while ``vv_qubits``/``cc_qubits`` stay local.
+    Its registration map bridges those IDs without assuming the local and
+    global namespaces are disjoint, or that registration allocated fresh IDs.
+    With ``builder=None`` the local index is returned unchanged.
     """
     if builder is None:
         return int(local_index)
-    return int(builder.system.index_map[patch.qubit_coords[local_index]])
+    return int(patch._local_to_global_map[local_index])
 
 
 def _check_patch(patch: HGPCode, builder: Optional[CircuitBuilder]) -> None:
