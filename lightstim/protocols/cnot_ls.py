@@ -41,9 +41,11 @@ class CNOTLSExperiment:
                  noise_params: Optional[NoiseConfig] = None,
                  noise_model: Optional[str] = 'circuit_level',
                  if_detector: bool = True,
-                 rotate_patches: bool = True):
+                 rotate_patches: bool = True,
+                 logical_tracking: Literal["legacy", "slabs"] = "legacy"):
         """
         Args:
+            logical_tracking: Select the experimental S/L/L_absorbed extension with "slabs".
             patch_config: Configuration dict for all Ancilla, Control, and Target patches (passed to UnrotatedSurfaceCode).
             offset_ct: (dx, dy) offset for Target patch relative to Control patch.
             offset_ta: (dx, dy) offset for Ancilla patch relative to Target patch.
@@ -80,6 +82,7 @@ class CNOTLSExperiment:
         self.noise_model = noise_model
         self.if_detector = if_detector
         self.rotate_patches = rotate_patches
+        self.logical_tracking = logical_tracking
         
         # Internal state
         self.system: Optional[QECSystem] = None
@@ -169,7 +172,8 @@ class CNOTLSExperiment:
         num_qubits = self.system.num_qubits
         num_logicals = self.system.num_logicals
         
-        self.tracker = SyndromeTracker(num_qubits=num_qubits, expected_num_logicals=num_logicals)
+        self.tracker = SyndromeTracker(num_qubits=num_qubits, expected_num_logicals=num_logicals,
+                                      logical_tracking=self.logical_tracking)
         self.builder = CircuitBuilder(
             tracker=self.tracker,
             system_config=self.system,

@@ -1,7 +1,9 @@
 import stim
 import warnings
 import numpy as np
-from ..utils.linear_algebra import check_commutativity, kernel_gf2, solve_linear_decomposition
+from ..utils.linear_algebra import (
+    check_commutativity, kernel_gf2, row_echelon, solve_linear_decomposition,
+)
 from ..utils.subsystem_algebra import (
     combine_records, independent_row_indices, intersect_row_spaces, reduce_modulo,
 )
@@ -99,7 +101,12 @@ class SyndromeTracker:
         num_qubits: int,
         expected_num_logicals: int = 0,
         post_select_detector_coords: Optional[Set[Tuple[float, ...]]] = None,
+        *,
+        logical_tracking: str = "legacy",
     ):
+        if logical_tracking not in ("legacy", "slabs"):
+            raise ValueError("logical_tracking must be 'legacy' or 'slabs'")
+        self.logical_tracking = logical_tracking
         # Number of physical qubits (include data, syndrome, and potentially other ancilla qubits)
         self.num_qubits = num_qubits
         # Number of logical qubits (should be the total number of logical qubits in the QEC system)
@@ -127,6 +134,9 @@ class SyndromeTracker:
         # are initially unclassified; empty records alone cannot distinguish
         # those preparation constraints from established code stabilizers.
         self._classified_stabilizer_rows: Set[int] = set()
+        # In slabs mode this third tableau is L_absorbed: redundant known
+        # constraints with records, jointly projected with S and L. The
+        # operator-only ledger description below applies to legacy mode.
         # Absorbed logical operators (Fix C): the measured Pauli strings that were folded
         # into the stabilizer group by a merge (e.g. a joint ZZ over two |0>) and STILL
         # hold a trapped logical DOF. Persisted across rounds/PPMs, so an absorb that an
@@ -155,6 +165,262 @@ class SyndromeTracker:
         """
         self.expected_num_logicals = k
 
+    @property
+    def absorbed_logicals(self) -> PauliTableau:
+        """L_absorbed in slabs mode; alias of the original third tableau.
+
+        Unlike the legacy operator-only ledger, slabs rows carry records and
+        are redundant constraints in span(S, L). No private state copy exists.
+        """
+        return self.absorbed_ops
+
+    def _slabs_projection_pivot(self, full, num_stabs, num_logs, anti, excluded=()):
+        """Use an anticommuting S row before either protected tableau.
+
+        Do not prefilter S against L/L_absorbed: a redundant S row is still
+        eligible as the projection pivot. The caller updates all three tables.
+        """
+        excluded = set(excluded)
+        candidates = [int(i) for i in anti if int(i) not in excluded]
+        stabs = [i for i in candidates if i < num_stabs]
+        if stabs:
+            return stabs[0]
+        if candidates:
+            return candidates[0]
+        raise RuntimeError("Anticommuting constraint has no projection pivot")
+
+    def _slabs_absorb_projected(self, full, num_stabs, num_logs, measurements):
+        """Step C: [measurements; L; S], retaining absorbed L with records.
+
+        Existing L_absorbed stays redundant in the current S/L state. A live
+        logical omitted by refresh becomes an absorbed representative instead
+        of being thrown away. Selection uses only Pauli row elimination.
+        """
+        section = slice(num_stabs, num_stabs + num_logs)
+        if num_logs:
+            # Canonicalize within L's own span, not modulo S. Otherwise an
+            # equivalent choice such as [ZA*ZC, ZA] can change which raw L
+            # generator refresh absorbs. Carry the full invertible transform,
+            # including I rows: B can annihilate L against a preserved PS S.
+            canonical, _, transform, _ = row_echelon(
+                full.matrix[section], reduced=True)
+            full.matrix[section] = canonical.astype(np.uint8)
+            full.records[section] = combine_records(transform, full.records[section])
+        live = full.matrix[section]
+        _, _, surviving = solve_linear_decomposition(
+            basis=measurements, targets=live, reduce_weight=False)
+        surviving = set(int(i) for i in surviving)
+        candidates = list(range(num_stabs + num_logs, full.count))
+        candidates += [num_stabs + i for i in range(num_logs) if i not in surviving]
+        live_basis = live[sorted(surviving)]
+        _, _, chosen = solve_linear_decomposition(
+            basis=live_basis, targets=full.matrix[candidates], reduce_weight=False)
+        rows = [candidates[int(i)] for i in chosen]
+        self.absorbed_ops.matrix = full.matrix[rows].copy()
+        self.absorbed_ops.records = [list(full.records[i]) for i in rows]
+
+    def _slabs_normalize_absorbed(self):
+        """Complete refresh using the new S/L basis and absorbed record history.
+
+        Keep the whole intersection L_absorbed intersect S, including products
+        of input rows. For the complementary directions, remove the surviving
+        L component, then choose representatives from the existing ordered S
+        rows. Their records come from the old absorbed constraints and the S
+        complement, never by copying the chosen row's fresh measurement value.
+
+        """
+        s, live, absorbed = self.stabilizers, self.logicals, self.absorbed_logicals
+        if not absorbed.count or not live.count:
+            return
+        kept, kept_coefficients = intersect_row_spaces(absorbed.matrix, s.matrix)
+        if len(kept) == absorbed.count:
+            return
+        kept_records = combine_records(kept_coefficients, absorbed.records)
+        _, _, changed = solve_linear_decomposition(
+            basis=kept, targets=absorbed.matrix, reduce_weight=False)
+        matrix = np.vstack([kept, absorbed.matrix[changed]])
+        records = kept_records + [absorbed.records[int(i)] for i in changed]
+
+        coefficients, known, _ = solve_linear_decomposition(
+            basis=np.vstack([s.matrix, live.matrix]), targets=matrix,
+            reduce_weight=False)
+        if not np.all(known):
+            raise RuntimeError("Refresh left L_absorbed outside span(S, L)")
+        logical_coefficients = coefficients[:, s.count:]
+        matrix ^= (logical_coefficients @ live.matrix) % 2
+        records = [sorted(set(old) ^ set(correction))
+                   for old, correction in zip(
+                       records, combine_records(logical_coefficients, live.records))]
+
+        # Complete the normalized absorbed directions to S, using original S
+        # rows. Then complete that complement plus the kept intersection back
+        # to S. Only the directions that needed L are represented anew.
+        _, _, complement_indices = solve_linear_decomposition(
+            basis=matrix, targets=s.matrix, reduce_weight=False)
+        complement = s.matrix[complement_indices]
+        _, _, selected = solve_linear_decomposition(
+            basis=np.vstack([complement, kept]), targets=s.matrix,
+            reduce_weight=False)
+        representatives = s.matrix[selected]
+        if len(representatives) + len(kept) != absorbed.count:
+            raise RuntimeError("Absorbed normalization changed the number of directions")
+        coefficients, known, _ = solve_linear_decomposition(
+            basis=np.vstack([matrix, complement]), targets=representatives,
+            reduce_weight=False)
+        if not np.all(known):
+            raise RuntimeError("Cannot reconstruct absorbed representative records")
+        representative_records = combine_records(
+            coefficients, records + [s.records[int(i)] for i in complement_indices])
+        absorbed.matrix = np.vstack([kept, representatives])
+        absorbed.records = kept_records + representative_records
+
+    def _slabs_release_projected(self, full, num_stabs, destroyed,
+                                 active_stabilizers=None, measurements=None,
+                                 measurement_start=0):
+        """Readout C, after joint S/L/L_absorbed projection over the whole batch.
+
+        Expose measured protected combinations before taking the quotient by
+        the readout. Keep absorbed directions still in span(active code, L),
+        release their complement, and give known active checks an S basis.
+        Active checks declare roles; their records always come from old S.
+        """
+        boundary = num_stabs + self.logicals.count
+        logical = [i for i in range(num_stabs, boundary) if i not in destroyed]
+        absorbed = [i for i in range(boundary, full.count) if i not in destroyed]
+        stabs = [i for i in range(num_stabs) if i not in destroyed]
+        width = 2 * self.num_qubits
+        empty = np.zeros((0, width), dtype=np.uint8)
+        if active_stabilizers is None:
+            active_stabilizers = empty
+        if measurements is None:
+            measurements = empty
+        active_stabilizers = reduce_modulo(active_stabilizers, measurements)
+        measurement_records = [[measurement_start + i] for i in range(len(measurements))]
+
+        def fold_records(original, folded, records):
+            coefficients, known, _ = solve_linear_decomposition(
+                basis=measurements, targets=original ^ folded, reduce_weight=False)
+            if not np.all(known):
+                raise RuntimeError("Readout reduction left an undetermined measurement parity")
+            return [sorted(set(old) ^ set(correction)) for old, correction in zip(
+                records, combine_records(coefficients, measurement_records))]
+
+        # A combination can close even when no input row individually closes.
+        # Preserve these original representatives for the existing emitter,
+        # then select quantum survivors in the quotient by the readout span.
+        protected = logical + absorbed
+        original = full.matrix[protected]
+        records = [full.records[i] for i in protected]
+        closed, closing_coeffs = intersect_row_spaces(original, measurements)
+        closed_records = combine_records(closing_coeffs, records)
+        folded = reduce_modulo(original, measurements)
+        survivors = independent_row_indices(folded)  # L first, then L_absorbed
+        live_indices = [i for i in survivors if i < len(logical)]
+        absorbed_indices = [i for i in survivors if i >= len(logical)]
+        live = folded[live_indices]
+        absorbed_folded = folded[absorbed_indices]
+        absorbed_original = original[absorbed_indices]
+        absorbed_records = [records[i] for i in absorbed_indices]
+
+        kept, coefficients = intersect_row_spaces(
+            absorbed_folded, np.vstack([active_stabilizers, live]))
+        _, _, independent = solve_linear_decomposition(
+            basis=live, targets=kept, reduce_weight=False)
+        kept, coefficients = kept[independent], coefficients[independent]
+        kept_original = coefficients @ absorbed_original % 2
+        kept_records = fold_records(kept_original, kept,
+                                   combine_records(coefficients, absorbed_records))
+        _, _, released = solve_linear_decomposition(
+            basis=np.vstack([live, kept]), targets=absorbed_folded,
+            reduce_weight=False)
+        logical_matrix = np.vstack([closed, original[live_indices],
+                                    absorbed_original[released]])
+        logical_records = (closed_records + [records[i] for i in live_indices]
+                           + [absorbed_records[int(i)] for i in released])
+
+        # Retaining a product in L_absorbed is insufficient if S still needs
+        # a released logical to express that active check. Rebase S on known
+        # active combinations first. Lift from old S with the same record
+        # XORs; an active-code declaration never supplies an eigenvalue.
+        old_s = full.matrix[stabs]
+        old_s_records = [full.records[i] for i in stabs]
+        _, active_coeffs = intersect_row_spaces(
+            reduce_modulo(old_s, measurements), active_stabilizers)
+        active_original = active_coeffs @ old_s % 2
+        active_records = combine_records(active_coeffs, old_s_records)
+        # Closing S relations must also remain explicit until the emitter.
+        closing_s, closing_s_coeffs = intersect_row_spaces(old_s, measurements)
+        closing_s_records = combine_records(closing_s_coeffs, old_s_records)
+        # Preserve exact postselection rows, including overlap with L: their
+        # selection role is required even if the same parity is an observable.
+        # Other new rows inherit tags only from a wholly selected combination.
+        selected_ps = [i for i, old in enumerate(stabs)
+                       if old in self.post_select_row_indices]
+        identity = np.eye(len(stabs), dtype=np.uint8)
+        candidates = np.vstack([closing_s, active_original, old_s])
+        lineage = np.vstack([closing_s_coeffs, active_coeffs, identity])
+        candidate_records = closing_s_records + active_records + old_s_records
+        _, _, chosen = solve_linear_decomposition(
+            basis=np.vstack([logical_matrix, old_s[selected_ps]]),
+            targets=candidates, reduce_weight=False)
+        stab_matrix = np.vstack([old_s[selected_ps], candidates[chosen]])
+        stab_records = ([old_s_records[i] for i in selected_ps]
+                        + [candidate_records[int(i)] for i in chosen])
+        source_sets = [{stabs[int(i)] for i in np.flatnonzero(row)}
+                       for row in np.vstack([identity[selected_ps], lineage[chosen]])]
+        self.post_select_row_indices = {
+            i for i, sources in enumerate(source_sets)
+            if sources and sources <= self.post_select_row_indices}
+        self._classified_stabilizer_rows = {
+            i for i, sources in enumerate(source_sets)
+            if sources and sources <= self._classified_stabilizer_rows}
+        self.stabilizer_with_logical_components = set()
+        self._gauge_logical_vectors = []
+        self.absorbed_ops.matrix = kept.copy()
+        self.absorbed_ops.records = kept_records
+        full.matrix = np.vstack([stab_matrix, logical_matrix])
+        full.records = stab_records + logical_records
+        return len(stab_matrix), len(logical_matrix)
+
+    def _slabs_discard_qubits(self, qubits):
+        """Partial trace before a reset, with joint S/L/L_absorbed elimination.
+
+        A reset forgets the previous outcome: retain only combinations with
+        zero X AND Z support on the reset qubits. There is no measurement record
+        to substitute here. Fresh preparation is added by the original caller.
+        """
+        qubits = sorted(set(qubits))
+        ns, nl = self.stabilizers.count, self.logicals.count
+        protected_before = nl + self.num_absorbed_dof()
+        full = PauliTableau(self.num_qubits)
+        full.matrix = np.vstack([self.stabilizers.matrix, self.logicals.matrix,
+                                 self.absorbed_logicals.matrix])
+        full.records = [list(r) for tab in (self.stabilizers, self.logicals,
+                                            self.absorbed_logicals) for r in tab.records]
+        removed = set()
+        for column in qubits + [self.num_qubits + q for q in qubits]:
+            affected = [int(i) for i in np.flatnonzero(full.matrix[:, column])
+                        if int(i) not in removed]
+            if not affected:
+                continue
+            pivot = self._slabs_projection_pivot(full, ns, nl, affected, removed)
+            for other in affected:
+                if other != pivot:
+                    full.update_row(other, pivot)
+            full.matrix[pivot] = 0
+            full.records[pivot] = []
+            removed.add(pivot)
+        kept = [i for i in range(full.count) if i not in removed and full.matrix[i].any()]
+        for tab, lo, hi in ((self.stabilizers, 0, ns),
+                            (self.logicals, ns, ns + nl),
+                            (self.absorbed_logicals, ns + nl, full.count)):
+            indices = [i for i in kept if lo <= i < hi]
+            tab.matrix = full.matrix[indices].copy()
+            tab.records = [list(full.records[i]) for i in indices]
+        self._remap_rows_after_removal([i for i in range(ns) if i not in kept])
+        self.expected_num_logicals -= (
+            protected_before - self.logicals.count - self.num_absorbed_dof())
+
     def num_absorbed_dof(self) -> int:
         """Number of banked absorbed logical DOFs (cross-round persistent):
         the GF(2) rank of the ledger itself.
@@ -182,7 +448,9 @@ class SyndromeTracker:
         relation the stabilizer group already carries.  Returns True iff a
         new row was banked.
 
-        The ledger is OPERATOR-ONLY: absorbed_ops.records is never written.
+        In legacy mode the ledger is OPERATOR-ONLY. In slabs mode a known
+        record expression is reconstructed as well, so this compatibility
+        entry point cannot create a row without its records.
         Banked-parity retrieval (per-relation measurement records) has no
         consumer in the retained scope and returns with the liveness
         layer's readout of banked relations."""
@@ -200,6 +468,14 @@ class SyndromeTracker:
             if not op.any():
                 return False
         op = op.astype(np.uint8).reshape(1, -1)
+        if self.logical_tracking == "slabs":
+            known = np.vstack([self.stabilizers.matrix, self.logicals.matrix, A.matrix])
+            records = self.stabilizers.records + self.logicals.records + A.records
+            coefficients, dependent, _ = solve_linear_decomposition(
+                basis=known, targets=op, reduce_weight=False)
+            if not dependent[0]:
+                raise ValueError("An absorbed logical must be a known constraint in span(S, L)")
+            A.records.extend(combine_records(coefficients, records))
         A.matrix = (np.vstack([A.matrix, op]).astype(np.uint8)
                     if A.count else op)
         return True
@@ -295,6 +571,11 @@ class SyndromeTracker:
 
         Same logic applied to logical rows.
         """
+        if self.logical_tracking == "slabs":
+            # Reinitialization forgets the old subsystem; retain its physical
+            # partial trace instead of leaving unsupported Pauli constraints.
+            self._slabs_discard_qubits(qubit_indices)
+            return
         n = self.num_qubits
         qubit_set = set(qubit_indices)
 
@@ -806,6 +1087,9 @@ class SyndromeTracker:
         n = self.num_qubits
         cols = [q for q in touched_qubits] + [n + q for q in touched_qubits]
         if A.matrix[:, cols].any():
+            if self.logical_tracking == "slabs":
+                self._slabs_discard_qubits(touched_qubits)
+                return
             raise RuntimeError(
                 f"{context}: reset touches qubits that still carry banked "
                 f"absorbed relations — resolve them via a corridor/patch "
@@ -937,7 +1221,8 @@ class SyndromeTracker:
         for tableau_name, tableau in (
             ("stabilizer", self.stabilizers),
             ("logical", self.logicals),
-        ):
+        ) + ((("absorbed logical", self.absorbed_logicals),)
+             if self.logical_tracking == "slabs" else ()):
             for row_idx in range(tableau.count):
                 records = set(tableau.records[row_idx])
 
@@ -984,6 +1269,14 @@ class SyndromeTracker:
         (i.e. after the block's forward symplectic), so the recorded
         operators live in the same frame as every other tableau row.
         """
+        if self.logical_tracking == "slabs":
+            # Step C has already saved the projected logical representatives,
+            # including their records. S/L refresh and forward propagation
+            # are now complete, so normalize against their current frame.
+            self._slabs_normalize_absorbed()
+            self.stabilizer_with_logical_components = set()
+            self._gauge_logical_vectors = []
+            return
         if self._gauge_logical_vectors:
             gauge_matrix = np.array(
                 self._gauge_logical_vectors,
@@ -1120,6 +1413,9 @@ class SyndromeTracker:
         # ======================================================================
         # Step 2: Process Back-propagated Pauli measurements (Update / Detector)
         # ======================================================================
+        if self.logical_tracking == "slabs":
+            full_matrix = np.vstack([full_matrix, self.absorbed_logicals.matrix])
+            full_records = full_records + [list(r) for r in self.absorbed_logicals.records]
         # Use a temporary tableau view so we can call update_row / replace_row.
         temp_full = PauliTableau(self.num_qubits)
         temp_full.matrix = full_matrix
@@ -1137,9 +1433,13 @@ class SyndromeTracker:
 
             if len(anti_comm_indices) > 0:
                 # --- Case A: Anti-commutes (State Update) ---
-                pivot = anti_comm_indices[0]
+                pivot = (self._slabs_projection_pivot(
+                    temp_full, num_stabs, num_logs, anti_comm_indices)
+                    if self.logical_tracking == "slabs" else anti_comm_indices[0])
                 # Update other anti-commuting rows
-                for other in anti_comm_indices[1:]:
+                for other in anti_comm_indices:
+                    if other == pivot:
+                        continue
                     temp_full.update_row(other, pivot) # (target, source)
                     # Projection can multiply a code constraint by a fresh
                     # preparation constraint without changing its code role.
@@ -1153,7 +1453,7 @@ class SyndromeTracker:
                 if pivot < num_stabs:
                     classified_rows.add(int(pivot))
 
-                if pivot >= num_stabs:
+                if pivot >= num_stabs and self.logical_tracking != "slabs":
                     # If the pivot is a logical operator and is replaced by a measurement, decreases one degree of freedom
                     self.expected_num_logicals -= 1
 
@@ -1252,7 +1552,7 @@ class SyndromeTracker:
                                 ))
                                 self.stabilizer_with_logical_components.add(i)
                                 # Track which logical indices this measurement involves (for rank computation)
-                                log_vec = np.zeros(num_logs, dtype=np.uint8)
+                                log_vec = np.zeros(full_matrix.shape[0] - num_stabs, dtype=np.uint8)
                                 for c in comp_indices:
                                     if c >= num_stabs:
                                         log_vec[c - num_stabs] = 1
@@ -1294,6 +1594,13 @@ class SyndromeTracker:
         # ======================================================================
         # Step 3: Write Back with "Clean" Basis
         # ======================================================================
+        if self.logical_tracking == "slabs":
+            self._slabs_absorb_projected(
+                temp_full, num_stabs, num_logs, back_propagated_paulis)
+            # The original reset-seeded refresh still owns S and L. Absorbed
+            # rows are redundant witnesses, not additional physical state.
+            full_matrix = full_matrix[:num_stabs + num_logs]
+            full_records = full_records[:num_stabs + num_logs]
         if retain_measured_qubits:
             # The projected measurement rows are the freshest representatives
             # of the post-measurement state. Keep an independent subset with
@@ -1744,7 +2051,8 @@ class SyndromeTracker:
                                   final_paulis: np.ndarray,
                                   idx_to_coord_map: Dict[int, Tuple[float, float]],
                                   syndrome_qubit_indices: set = None,
-                                  resolve_absorbed: bool = True):
+                                  resolve_absorbed: bool = True,
+                                  active_stabilizers: Optional[np.ndarray] = None):
         """
         Handles Final Data Qubit Measurements using Gaussian Elimination.
 
@@ -1760,6 +2068,10 @@ class SyndromeTracker:
                 final-round detectors with the syndrome grid rather than the data grid.
                 Coordinates are deduplicated: if a syndrome coord is already used by
                 a previous detector, the data qubit fallback is applied instead.
+            active_stabilizers: Pauli rows of the code that continues after
+                this destructive readout, in the same physical register.
+                Used only by slabs to decide which absorbed directions remain
+                code checks; omitted means no continuing code declaration.
         """
 
         num_new_meas = final_paulis.shape[0]
@@ -1786,7 +2098,7 @@ class SyndromeTracker:
         #     measured columns), leaving the patch-part of the relation. A later patch readout
         #     then resolves that patch-part.
         A = self.absorbed_ops
-        if A.count and num_new_meas:
+        if A.count and num_new_meas and self.logical_tracking != "slabs":
             n = self.num_qubits
             meas_q = set(int(c % n) for c in np.where(final_paulis.any(axis=0))[0])
             mcols = [q for q in meas_q] + [q + n for q in meas_q]
@@ -1906,6 +2218,9 @@ class SyndromeTracker:
         # ======================================================================
         # Step 2: Update Tableau (Resolve Anti-commutation)
         # ======================================================================
+        if self.logical_tracking == "slabs":
+            full_matrix = np.vstack([full_matrix, self.absorbed_logicals.matrix])
+            full_records = full_records + [list(r) for r in self.absorbed_logicals.records]
         # Use a temporary tableau view so we can call update_row / replace_row.
         temp_full = PauliTableau(self.num_qubits)
         temp_full.matrix = full_matrix
@@ -1928,20 +2243,34 @@ class SyndromeTracker:
                 # This preserves logicals and gauge-measurement rows for observable construction.
                 safe = [j for j in anti_comm_indices
                         if j < num_stabs and j not in self.stabilizer_with_logical_components]
-                if safe:
+                if self.logical_tracking == "slabs":
+                    pivot = self._slabs_projection_pivot(
+                        temp_full, num_stabs, num_logs, anti_comm_indices, destroyed_rows)
+                elif safe:
                     pivot = safe[0]
                 else:
                     stab_candidates = [j for j in anti_comm_indices if j < num_stabs]
                     pivot = stab_candidates[0] if stab_candidates else anti_comm_indices[0]
                 destroyed_rows.add(pivot) # Mark pivot as destroyed
 
-                for other in anti_comm_indices[1:]:
+                for other in anti_comm_indices:
+                    if other == pivot:
+                        continue
                     temp_full.update_row(other, pivot)
                     if pivot >= num_stabs:
                         self._classified_stabilizer_rows.discard(int(other))
 
                 # Replace pivot to maintain valid tableau for subsequent loop steps
                 temp_full.replace_row(pivot, meas_pauli, [meas_abs_idx])
+
+        if self.logical_tracking == "slabs":
+            # One projection over the complete supplied collection, followed
+            # by release. In particular, combined readout is never split.
+            num_stabs, num_logs = self._slabs_release_projected(
+                temp_full, num_stabs, destroyed_rows, active_stabilizers,
+                final_paulis, base_meas_idx)
+            full_matrix, full_records = temp_full.matrix, temp_full.records
+            destroyed_rows = set()
 
         # ======================================================================
         # Step 3: Decomposition, Detectors/Logical Observables Construction
@@ -2139,7 +2468,7 @@ class SyndromeTracker:
         # it (anticommuting bus-basis readout) or emits it (row entirely on the
         # measured corridor).  Legacy corridor splits removed no logical rows, so
         # this term was always zero before.
-        if resolve_absorbed:
+        if resolve_absorbed or self.logical_tracking == "slabs":
             resolved = ((_std_before - self.logicals.count)
                         + (_abs_before - self.num_absorbed_dof()))
             self.expected_num_logicals -= resolved

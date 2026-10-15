@@ -464,8 +464,41 @@ tracker = SyndromeTracker(
     num_qubits,               # Initial system size
     expected_num_logicals=0,  # k — the tracker validates against this at every SE round
     post_select_detector_coords=None,  # Set[Tuple[float,...]] — coords where detectors get post-select tag
+    logical_tracking="legacy",  # Opt in to the experimental extension with "slabs"
 )
 ```
+
+The experimental `slabs` mode extends this tracker with three tableaus:
+`stabilizers` (S), `logicals` (L), and `absorbed_logicals` (L_absorbed, an alias
+of the existing `absorbed_ops`). Each row carries its Pauli operator and its
+measurement-record parity. Mid-measurement refresh first puts projected L in
+RREF within its own span, carrying the same row operations into its records.
+It retains absorbed logical constraints and normalizes newly mixed absorbed
+directions against the refreshed S/L basis. The intersection of L_absorbed
+with S is preserved; the remaining directions lose their surviving-L
+component and use existing S representatives with reconstructed record
+parities. These records retain the absorbed constraint's history instead of
+being replaced by the fresh measurement values. Projection uses an
+anticommuting S row before L/L_absorbed and
+updates all three tableaus. Readout projects the entire supplied batch, exposes
+measured combinations of L/L_absorbed, then releases absorbed directions that
+no longer belong to the continuing active code plus L. Known active checks are
+rebased into S with their original measurement records. No corridor/data split
+or topology-specific readout ordering is imposed.
+It uses the original initialization, emission, and postselection paths.
+`TwoPatchLSExperiment`, `CNOTLSExperiment`, and `RotatedSurfacePPMExperiment`
+also accept `logical_tracking="slabs"`.
+
+`CircuitBuilder` supplies continuing active checks from the existing
+`QECSystem.active_stabilizers` and active-qubit set. Direct tracker callers can
+pass `active_stabilizers=` to `process_data_measurement`; these rows declare
+the continuing code, not known eigenvalues. Omission means no continuing-code
+declaration. An active check's record expression is reconstructed from S.
+
+This remains experimental, with `legacy` still the default. Regression coverage
+includes unrelated patch readout, repeated SE, and overlapping held AB/BC merges
+handled by absorbed-representative normalization. See the
+[algorithm and verification scope](slabs_tracker.md).
 
 ### Key state
 

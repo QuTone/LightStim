@@ -1,0 +1,573 @@
+{
+  "source_head": "409af7b9dc40c2d961c7e026f298242430387a4d",
+  "tracker_sha256": "4ea64d49b919e7be9c28e82b57854db78747237918cdcd5c3e3a33f2ffb37e96",
+  "protocol": "examples/integrations/logical_compiler_rotated_surface_ppm/checkerboard_3x3_ppm.json",
+  "distance": 3,
+  "noise": {
+    "model": "circuit_level",
+    "p_1q": 0.001,
+    "p_2q": 0.001,
+    "p_meas": 0.001,
+    "p_reset": 0.001,
+    "p_idle": 0.001
+  },
+  "reproduce": "pytest -q tests/test_slabs_distance_contract.py",
+  "cases": [
+    {
+      "mode": "legacy",
+      "rounds": 1,
+      "detectors": 397,
+      "observables": 9,
+      "protected_rank": 9,
+      "dem_distance": 3,
+      "circuit_distance": 3
+    },
+    {
+      "mode": "legacy",
+      "rounds": 3,
+      "detectors": 1161,
+      "observables": 9,
+      "protected_rank": 9,
+      "dem_distance": 3,
+      "circuit_distance": 3
+    },
+    {
+      "mode": "slabs",
+      "rounds": 1,
+      "detectors": 394,
+      "observables": 12,
+      "protected_rank": 12,
+      "dem_distance": 1,
+      "circuit_distance": 1
+    },
+    {
+      "mode": "slabs",
+      "rounds": 3,
+      "detectors": 1158,
+      "observables": 12,
+      "protected_rank": 12,
+      "dem_distance": 3,
+      "circuit_distance": 3
+    }
+  ],
+  "comparisons": [
+    {
+      "rounds": 1,
+      "identical_physical": true,
+      "slabs_detectors_in_legacy_detector_span": true,
+      "legacy_detectors_outside_slabs_detector_span": 3,
+      "slabs_observables_in_legacy_detector_span": [],
+      "slabs_detectors_legacy_observables": {
+        "dem_distance": 1,
+        "circuit_distance": 1,
+        "witness": [
+          "ExplainedError {\n    dem_error_terms: L6\n    CircuitErrorLocation {\n        flipped_pauli_product: X214[coords 6,2]\n        Circuit location stack trace:\n            (after 8 TICKs)\n            at instruction #548 (X_ERROR) in the circuit\n            at target #73 of the instruction\n            resolving to X_ERROR(0.001) 214[coords 6,2]\n    }\n}"
+        ]
+      },
+      "legacy_detectors_slabs_observables": {
+        "dem_distance": 3,
+        "circuit_distance": 3,
+        "witness": [
+          "ExplainedError {\n    dem_error_terms: D0[coords 2,2,1] D40[coords 4,0,2] L9\n    CircuitErrorLocation {\n        flipped_pauli_product: X7[coords 3,1]\n        Circuit location stack trace:\n            (after 3 TICKs)\n            at instruction #495 (DEPOLARIZE2) in the circuit\n            at targets #57 to #58 of the instruction\n            resolving to DEPOLARIZE2(0.001) 7[coords 3,1] 10[coords 4,0]\n    }\n}",
+          "ExplainedError {\n    dem_error_terms: D0[coords 2,2,1] L0 L1 L9\n    CircuitErrorLocation {\n        flipped_pauli_product: X1[coords 1,1]\n        Circuit location stack trace:\n            (after 0 TICKs)\n            at instruction #486 (X_ERROR) in the circuit\n            at target #1 of the instruction\n            resolving to X_ERROR(0.001) 1[coords 1,1]\n    }\n}",
+          "ExplainedError {\n    dem_error_terms: D40[coords 4,0,2] L9\n    CircuitErrorLocation {\n        flipped_pauli_product: X13[coords 5,1]\n        Circuit location stack trace:\n            (after 2 TICKs)\n            at instruction #492 (DEPOLARIZE2) in the circuit\n            at targets #57 to #58 of the instruction\n            resolving to DEPOLARIZE2(0.001) 13[coords 5,1] 10[coords 4,0]\n    }\n}"
+        ]
+      }
+    },
+    {
+      "rounds": 3,
+      "identical_physical": true,
+      "slabs_detectors_in_legacy_detector_span": true,
+      "legacy_detectors_outside_slabs_detector_span": 3,
+      "slabs_observables_in_legacy_detector_span": [],
+      "slabs_detectors_legacy_observables": {
+        "dem_distance": 3,
+        "circuit_distance": 3,
+        "witness": [
+          "ExplainedError {\n    dem_error_terms: D0[coords 2,2,1] D40[coords 4,0,2] L6\n    CircuitErrorLocation {\n        flipped_pauli_product: X7[coords 3,1]\n        Circuit location stack trace:\n            (after 3 TICKs)\n            at instruction #495 (DEPOLARIZE2) in the circuit\n            at targets #57 to #58 of the instruction\n            resolving to DEPOLARIZE2(0.001) 7[coords 3,1] 10[coords 4,0]\n    }\n}",
+          "ExplainedError {\n    dem_error_terms: D0[coords 2,2,1] L0 L6\n    CircuitErrorLocation {\n        flipped_pauli_product: X1[coords 1,1]\n        Circuit location stack trace:\n            (after 0 TICKs)\n            at instruction #486 (X_ERROR) in the circuit\n            at target #1 of the instruction\n            resolving to X_ERROR(0.001) 1[coords 1,1]\n    }\n}",
+          "ExplainedError {\n    dem_error_terms: D40[coords 4,0,2] L6\n    CircuitErrorLocation {\n        flipped_pauli_product: X13[coords 5,1]\n        Circuit location stack trace:\n            (after 2 TICKs)\n            at instruction #492 (DEPOLARIZE2) in the circuit\n            at targets #57 to #58 of the instruction\n            resolving to DEPOLARIZE2(0.001) 13[coords 5,1] 10[coords 4,0]\n    }\n}"
+        ]
+      },
+      "legacy_detectors_slabs_observables": {
+        "dem_distance": 3,
+        "circuit_distance": 3,
+        "witness": [
+          "ExplainedError {\n    dem_error_terms: D0[coords 2,2,1] D40[coords 4,0,2] L9\n    CircuitErrorLocation {\n        flipped_pauli_product: X7[coords 3,1]\n        Circuit location stack trace:\n            (after 3 TICKs)\n            at instruction #495 (DEPOLARIZE2) in the circuit\n            at targets #57 to #58 of the instruction\n            resolving to DEPOLARIZE2(0.001) 7[coords 3,1] 10[coords 4,0]\n    }\n}",
+          "ExplainedError {\n    dem_error_terms: D0[coords 2,2,1] L0 L1 L9\n    CircuitErrorLocation {\n        flipped_pauli_product: X1[coords 1,1]\n        Circuit location stack trace:\n            (after 0 TICKs)\n            at instruction #486 (X_ERROR) in the circuit\n            at target #1 of the instruction\n            resolving to X_ERROR(0.001) 1[coords 1,1]\n    }\n}",
+          "ExplainedError {\n    dem_error_terms: D40[coords 4,0,2] L9\n    CircuitErrorLocation {\n        flipped_pauli_product: X13[coords 5,1]\n        Circuit location stack trace:\n            (after 2 TICKs)\n            at instruction #492 (DEPOLARIZE2) in the circuit\n            at targets #57 to #58 of the instruction\n            resolving to DEPOLARIZE2(0.001) 13[coords 5,1] 10[coords 4,0]\n    }\n}"
+        ]
+      }
+    }
+  ],
+  "interpretation": "The ideal nine-qubit protocol has twelve independent deterministic output relations. The three removed legacy detector directions are PPM-to-final-joint consistency; an encoded logical X after the first split triggers legacy D395 but no slabs detector. One-round distance1 is therefore a documented consequence of protecting these logical outputs instead of using them as decoder checks. Three rounds recover distance3 in this audited circuit.",
+  "one_round_regression_preconditions": {
+    "identical_physical_circuit": true,
+    "signed_relations_valid_in_both_modes": true,
+    "complete_relation_rank_in_both_modes": 406,
+    "legacy_control_distance": 3,
+    "legacy_targets_with_slabs_detectors_distance": 1
+  },
+  "classification_status": "Resolved for this protocol under the requested logical-stage response criterion: promotion of the three final joint-consistency checks is intentional.",
+  "removed_detector_directions": [
+    {
+      "legacy_detector": 394,
+      "coords": [
+        6.0,
+        32.0,
+        5.0
+      ],
+      "records": [
+        487,
+        489,
+        490,
+        492,
+        494,
+        495,
+        498,
+        499,
+        502,
+        503,
+        505,
+        507,
+        508,
+        510,
+        513,
+        514,
+        517,
+        518,
+        521,
+        522,
+        525,
+        527,
+        528,
+        530,
+        531,
+        532,
+        533,
+        534,
+        535,
+        536,
+        537,
+        538,
+        539,
+        540,
+        541,
+        542,
+        543,
+        544,
+        545,
+        546,
+        547,
+        548,
+        549,
+        550,
+        551,
+        628,
+        631,
+        634,
+        644,
+        647,
+        650,
+        680,
+        683,
+        686
+      ],
+      "slabs_detectors": [
+        276,
+        279,
+        282,
+        283
+      ],
+      "slabs_observables": [
+        8,
+        11
+      ],
+      "ppm_index": 2,
+      "targets": [
+        [
+          "q11",
+          "X"
+        ],
+        [
+          "q20",
+          "Z"
+        ],
+        [
+          "q22",
+          "X"
+        ]
+      ],
+      "protocol_output_records": [
+        446,
+        449,
+        452,
+        453,
+        487,
+        489,
+        490,
+        492,
+        494,
+        495,
+        498,
+        499,
+        502,
+        503,
+        505,
+        507,
+        508,
+        510,
+        513,
+        514,
+        517,
+        518,
+        521,
+        522,
+        525,
+        527,
+        528,
+        530,
+        531,
+        532,
+        533,
+        534,
+        535,
+        536,
+        537,
+        538,
+        539,
+        540,
+        541,
+        542,
+        543,
+        544,
+        545,
+        546,
+        547,
+        548,
+        549,
+        550,
+        551
+      ],
+      "final_joint_records": [
+        446,
+        449,
+        452,
+        453,
+        628,
+        631,
+        634,
+        644,
+        647,
+        650,
+        680,
+        683,
+        686
+      ]
+    },
+    {
+      "legacy_detector": 395,
+      "coords": [
+        32.0,
+        0.0,
+        5.0
+      ],
+      "records": [
+        144,
+        146,
+        147,
+        149,
+        151,
+        154,
+        156,
+        158,
+        159,
+        162,
+        163,
+        166,
+        167,
+        170,
+        171,
+        173,
+        175,
+        178,
+        180,
+        182,
+        183,
+        185,
+        186,
+        187,
+        188,
+        189,
+        190,
+        191,
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        198,
+        199,
+        200,
+        201,
+        202,
+        203,
+        204,
+        205,
+        659,
+        660,
+        661,
+        662,
+        663,
+        664
+      ],
+      "slabs_detectors": [
+        37,
+        38,
+        40,
+        41
+      ],
+      "slabs_observables": [
+        1,
+        9
+      ],
+      "ppm_index": 0,
+      "targets": [
+        [
+          "q00",
+          "Z"
+        ],
+        [
+          "q02",
+          "Z"
+        ]
+      ],
+      "protocol_output_records": [
+        73,
+        74,
+        76,
+        77,
+        144,
+        146,
+        147,
+        149,
+        151,
+        154,
+        156,
+        158,
+        159,
+        162,
+        163,
+        166,
+        167,
+        170,
+        171,
+        173,
+        175,
+        178,
+        180,
+        182,
+        183,
+        185,
+        186,
+        187,
+        188,
+        189,
+        190,
+        191,
+        192,
+        193,
+        194,
+        195,
+        196,
+        197,
+        198,
+        199,
+        200,
+        201,
+        202,
+        203,
+        204,
+        205
+      ],
+      "final_joint_records": [
+        73,
+        74,
+        76,
+        77,
+        659,
+        660,
+        661,
+        662,
+        663,
+        664
+      ]
+    },
+    {
+      "legacy_detector": 396,
+      "coords": [
+        38.0,
+        16.0,
+        5.0
+      ],
+      "records": [
+        339,
+        341,
+        342,
+        344,
+        347,
+        348,
+        351,
+        352,
+        355,
+        356,
+        359,
+        361,
+        362,
+        364,
+        365,
+        366,
+        367,
+        368,
+        369,
+        370,
+        371,
+        372,
+        373,
+        374,
+        375,
+        376,
+        619,
+        622,
+        625,
+        635,
+        638,
+        641
+      ],
+      "slabs_detectors": [
+        156,
+        159,
+        162,
+        163
+      ],
+      "slabs_observables": [
+        3,
+        10
+      ],
+      "ppm_index": 1,
+      "targets": [
+        [
+          "q01",
+          "X"
+        ],
+        [
+          "q12",
+          "X"
+        ]
+      ],
+      "protocol_output_records": [
+        275,
+        278,
+        281,
+        282,
+        339,
+        341,
+        342,
+        344,
+        347,
+        348,
+        351,
+        352,
+        355,
+        356,
+        359,
+        361,
+        362,
+        364,
+        365,
+        366,
+        367,
+        368,
+        369,
+        370,
+        371,
+        372,
+        373,
+        374,
+        375,
+        376
+      ],
+      "final_joint_records": [
+        275,
+        278,
+        281,
+        282,
+        619,
+        622,
+        625,
+        635,
+        638,
+        641
+      ]
+    }
+  ],
+  "encoded_stage_fault_and_ideal_oracle": {
+    "ideal_circuit": "R 0 2 3 6 7\nRX 1 4 5 8\nMPP Z0*Z2\nTICK\nMPP X1*X5\nTICK\nMPP X4*Z6*X8\nM 0\nMX 1\nM 2 3\nMX 4 5\nM 6 7\nMX 8",
+    "ideal_measurements": 12,
+    "ideal_relation_rank": 12,
+    "ideal_determined_measurements": 12,
+    "ideal_fault": "X0 after first MPP and before the second MPP",
+    "ideal_changed_outputs": [
+      3
+    ],
+    "physical_fault": "X 1 7 13",
+    "physical_boundary": "Immediately after PPM0 split corridor readout, before PPM1",
+    "prefix_measurements": 267,
+    "prefix_ticks": 19,
+    "commutes_with_all_active_checks": true,
+    "active_check_count": 72,
+    "legacy_detector_events": [
+      395
+    ],
+    "legacy_observable_events": [
+      0
+    ],
+    "slabs_detector_events": [],
+    "slabs_observable_events": [
+      0,
+      1
+    ]
+  },
+  "single_fault_response": [
+    {
+      "mode": "legacy",
+      "instruction_index": 548,
+      "after_ticks": 8,
+      "noise_instruction": "X_ERROR(0.001) 0 4 5 6 10 11 12 16 17 21 22 23 27 28 29 33 34 38 39 40 44 45 46 50 51 55 56 57 61 62 63 67 68 72 73 74 78 79 80 84 85 89 90 91 95 96 97 101 102 106 107 108 112 113 114 118 119 123 124 125 129 130 131 135 136 140 141 142 146 147 148 152 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275",
+      "detectors": [
+        395
+      ],
+      "observables": [
+        6
+      ],
+      "flipped_measurement_records": [
+        205
+      ]
+    },
+    {
+      "mode": "slabs",
+      "instruction_index": 548,
+      "after_ticks": 8,
+      "noise_instruction": "X_ERROR(0.001) 0 4 5 6 10 11 12 16 17 21 22 23 27 28 29 33 34 38 39 40 44 45 46 50 51 55 56 57 61 62 63 67 68 72 73 74 78 79 80 84 85 89 90 91 95 96 97 101 102 106 107 108 112 113 114 118 119 123 124 125 129 130 131 135 136 140 141 142 146 147 148 152 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255 256 257 258 259 260 261 262 263 264 265 266 267 268 269 270 271 272 273 274 275",
+      "detectors": [],
+      "observables": [
+        9
+      ],
+      "flipped_measurement_records": [
+        205
+      ]
+    }
+  ],
+  "regression_mode_selection": "The compiler adapter is exercised through the public RotatedSurfacePPMExperiment logical_tracking constructor argument; the test asserts both experiment and tracker modes, identical active-check boundary metadata, and identical noisy physical circuits."
+}

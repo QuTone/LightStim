@@ -1325,6 +1325,20 @@ class CircuitBuilder:
 
         # Call Tracker — or, for z_only, build DETECTORs/OBSERVABLEs manually
         if self.if_detector:
+            readout_context = {}
+            if self.tracker.logical_tracking == "slabs":
+                from ..utils.linear_algebra import kernel_gf2
+                from ..utils.subsystem_algebra import independent_row_indices
+                from ..utils.tableau_utils import stabilizers_to_symplectic
+                declared = stabilizers_to_symplectic(
+                    self.system, self.system.active_stabilizers, n)
+                continuing = set(self.system.active_qubit_indices) - set(sorted_indices)
+                retired = sorted(set(range(n)) - continuing)
+                columns = retired + [n + q for q in retired]
+                combinations = kernel_gf2(declared[:, columns].T)
+                active = combinations @ declared % 2
+                active = active[independent_row_indices(active)]
+                readout_context["active_stabilizers"] = active
             if z_only:
                 syn_qubit_indices = self._z_only_syn_qubit_indices
                 no_detector_mask  = self._z_only_no_detector_mask
@@ -1352,6 +1366,7 @@ class CircuitBuilder:
                     idx_to_coord_map=self.system.qubit_coords,
                     syndrome_qubit_indices=self.system.syndrome_indices,
                     resolve_absorbed=resolve_absorbed,
+                    **readout_context,
                 )
                 obs_insts = [
                     inst for inst in list(self.circuit)[n_before:]
@@ -1368,6 +1383,7 @@ class CircuitBuilder:
                     idx_to_coord_map=self.system.qubit_coords,
                     syndrome_qubit_indices=self.system.syndrome_indices,
                     resolve_absorbed=resolve_absorbed,
+                    **readout_context,
                 )
 
         # Remove measured qubits from active set (ready for reuse)

@@ -43,7 +43,8 @@ class TwoPatchLSExperiment:
                  noise_params: Optional[NoiseConfig] = None,
                  noise_model: Optional[str] = 'circuit_level',
                  if_detector: bool = True,
-                 rotate_patch1: bool = True):
+                 rotate_patch1: bool = True,
+                 logical_tracking: Literal["legacy", "slabs"] = "legacy"):
         """
         Args:
             patch1_config: Configuration dict for the first patch (passed to UnrotatedSurfaceCode).
@@ -59,6 +60,7 @@ class TwoPatchLSExperiment:
             noise_model: Strategy string ('circuit_level', 'code_capacity', etc.).
             if_detector: Whether to generate detectors.
             rotate_patch1: Whether to rotate patch1 by pi and reset rotation angle (default True).
+            logical_tracking: Select the experimental S/L/L_absorbed extension with "slabs".
         """
         # Validate offset
         dx, dy = offset
@@ -85,6 +87,7 @@ class TwoPatchLSExperiment:
         self.noise_model = noise_model
         self.if_detector = if_detector
         self.rotate_patch1 = rotate_patch1
+        self.logical_tracking = logical_tracking
         
         # Internal state
         self.system: Optional[QECSystem] = None
@@ -133,7 +136,8 @@ class TwoPatchLSExperiment:
         num_qubits = self.system.num_qubits
         num_logicals = self.system.num_logicals
         
-        self.tracker = SyndromeTracker(num_qubits=num_qubits, expected_num_logicals=num_logicals)
+        self.tracker = SyndromeTracker(num_qubits=num_qubits, expected_num_logicals=num_logicals,
+                                      logical_tracking=self.logical_tracking)
         self.builder = CircuitBuilder(
             tracker=self.tracker,
             system_config=self.system,
