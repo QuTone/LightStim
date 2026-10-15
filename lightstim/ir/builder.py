@@ -1147,6 +1147,17 @@ class CircuitBuilder:
     # --------------------------------------------------------------------------
     # D. Logical Coupler Activity, Stabilizer Masking/Unmasking
     # --------------------------------------------------------------------------
+    def combine_patches(self, patch_names: List[str], output_patch, name: str):
+        """Adopt established active checks as one patch, without physical gates.
+
+        The local-index output template must already use global coordinates.
+        Currently supports one code patch plus active zero-logical couplers,
+        preserving the protected logical count. Returns a fresh global view;
+        source views are retired. Validation failure leaves state unchanged.
+        """
+        from .patch_combination import combine_patches
+        return combine_patches(self, patch_names, output_patch, name)
+
     def activate_coupler(self, name: str):
         """
         Turn on the logical coupler. A wrapper for QECSystem.activate_coupler.

@@ -277,7 +277,7 @@ class SimulationPipeline:
 
         while total_shots < self.config.max_shots and errors < self.config.max_errors:
             det_data, obs_data = sampler.sample(
-                shots=batch_size,
+                shots=min(batch_size, self.config.max_shots - total_shots),
                 bit_packed=False,
                 separate_observables=True,
             )
