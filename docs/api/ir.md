@@ -402,6 +402,36 @@ noisy_circuit = builder.build_noisy_circuit(
 # Does NOT modify builder.circuit in place.
 ```
 
+### I. Patch combination
+
+```python
+combined = builder.combine_patches(
+    patch_names=["source", "extension"],
+    output_patch=output_template,
+    name="source",
+)
+```
+
+`output_patch` is a locally indexed `QECPatch` template whose coordinates
+are already in the global frame. The operation adopts existing qubit IDs
+and returns a fresh global patch view. It emits no gates or measurements;
+the component checks must already match the output checks, including
+syndrome locations, and be known by the tracker.
+
+The initial scope is one ordinary source patch plus one or more active
+zero-logical couplers, with the protected logical count unchanged.
+Subsystem or disabled geometry, pending absorbed logicals, and external
+overlapping couplers are unsupported. Validation completes before changes
+are committed. The output registration replaces the component registrations
+and their coupler restoration histories; use the returned view instead of
+old patch handles.
+
+The output logical operators are checked for commutation and canonical X/Z
+pairing. This adoption API does not infer a logical map between the old and
+new code: the physical protocol must establish that correspondence. The
+rotated enlargement operation supplies a fixed target and is tested as a
+logical identity channel using an entangled reference patch.
+
 ### Full call sequence
 
 ```
@@ -728,3 +758,87 @@ builder.deactivate_coupler("c12")
 # 5. (Optional) Remove for reuse
 system.remove_coupler("c12")
 ```
+
+---
+
+## 6. Rotated surface-code logical operations
+
+**Module:** `lightstim.qec_code.surface_code.rotated.operation`
+
+### Enlargement
+
+```python
+from lightstim.ir.logical_executor import LogicalExecutor
+from lightstim.qec_code.surface_code.rotated import (
+    RotatedSurfaceCode,
+    RotatedSurfaceCodeExtractionBlock,
+    RotatedSurfaceCodeLogicalOpSet,
+)
+
+executor = LogicalExecutor(builder)
+executor.register_op_set(
+    RotatedSurfaceCode,
+    RotatedSurfaceCodeLogicalOpSet(RotatedSurfaceCodeExtractionBlock),
+)
+patch = executor.apply_logical_operation(
+    "enlarge",
+    [patch],
+    target_distance=5,
+    direction="+x,+y",
+    rounds=1,
+)
+```
+
+`patch` must be the current global view of an initialized, encoded square
+rotated patch with odd distance at least 3. `target_distance` is an odd
+integer larger than its current distance. The first implementation supports
+canonical, defect-free patches, arbitrary translation, and growth toward
+`+x,+y`; rotated or transposed geometry and other directions are rejected.
+
+Source checks must already be established in the tracked state. Coherent
+encoders are supported without an input SE round: when needed, known rows
+are classified as code stabilizers and logical-state rows before growth.
+This classification adds no physical gates or measurements.
+
+Dynamic registration must be enabled with `system.register_tracker(tracker)`
+and `system.register_builder(builder)`, or through `QECExperiment` setup,
+before enlargement so that added qubits expand the tracker and receive
+circuit coordinates.
+
+The retained minimum-coordinate corner stays fixed. Only added data qubits
+are initialized: relative to that corner, `y >= x` receives `RX` and
+`y < x` receives `R`. This reuses the corner-injection basis pattern while
+preserving the old encoded data. No injection gate or postselection tags
+are added.
+
+`rounds` is a positive integer counting all enlarged-code SE rounds.
+The first round includes the new-data initialization and one native
+four-CNOT-layer SE cycle; the remaining `rounds - 1` rounds repeat SE.
+There is no additional implicit stabilization round.
+SE gates address the enlarged patch only; other initialized active patches
+can remain in the system. Noise is applied separately through the builder's
+selected noise model.
+
+The result has the same registered patch name and retains existing global
+qubit IDs. Assign the returned view back to `patch`: the old handle is
+stale. Subsequent readout or logical operations use the enlarged view.
+Transversal CNOT pairs the returned patches by local data position, preserving
+the correspondence even when global qubit allocation order differs.
+
+The legacy single-patch `z_only=True` final-readout path is supported after
+enlargement; its measurement-offset cache is refreshed to the target SE round.
+This does not make that legacy readout helper a general multi-patch interface.
+
+See the executed [minimal enlargement notebook](../../notebooks/LogicalOps/rotated_surface_enlarge.ipynb)
+for preparation, source SE, enlargement, final readout, and the full
+`detslice-with-ops-svg` circuit diagram.
+
+For a packaged experiment, use
+`lightstim.protocols.RotatedSurfaceEnlargeExperiment(distance=3,
+target_distance=5, basis="X", source_rounds=1, rounds=1)` and call `.build()`.
+It supports X/Z preparation and final readout, with optional `noise_params`
+and `noise_model` applied to the whole circuit. The
+[enlargement benchmark](../../benchmarks/logical_ops/README_rotated_enlarge.md)
+runs this experiment through `SimulationPipeline` with configurable decoding
+and records raw Monte Carlo counts. Its LER includes source preparation,
+growth, and readout; it is not an isolated enlargement-gate error rate.

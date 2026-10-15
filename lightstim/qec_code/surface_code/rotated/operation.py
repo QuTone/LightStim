@@ -14,6 +14,10 @@ from lightstim.ir.operation import CSSLogicalOpSet
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.qec_code.surface_code.rotated.code_patch import RotatedSurfaceCode
+from lightstim.qec_code.surface_code.rotated.enlargement import (
+    corner_initialization_basis,
+    enlarge as _enlarge,
+)
 import stim
 
 
@@ -286,13 +290,10 @@ def _get_injection_init(
         ox, oy = injection_coord
         for gidx in data_global_indices:
             cx, cy = system.qubit_coords[gidx]
-            rel_x, rel_y = cx - ox, cy - oy
             if gidx == injection_gidx:
                 init_dict[gidx] = inject_state
-            elif rel_y >= rel_x:
-                init_dict[gidx] = "X"   # lower diagonal -> |+>
             else:
-                init_dict[gidx] = "Z"   # upper diagonal -> |0>
+                init_dict[gidx] = corner_initialization_basis(cx, cy, (ox, oy))
     else:
         # Middle injection: diagonal split based on relative position
         d = patch.distance_z
@@ -339,6 +340,21 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         super().__init__()
         self.name = "RotatedSurfaceCode"
         self.extraction_block_class = extraction_block_class
+
+    def enlarge(
+        self, builder: CircuitBuilder, patch: QECPatch, *,
+        target_distance: int, direction: str = "+x,+y", rounds: int = 1,
+    ) -> QECPatch:
+        """Permanently enlarge a square rotated patch and return its new view.
+
+        The supported direction is global +x,+y in a canonical, translated
+        layout. ``rounds`` is the total number of native four-CNOT-layer target
+        SE rounds (at least one). Only added data are initialized. Existing
+        global IDs, the patch's registered name, and measurement history are
+        preserved. Reassign the returned view: the input view is retired.
+        """
+        return _enlarge(builder, patch, target_distance=target_distance,
+                        direction=direction, rounds=rounds)
 
     # ------------------------------------------------------------------
     # Dynamical fold-transversal phase gates

@@ -44,6 +44,7 @@ notebooks/
 | `logical_CNOT_trans.ipynb` | `protocols/cnot_trans.py` | Transversal CNOT between two surface-code patches |
 | `logical_H_S.ipynb` | `protocols/fold_transversal.py` | Fold-transversal H and S gates |
 | `logical_S_rotated.ipynb` | `protocols/rotated_logical_s.py` | Mid-cycle dynamical S; two-way and noiseless-Y one-way diagrams |
+| `rotated_surface_enlarge.ipynb` | `protocols/rotated_surface_enlarge.py` | Minimal rotated-patch enlargement with a full-circuit operation-and-detector diagram |
 | `state_injection.ipynb` | `protocols/state_injection.py` | Non-FT magic-state injection (rotated SC) |
 | `two_patch_LS.ipynb` | `protocols/two_patch_ls.py` | Two-patch ZZ lattice surgery coupler |
 | `multi_patch_LS.ipynb` | *(in-progress)* | Multi-patch lattice surgery; unrotated SC N-patch coupler |

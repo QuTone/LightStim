@@ -30,10 +30,19 @@ class CSSLogicalOpSet(LogicalOpSet):
         if type(control_patch) != type(target_patch):
             raise ValueError(f"Type mismatch: {type(control_patch)} vs {type(target_patch)}")
 
-        # system.add_patch() remaps data_indices to global indices in the returned patch,
-        # so we can use them directly here for any multi-patch configuration.
-        c_qubits = sorted(control_patch.data_indices)
-        t_qubits = sorted(target_patch.data_indices)
+        # Pair corresponding *local* data positions, then translate to global
+        # IDs. After deformation or reuse, global allocation order need not
+        # follow the code's local order. Sorting global IDs can silently apply
+        # a permutation instead of a logical transversal CNOT.
+        def ordered_data(patch):
+            mapping = getattr(patch, "_local_to_global_map", None)
+            if mapping is None:
+                return sorted(patch.data_indices)
+            return [mapping[q] for q in sorted(mapping)
+                    if mapping[q] in patch.data_indices]
+
+        c_qubits = ordered_data(control_patch)
+        t_qubits = ordered_data(target_patch)
 
         if len(c_qubits) != len(t_qubits):
             raise ValueError(f"Size mismatch: {len(c_qubits)} vs {len(t_qubits)} data qubits.")
