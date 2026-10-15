@@ -842,3 +842,67 @@ and `noise_model` applied to the whole circuit. The
 runs this experiment through `SimulationPipeline` with configurable decoding
 and records raw Monte Carlo counts. Its LER includes source preparation,
 growth, and readout; it is not an isolated enlargement-gate error rate.
+
+### Rotated surface-code shrinking
+
+The same operation set exposes measurement-only contraction:
+
+```python
+patch = executor.apply_logical_operation(
+    "shrink", [patch], target_distance=3, direction="-x,-y", rounds=0,
+)
+```
+
+The first implementation supports a prepared, canonical, defect-free square
+rotated code at odd distance, shrinking to an odd distance at least 3 and
+strictly smaller than its source. Translations are supported. The
+minimum-coordinate corner stays fixed: `-x,-y` moves the right and bottom
+boundaries inward, reversing the supported enlargement direction.
+
+No coupler is needed. Removed data are measured in X on/below the diagonal
+through that corner, and in Z above it. `rounds=0` is the default: there is no
+additional SE cycle. A positive value appends that many native four-CNOT-layer
+SE cycles on the retained patch only. The tracker generates detectors from
+the old syndrome history and the destructive data readout. If target SE is
+requested, a shortened boundary check closes as
+
+```text
+new target syndrome XOR previous source syndrome XOR removed-support outcomes.
+```
+
+The output generally carries a known logical Pauli frame. For canonical edge
+representatives, let `pX` be the parity of X readout on the removed part of the
+leftmost column, and `pZ` the parity of Z readout on the removed part of the
+topmost row. The output frame is `Z_L**pX X_L**pZ`. These parities are retained
+in the tracker and included in subsequent logical observables; shrinking does
+not apply physical feed-forward corrections or add postselection. Subsequent
+Clifford operations propagate the tracked logical rows and their records.
+Raw expectation values of the output patch's Pauli strings must likewise
+account for the frame; the patch definition alone does not encode its sign.
+
+After success, the returned global view and registered local patch have the
+target geometry, stabilizers, logical operators, and distances. Retained data
+are never reset. Released data and syndrome sites leave the live role and
+ownership sets; their physical IDs and historical coordinates remain allocated
+so past circuit instructions stay valid and later enlargement can reuse them.
+Use the returned patch for subsequent operations. Failed validation or a failed
+staged transition leaves the caller's circuit and state unchanged.
+
+Historical data IDs remain eligible for noise injection on the earlier circuit
+prefix; lifetime filtering prevents tagged idle noise after their measurement.
+This supports contraction and same-role regrowth. Reusing a former data site
+as a syndrome site requires time-dependent role handling beyond this operation's
+noise-history support.
+
+The legacy `z_only=True` final-readout shortcut requires a current target SE
+measurement ordering. Measurement-only shrink invalidates that shortcut's old
+cache. Use the default tracker readout, or perform whole-system SE with
+`z_only=True` before using the shortcut. `shrink(rounds>0)` refreshes an existing
+Z-only cache only when its target SE covers the whole active code; with spectator
+patches, that cache stays invalid rather than omitting their syndrome history.
+
+`lightstim.protocols.RotatedSurfaceShrinkExperiment` provides the complete
+X/Z preparation, source SE, contraction, and final readout experiment, with
+optional whole-circuit noise. See the executed
+[shrinking notebook](../../notebooks/LogicalOps/rotated_surface_shrink.ipynb)
+for configuration and the full `detslice-with-ops-svg` diagram.

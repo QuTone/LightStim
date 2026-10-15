@@ -18,6 +18,7 @@ from lightstim.qec_code.surface_code.rotated.enlargement import (
     corner_initialization_basis,
     enlarge as _enlarge,
 )
+from lightstim.qec_code.surface_code.rotated.shrinking import shrink as _shrink
 import stim
 
 
@@ -355,6 +356,20 @@ class RotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         """
         return _enlarge(builder, patch, target_distance=target_distance,
                         direction=direction, rounds=rounds)
+
+    def shrink(
+        self, builder: CircuitBuilder, patch: QECPatch, *,
+        target_distance: int, direction: str = "-x,-y", rounds: int = 0,
+    ) -> QECPatch:
+        """Measure away the right/bottom skirt and return the smaller patch.
+
+        The minimum-coordinate corner and retained physical IDs stay fixed.
+        Measurement-dependent logical signs are tracked in record parities.
+        ``rounds=0`` adds no SE; positive values append that many native target
+        SE rounds. Reassign the returned view after successful contraction.
+        """
+        return _shrink(builder, patch, target_distance=target_distance,
+                       direction=direction, rounds=rounds)
 
     # ------------------------------------------------------------------
     # Dynamical fold-transversal phase gates

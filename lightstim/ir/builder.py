@@ -68,6 +68,9 @@ class CircuitBuilder:
         self.system = system_config
         self.circuit = stim.Circuit()
         self.if_detector = if_detector
+        # Deformation can release data from the live registry. Preserve their
+        # earlier data role for post-hoc noise injection on the circuit prefix.
+        self._retired_data_qubit_indices: Set[int] = set()
         # State set by apply_syndrome_extraction(z_only=True) for use by apply_data_readout
         self._z_only_syn_qubit_indices = None
         self._z_only_no_detector_mask  = None
@@ -1286,6 +1289,12 @@ class CircuitBuilder:
         """
         if final_measurements is None:
             final_measurements = {q: 'Z' for q in self.system.data_indices}
+        if self.if_detector and z_only and self._z_only_syn_qubit_indices is None:
+            raise ValueError(
+                "z_only readout requires a current target-code SE round. "
+                "After measurement-only shrink, use the default tracker readout "
+                "or first apply target SE with z_only=True."
+            )
         if self.if_detector and getattr(self.system, "active_gauges", ()):
             if z_only:
                 raise ValueError("z_only readout is not supported for subsystem gauges; use the full detector pipeline.")
@@ -1415,7 +1424,8 @@ class CircuitBuilder:
         # Most models target data qubits for idle noise. The per-moment model
         # instead needs the complete physical-qubit universe so that it can
         # take the complement of each moment's operated qubits.
-        data_indices = [self.system.index_map[coord] for coord in self.system.data_coords]
+        current_data = {self.system.index_map[coord] for coord in self.system.data_coords}
+        data_indices = sorted(current_data | self._retired_data_qubit_indices)
         target_indices = (
             list(range(clean_circuit.num_qubits))
             if noise_model == "circuit_level_with_idling"
