@@ -42,10 +42,10 @@ class CNOTLSExperiment:
                  noise_model: Optional[str] = 'circuit_level',
                  if_detector: bool = True,
                  rotate_patches: bool = True,
-                 logical_tracking: Literal["legacy", "slabs"] = "legacy"):
+                 logical_tracking: Literal["legacy", "slabs"] = "slabs"):
         """
         Args:
-            logical_tracking: Select the experimental S/L/L_absorbed extension with "slabs".
+            logical_tracking: Use the S/L/L_absorbed tracker by default; "legacy" is an explicit regression control.
             patch_config: Configuration dict for all Ancilla, Control, and Target patches (passed to UnrotatedSurfaceCode).
             offset_ct: (dx, dy) offset for Target patch relative to Control patch.
             offset_ta: (dx, dy) offset for Ancilla patch relative to Target patch.

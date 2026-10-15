@@ -109,7 +109,7 @@ def _physical_case(initial, final, episodes, rounds, combined, *, explicit_deact
     )
     tracker = SyndromeTracker(
         system.num_qubits, expected_num_logicals=2,
-        **({"logical_tracking": mode} if mode != "legacy" else {}),
+        logical_tracking=mode,
     )
     builder = CircuitBuilder(tracker, system)
     builder.write_coordinates()
@@ -261,7 +261,7 @@ def _native_case(initial, final, rounds, mode="slabs"):
             offset=(0, 6), interaction_type="ZZ", rounds=rounds,
             initial_state_patch1=initial[0], initial_state_patch2=initial[1],
             measure_state_patch1=final[0], measure_state_patch2=final[1], noise_params=None,
-            **({"logical_tracking": mode} if mode != "legacy" else {}),
+            logical_tracking=mode,
         )
         return experiment.build()
 

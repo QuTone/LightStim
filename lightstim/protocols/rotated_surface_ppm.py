@@ -100,7 +100,7 @@ class RotatedSurfacePPMExperiment:
                  final_measure_states, rounds=3, rounds_init=1, idle_rounds=0,
                  noise_params=None, noise_model='circuit_level',
                  schedule: str = 'auto', colour_swapped=frozenset(),
-                 logical_tracking: str = 'legacy'):
+                 logical_tracking: str = 'slabs'):
         self.logical_tracking = logical_tracking
         self.patches = list(patches)
         self.ppm_sequence = list(ppm_sequence)

@@ -1,4 +1,4 @@
-"""Absorbed-DOF census: one ledger, derived count, logical equivalence.
+"""Legacy operator-only absorbed-DOF census: one ledger, derived count, logical equivalence.
 
 absorbed_ops is the single census ledger — every path that absorbs a
 logical DOF records the OPERATOR; the count is always derived as the
@@ -12,6 +12,10 @@ pairing from every path and drifted silently when one forgot).  The
 ledger is OPERATOR-ONLY: absorbed_ops.records is never written — banked
 parity retrieval returns with the liveness layer (scope ruling
 2026-08-17).  Geometry-independent, like test_tracker_closure_contract.
+
+The operator-only cases intentionally pin logical_tracking="legacy", including
+rejection of partial readout and reset. The shared sentinel guard uses the
+default tracker; other record-carrying behavior is covered by test_slabs_*.
 """
 import numpy as np
 import pytest
@@ -32,7 +36,7 @@ def test_census_dedups_representatives_at_insertion():
     # insertion: the second representative reduces to zero against the
     # bank + ledger and is skipped.
     n = 4
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
     tracker.stabilizers.records = [[0]]
     rep_a = _z_row(n, [2, 3])
@@ -48,7 +52,7 @@ def test_group_member_relation_is_not_banked():
     # An operator already expressed by the current stabilizer rows holds
     # no NEW logical DOF at insertion time and must not enter the ledger.
     n = 4
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
     tracker.stabilizers.records = [[0]]
 
@@ -62,7 +66,7 @@ def test_insertion_stores_the_canonical_residue():
     # residue Z1, and a reset on the ELIMINATED qubit 0 must pass while a
     # reset on the residue's own support still fails loud.
     n = 2
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     tracker.stabilizers.matrix = _z_row(n, [0]).reshape(1, -1)
     tracker.stabilizers.records = [[7]]
 
@@ -86,7 +90,7 @@ def test_insertion_reduces_against_the_ledger_too():
     # overlapping an already-banked one stores only its new content, and
     # the census still counts two DOFs.
     n = 3
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     assert tracker.record_absorbed_op(_z_row(n, [0, 1])) is True
     assert tracker.record_absorbed_op(_z_row(n, [0, 2])) is True
     assert (tracker.absorbed_ops.matrix[1] == _z_row(n, [1, 2])).all()
@@ -100,7 +104,7 @@ def test_banked_relation_survives_its_own_closure_row():
     # quotiented by the bank (regression for the measurement-block round
     # over post-PPM state, where the quotient version tripped the alarm).
     n = 4
-    tracker = SyndromeTracker(n, 1)
+    tracker = SyndromeTracker(n, 1, logical_tracking="legacy")
     assert tracker.record_absorbed_op(_z_row(n, [0, 1])) is True
     # the closure row appears in the bank AFTER the relation was banked
     tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
@@ -112,7 +116,7 @@ def test_banked_relation_survives_its_own_closure_row():
 
 def test_alarm_fires_when_a_relation_is_lost():
     n = 4
-    tracker = SyndromeTracker(n, 1)  # budget: one logical DOF somewhere
+    tracker = SyndromeTracker(n, 1, logical_tracking="legacy")  # budget: one logical DOF somewhere
     tracker.absorbed_ops.matrix = _z_row(n, [2, 3]).reshape(1, -1)
     tracker.validate_logical_count(context="healthy state")  # no raise
 
@@ -126,7 +130,7 @@ def test_alarm_fires_when_a_relation_is_lost():
 
 def test_block_absorb_records_the_operator():
     n = 4
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     consumed = _z_row(n, [1, 2])
     tracker._gauge_logical_vectors = [np.array([1], dtype=np.uint8)]
 
@@ -140,7 +144,7 @@ def test_block_absorb_records_the_operator():
 
 def test_block_absorb_skips_surviving_logicals():
     n = 4
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     tracker._gauge_logical_vectors = [np.array([1], dtype=np.uint8)]
 
     tracker._record_measurement_logical_effects(
@@ -151,7 +155,7 @@ def test_block_absorb_skips_surviving_logicals():
 
 
 def test_block_absorb_requires_the_frame():
-    tracker = SyndromeTracker(4, 0)
+    tracker = SyndromeTracker(4, 0, logical_tracking="legacy")
     tracker._gauge_logical_vectors = [np.array([1], dtype=np.uint8)]
 
     with pytest.raises(ValueError, match="cannot be recorded"):
@@ -164,7 +168,7 @@ def test_corridor_fold_reexpresses_off_the_bus():
     # readout (the relation is only defined MOD the stabilizer group).
     import stim
     n = 3
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     tracker.stabilizers.matrix = _z_row(n, [0, 1]).reshape(1, -1)
     tracker.stabilizers.records = [[7]]
     tracker.absorbed_ops.matrix = _z_row(n, [1]).reshape(1, -1)
@@ -185,7 +189,7 @@ def test_corridor_residual_folds_against_readout():
     # representative.)
     import stim
     n = 3
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     tracker.absorbed_ops.matrix = _z_row(n, [0, 2]).reshape(1, -1)
     fp = np.vstack([_z_row(n, [0]), _z_row(n, [1])])   # bus = {0, 1}
 
@@ -204,7 +208,7 @@ def test_corridor_refuses_to_consume_bus_only_relation():
     # books (the census then misfires at an unrelated later checkpoint).
     import stim
     n = 2
-    tracker = SyndromeTracker(n, 1)
+    tracker = SyndromeTracker(n, 1, logical_tracking="legacy")
     tracker.absorbed_ops.matrix = _z_row(n, [0, 1]).reshape(1, -1)
     fp = np.vstack([_z_row(n, [0]), _z_row(n, [1])])
 
@@ -219,7 +223,7 @@ def test_corridor_refuses_undetermined_bus_support():
     # readout: the banked parity is destroyed, not transformable.
     import stim
     n = 2
-    tracker = SyndromeTracker(n, 1)
+    tracker = SyndromeTracker(n, 1, logical_tracking="legacy")
     row = np.zeros(2 * n, dtype=np.uint8)
     row[0] = 1                       # X0
     row[n + 1] = 1                   # Z1
@@ -237,7 +241,7 @@ def test_gauge_absorb_banks_the_consumed_operator():
     # logical's operator (and only it) while the surviving first logical
     # stays out of the ledger.
     n = 3
-    tracker = SyndromeTracker(n, 0)
+    tracker = SyndromeTracker(n, 0, logical_tracking="legacy")
     tracker._gauge_logical_vectors = [np.array([0, 1], dtype=np.uint8)]
     old = np.vstack([_z_row(n, [0]), _z_row(n, [1])])
 
@@ -274,7 +278,7 @@ def test_real_reset_path_rejects_banked_support():
     destroy the relation's support while its parity stays banked."""
     import pytest as _pytest
     n = 4
-    tracker = SyndromeTracker(n, 1)
+    tracker = SyndromeTracker(n, 1, logical_tracking="legacy")
     tracker.record_absorbed_op(_z_row(n, [0, 1]))
 
     reset = np.zeros((1, 2 * n), dtype=np.uint8)
@@ -287,7 +291,7 @@ def test_real_reset_path_ignores_disjoint_resets():
     # ancilla-style resets on qubits outside every banked relation pass
     # through untouched (the per-round hot path stays cheap and silent)
     n = 4
-    tracker = SyndromeTracker(n, 1)
+    tracker = SyndromeTracker(n, 1, logical_tracking="legacy")
     tracker.record_absorbed_op(_z_row(n, [2, 3]))
 
     reset = np.zeros((2, 2 * n), dtype=np.uint8)
@@ -310,7 +314,7 @@ def test_partial_resolve_readout_of_banked_relation_fails_loud():
         MPP Z0*Z1*Z2*Z3
         M 0 1
     """)
-    tracker = SyndromeTracker(n, 1)
+    tracker = SyndromeTracker(n, 1, logical_tracking="legacy")
     tracker.total_measurements = 1
     tracker.record_absorbed_op(_z_row(n, [0, 1, 2, 3]))
 
@@ -336,7 +340,8 @@ def test_builder_initialize_rejects_banked_support():
     system = QECSystem()
     system.add_patch(RotatedSurfaceCode(distance=3), name="P", offset=(0, 0))
     tracker = SyndromeTracker(num_qubits=system.num_qubits,
-                              expected_num_logicals=system.num_logicals)
+                              expected_num_logicals=system.num_logicals,
+                              logical_tracking="legacy")
     builder = CircuitBuilder(tracker=tracker, system_config=system,
                              if_detector=True)
     system.register_tracker(tracker)

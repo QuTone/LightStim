@@ -148,19 +148,25 @@ class CircuitBuilder:
                 the noise injector skips them (useful for injection-phase init).
         """
         qubit_indices_x = [q for q, b in init_dict.items() if b == 'X']
-        qubit_indices_z = [q for q, b in init_dict.items() if b == 'Z']
         qubit_indices_y = [q for q, b in init_dict.items() if b == 'Y']
+        qubit_indices_z = [q for q, b in init_dict.items() if b == 'Z']
 
         tag = "noiseless" if noiseless else ""
-        # Apply Reset Gate
+        # Match destructive readout's X, Y, Z grouping in both the circuit
+        # and the preparation tableau.
         if qubit_indices_x:
             self.circuit.append("RX", qubit_indices_x, tag=tag)
-        if qubit_indices_z:
-            self.circuit.append("R", qubit_indices_z, tag=tag)
         if qubit_indices_y:
             self.circuit.append("RY", qubit_indices_y, tag=tag)
+        if qubit_indices_z:
+            self.circuit.append("R", qubit_indices_z, tag=tag)
 
-        init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
+        init_tableau = self._get_initialization_tableau(
+            qubit_indices_x=qubit_indices_x,
+            qubit_indices_y=qubit_indices_y,
+            qubit_indices_z=qubit_indices_z,
+            n=n,
+        )
 
         # Auxiliary preparation does not introduce a protected logical input.
         # Its known constraint must retain its stabilizer role even before it
@@ -1446,13 +1452,13 @@ class CircuitBuilder:
     # G. Helpers
     # --------------------------------------------------------------------------
     @staticmethod
-    def _get_initialization_tableau(qubit_indices_x: List[int], qubit_indices_z: List[int], qubit_indices_y: List[int], n: int):
+    def _get_initialization_tableau(qubit_indices_x: List[int], qubit_indices_y: List[int], qubit_indices_z: List[int], n: int):
         """
-        Generates the tableau for the given qubit indices in X, Z, Y basis.
+        Generates preparation rows in X, Y, Z order, matching the reset gates.
         Args:
             qubit_indices_x: List[int]
-            qubit_indices_z: List[int]
             qubit_indices_y: List[int]
+            qubit_indices_z: List[int]
             n: int
         Returns:
             initialized_tableau: np.ndarray
@@ -1463,14 +1469,7 @@ class CircuitBuilder:
         if qubit_indices_x:
             t_x[np.arange(len(qubit_indices_x)), qubit_indices_x] = 1
 
-        # 2. Z Basis: (X=0, Z=1)
-        t_z = np.zeros((len(qubit_indices_z), 2 * n), dtype=int)
-        if qubit_indices_z:
-            # Use list comprehension or numpy add to shift index by n
-            cols = [i + n for i in qubit_indices_z]
-            t_z[np.arange(len(qubit_indices_z)), cols] = 1
-
-        # 3. Y Basis: (X=1, Z=1) -> Critical Fix here
+        # 2. Y Basis: (X=1, Z=1)
         t_y = np.zeros((len(qubit_indices_y), 2 * n), dtype=int)
         if qubit_indices_y:
             # Set X part
@@ -1479,9 +1478,15 @@ class CircuitBuilder:
             cols_z = [i + n for i in qubit_indices_y]
             t_y[np.arange(len(qubit_indices_y)), cols_z] = 1
 
+        # 3. Z Basis: (X=0, Z=1)
+        t_z = np.zeros((len(qubit_indices_z), 2 * n), dtype=int)
+        if qubit_indices_z:
+            cols = [i + n for i in qubit_indices_z]
+            t_z[np.arange(len(qubit_indices_z)), cols] = 1
+
         # 4. Stack
         # Since all sub-matrices have 2*n columns, vstack works even if some have 0 rows.
-        return np.vstack([t_x, t_z, t_y])
+        return np.vstack([t_x, t_y, t_z])
 
 
     def to_stim_circuit(self, *, include_logical_history: bool = True) -> stim.Circuit:

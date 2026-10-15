@@ -209,8 +209,26 @@ def test_new_random_measurement_is_not_a_logical_history_relation():
     circuit = stim.Circuit("RX 0\nM 0")
     _measure_one_retained_qubit(tracker, circuit)
     assert tracker.logical_history == []
-    assert tracker.expected_num_logicals == 0
+    assert tracker.expected_num_logicals == 1
+    assert tracker.logicals.count == 0
+    assert tracker.absorbed_logicals.count == 1
+    assert tracker.absorbed_logicals.matrix.tolist() == [[0, 1]]
+    assert tracker.absorbed_logicals.records == [[0]]
+    tracker.validate_logical_count(context="retained random logical measurement")
     assert tracker.append_logical_history_observables(circuit) == []
+    _assert_complete_parity_space(circuit)
+
+    # The first Z result is random, but the retained logical state must let
+    # its final Z readout close the independent relation m0 XOR m1.
+    circuit.append("M", [0])
+    tracker.process_data_measurement(
+        circuit, np.array([[0, 1]], dtype=np.uint8), {0: (0, 0)})
+    detectors, observables = _annotation_rows(circuit)
+    assert detectors == []
+    assert observables == {0: _word([0, 1])}
+    assert circuit.has_flow(stim.Flow(measurements=[0, 1]), unsigned=False)
+    assert tracker.expected_num_logicals == 0
+    tracker.validate_logical_count(context="final random logical readout")
     _assert_complete_parity_space(circuit)
 
 

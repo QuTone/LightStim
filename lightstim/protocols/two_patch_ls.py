@@ -44,7 +44,7 @@ class TwoPatchLSExperiment:
                  noise_model: Optional[str] = 'circuit_level',
                  if_detector: bool = True,
                  rotate_patch1: bool = True,
-                 logical_tracking: Literal["legacy", "slabs"] = "legacy"):
+                 logical_tracking: Literal["legacy", "slabs"] = "slabs"):
         """
         Args:
             patch1_config: Configuration dict for the first patch (passed to UnrotatedSurfaceCode).
@@ -60,7 +60,7 @@ class TwoPatchLSExperiment:
             noise_model: Strategy string ('circuit_level', 'code_capacity', etc.).
             if_detector: Whether to generate detectors.
             rotate_patch1: Whether to rotate patch1 by pi and reset rotation angle (default True).
-            logical_tracking: Select the experimental S/L/L_absorbed extension with "slabs".
+            logical_tracking: Use the S/L/L_absorbed tracker by default; "legacy" is an explicit regression control.
         """
         # Validate offset
         dx, dy = offset

@@ -86,6 +86,12 @@ Z product, a pure X product, and an executable mixed `XZX` product using one
 conjugate-frame patch. The benchmark compiles with `rounds=1` for compact
 physical-circuit inspection.
 
+The default tracker retains all twelve independent logical relations, including
+the three joint-measurement consistencies. For this distance-3 example, one
+extraction round gives graphlike distance 1; three rounds give distance 3.
+See the [logical-output and distance checks](../../../docs/api/slabs_tracker.md#logical-count-bookkeeping-and-a-distance-compatibility-change)
+for the independent logical circuit and encoded-fault evidence.
+
 Each neighbouring patch position is separated by one full coarse routing cell.
 This is a routing-channel layout, not a compact packing: the current backend's
 coarse cell has pitch `2d+2`, and the reserved corridor is deliberately wide

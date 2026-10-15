@@ -1,8 +1,8 @@
 """The S/L/L_absorbed path retains existing preparation and postselection.
 
 These tests reuse the existing physical CrossLS and seven-input distillation
-oracles.  They explicitly select the new tracker path even when the protocol
-constructor does not expose the experimental option.
+oracles. Comparisons select each tracker mode explicitly, independently of the
+public defaults.
 """
 from contextlib import contextmanager
 
@@ -18,12 +18,15 @@ from tests.conftest import assert_dem_valid, assert_noiseless, build_quiet
 
 
 @contextmanager
-def _slabs_tracker(monkeypatch):
+def _tracker_mode(monkeypatch, mode="slabs"):
     original_init = SyndromeTracker.__init__
+    created = []
 
     def initialize(self, *args, **kwargs):
-        kwargs["logical_tracking"] = "slabs"
+        kwargs["logical_tracking"] = mode
         original_init(self, *args, **kwargs)
+        assert self.logical_tracking == mode
+        created.append(self)
 
     with monkeypatch.context() as scoped:
         scoped.setattr(SyndromeTracker, "__init__", initialize)
@@ -32,6 +35,7 @@ def _slabs_tracker(monkeypatch):
         cross_oracle._build.cache_clear()
         try:
             yield
+            assert created, "The protocol did not construct a tracker in the selected mode"
         finally:
             cross_oracle._build.cache_clear()
 
@@ -45,8 +49,9 @@ def test_slabs_injection_preserves_selected_parity_space(monkeypatch, state, mod
             post_select_mode=mode, noise_params=None,
         ).build()
 
-    legacy = build_quiet(build)
-    with _slabs_tracker(monkeypatch):
+    with _tracker_mode(monkeypatch, "legacy"):
+        legacy = build_quiet(build)
+    with _tracker_mode(monkeypatch):
         candidate = build_quiet(build)
     # Identical physical operations make absolute-record parity comparison
     # meaningful even if annotations use another independent basis.
@@ -66,7 +71,7 @@ def test_slabs_injection_preserves_selected_parity_space(monkeypatch, state, mod
 @pytest.mark.parametrize("state", ["Z", "X", "Y"])
 @pytest.mark.parametrize("mode", ["pqrm_only", "hybrid", "surface_se"])
 def test_slabs_cross_ls_preserves_physical_postselection(monkeypatch, state, mode):
-    with _slabs_tracker(monkeypatch):
+    with _tracker_mode(monkeypatch):
         build_quiet(lambda: cross_oracle.
                     test_cross_ls_selects_entire_pqrm_x_constraint_space(
                         state, 2, mode))
@@ -74,14 +79,14 @@ def test_slabs_cross_ls_preserves_physical_postselection(monkeypatch, state, mod
 
 @pytest.mark.parametrize("mode", ["pqrm_only", "hybrid", "surface_se"])
 def test_slabs_cross_ls_rejects_each_terminal_pqrm_fault(monkeypatch, mode):
-    with _slabs_tracker(monkeypatch):
+    with _tracker_mode(monkeypatch):
         build_quiet(lambda: cross_oracle.
                     test_cross_ls_postselection_accepts_clean_and_rejects_pqrm_fault(mode))
 
 
 @pytest.mark.parametrize("canonical", [False, True])
 def test_slabs_cross_ls_keeps_optional_canonicalization(monkeypatch, canonical):
-    with _slabs_tracker(monkeypatch):
+    with _tracker_mode(monkeypatch):
         build_quiet(lambda: cross_oracle.
                     test_cross_ls_optional_canonicalization_preserves_selection(canonical))
 
@@ -89,7 +94,7 @@ def test_slabs_cross_ls_keeps_optional_canonicalization(monkeypatch, canonical):
 def test_slabs_ls_distillation_repreparation_and_all_input_fault_patterns(monkeypatch):
     # Includes three W5 readout/repreparation cycles and all 128 combinations
     # of seven input logical faults, with independent exact acceptance counts.
-    with _slabs_tracker(monkeypatch):
+    with _tracker_mode(monkeypatch):
         distillation_oracle.test_distillation_all_seven_preparation_fault_patterns("ls")
 
 

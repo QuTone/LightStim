@@ -1,7 +1,8 @@
 # S, L, and L_absorbed tracking: algorithm and proof boundary
 
-`SyndromeTracker(..., logical_tracking="slabs")` is an experimental extension of
-the existing tracker. The default remains `"legacy"`. This document specifies the
+`SyndromeTracker(...)` uses the S/L/L_absorbed tracker by default.
+`logical_tracking="legacy"` remains available as an explicit regression control;
+ordinary experiments do not need to select a mode. This document specifies the
 implemented convention, the linear identities it uses, and unresolved correctness
 questions. It is **not a proof of general detector/logical classification**.
 
@@ -42,7 +43,8 @@ Mid-measurement / syndrome-extraction block:
 
 ```text
 A. Compute back-propagated measurements M and the forward Clifford map F.
-B. Project the joint rows [S; L; L_absorbed] through each measurement.
+B. Stably order S with empty record expressions before nonempty ones.
+   Project the joint rows [S; L; L_absorbed] through each measurement.
    Use the first anticommuting S row if any exists, otherwise L, then L_absorbed.
    Multiply it into every other anticommuting row, carrying record XORs.
    Replace the pivot by the measurement and its fresh record.
@@ -50,7 +52,8 @@ B. Project the joint rows [S; L; L_absorbed] through each measurement.
    L/L_absorbed involvement -> logical_history.
 C. RREF projected L within its own span, applying the full transform to records.
    Retain zero rows through this transform; projected L need not have full rank.
-   Select surviving L modulo M; absorb omitted L along with old L_absorbed.
+   Select the [L; S] complement modulo M once, giving L priority.
+   Reuse its selected L rows to absorb omitted L along with old L_absorbed.
    Choose absorbed rows independent modulo surviving L.
    Refresh S from measured rows, or reset-seeded extraction rows, as appropriate.
 D. Propagate all tables by F and substitute measured-ancilla records.
@@ -70,7 +73,8 @@ Readout of one supplied collection:
 
 ```text
 A. Form its measured Pauli span M; obtain the active stabilizer declaration K.
-B. Project the entire collection jointly with the same S-first rule.
+B. Apply the same stable S ordering, then project the entire collection jointly
+   with the same S-first rule.
 C. Expose span(L,L_absorbed) intersect M before reducing support modulo M.
    In the quotient by M, select independent survivors, giving L priority.
    Keep absorbed combinations in span(K modulo M, surviving L), modulo L;
@@ -80,6 +84,11 @@ C. Expose span(L,L_absorbed) intersect M before reducing support modulo M.
 D. Decompose the closing S/L rows into M and emit DET/OBS respectively.
    Fold remaining measured support with the same measurement-record XORs.
 ```
+
+The stable S ordering is shared by both measurement paths and remaps row
+metadata with the rows. Empty records describe a representative's measurement
+dependence; they do not assign its code or logical role. Initialization and
+destructive readout both group physical operations in X, Y, Z order.
 
 Builder derives K from declared active-check combinations with zero X/Z support
 on retired or measured qubits, using a kernel calculation. The tracker does not
@@ -190,7 +199,8 @@ partial/combined readout, reset, and postselection. Validation must check full
 record-space rank, signed/reference behavior, logical fault response spaces,
 and the census where supported—not merely observable counts or noiseless DEMs.
 CI results are reported separately from this algorithm specification. The
-default must remain legacy.
+default uses S/L/L_absorbed across ordinary entry points; legacy is retained
+only as an explicit regression control.
 
 A **general classification claim** additionally requires a precise invariant
 defining detector and protected roles, preservation under equivalent row bases

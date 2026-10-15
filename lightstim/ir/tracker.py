@@ -102,7 +102,7 @@ class SyndromeTracker:
         expected_num_logicals: int = 0,
         post_select_detector_coords: Optional[Set[Tuple[float, ...]]] = None,
         *,
-        logical_tracking: str = "legacy",
+        logical_tracking: str = "slabs",
     ):
         if logical_tracking not in ("legacy", "slabs"):
             raise ValueError("logical_tracking must be 'legacy' or 'slabs'")
@@ -174,6 +174,35 @@ class SyndromeTracker:
         """
         return self.absorbed_ops
 
+    def _sort_stabilizers_by_record_presence(self):
+        """Use the same stable S-row priority at both measurement boundaries.
+
+        Empty record expressions precede nonempty expressions. This orders
+        representatives; it does not classify rows as code or logical rows.
+        Preserve the relative order within each group and remap all row metadata.
+        """
+        empty = [i for i, records in enumerate(self.stabilizers.records) if not records]
+        other = [i for i, records in enumerate(self.stabilizers.records) if records]
+        order = empty + other
+        if order == list(range(self.stabilizers.count)):
+            return
+        self.stabilizers.matrix = self.stabilizers.matrix[order]
+        self.stabilizers.records = [self.stabilizers.records[i] for i in order]
+        remap = {old: new for new, old in enumerate(order)}
+        self._classified_stabilizer_rows = {
+            remap[i] for i in self._classified_stabilizer_rows
+        }
+        self.post_select_row_indices = {
+            remap[i] for i in self.post_select_row_indices
+        }
+        old_swlc = sorted(self.stabilizer_with_logical_components)
+        if self._gauge_logical_vectors:
+            vectors_by_row = dict(zip(old_swlc, self._gauge_logical_vectors))
+            self._gauge_logical_vectors = [
+                vectors_by_row[i] for i in sorted(old_swlc, key=remap.__getitem__)
+            ]
+        self.stabilizer_with_logical_components = {remap[i] for i in old_swlc}
+
     def _slabs_projection_pivot(self, full, num_stabs, num_logs, anti, excluded=()):
         """Use an anticommuting S row before either protected tableau.
 
@@ -194,7 +223,8 @@ class SyndromeTracker:
 
         Existing L_absorbed stays redundant in the current S/L state. A live
         logical omitted by refresh becomes an absorbed representative instead
-        of being thrown away. Selection uses only Pauli row elimination.
+        of being thrown away. Return the single [L; S] complement selection
+        used both to identify absorbed logicals and to refresh the S/L rows.
         """
         section = slice(num_stabs, num_stabs + num_logs)
         if num_logs:
@@ -207,9 +237,10 @@ class SyndromeTracker:
             full.matrix[section] = canonical.astype(np.uint8)
             full.records[section] = combine_records(transform, full.records[section])
         live = full.matrix[section]
-        _, _, surviving = solve_linear_decomposition(
-            basis=measurements, targets=live, reduce_weight=False)
-        surviving = set(int(i) for i in surviving)
+        reordered_targets = np.vstack([live, full.matrix[:num_stabs]])
+        _, _, complement_indices = solve_linear_decomposition(
+            basis=measurements, targets=reordered_targets, reduce_weight=False)
+        surviving = {int(i) for i in complement_indices if i < num_logs}
         candidates = list(range(num_stabs + num_logs, full.count))
         candidates += [num_stabs + i for i in range(num_logs) if i not in surviving]
         live_basis = live[sorted(surviving)]
@@ -218,6 +249,7 @@ class SyndromeTracker:
         rows = [candidates[int(i)] for i in chosen]
         self.absorbed_ops.matrix = full.matrix[rows].copy()
         self.absorbed_ops.records = [list(full.records[i]) for i in rows]
+        return complement_indices
 
     def _slabs_normalize_absorbed(self):
         """Complete refresh using the new S/L basis and absorbed record history.
@@ -1372,28 +1404,7 @@ class SyndromeTracker:
         self.stabilizer_with_logical_components = set()
         self._gauge_logical_vectors = []
 
-        # Reorder stabilizer rows: empty-record rows first.
-        # Fresh init rows (rec=[]) represent newly introduced qubits whose DOF should
-        # be consumed first by measurements, before established stabilizers with SE records.
-        # This produces cleaner detectors and correct logical observable construction.
-        num_stabs_pre = self.stabilizers.count
-        if num_stabs_pre > 0:
-            empty_indices = [i for i in range(num_stabs_pre) if self.stabilizers.records[i] == []]
-            other_indices = [i for i in range(num_stabs_pre) if self.stabilizers.records[i] != []]
-            if empty_indices and other_indices:  # only reorder if there's a mix
-                reorder = empty_indices + other_indices
-                self.stabilizers.matrix = self.stabilizers.matrix[reorder]
-                self.stabilizers.records = [self.stabilizers.records[i] for i in reorder]
-                self._classified_stabilizer_rows = {
-                    new for new, old in enumerate(reorder)
-                    if old in self._classified_stabilizer_rows
-                }
-                # Remap post_select_row_indices
-                if self.post_select_row_indices:
-                    idx_map = {old: new for new, old in enumerate(reorder)}
-                    self.post_select_row_indices = {
-                        idx_map.get(k, k) for k in self.post_select_row_indices
-                    }
+        self._sort_stabilizers_by_record_presence()
 
         # ======================================================================
         # Step 1: Combine Stabilizers and Logicals into Full Tableau
@@ -1594,13 +1605,6 @@ class SyndromeTracker:
         # ======================================================================
         # Step 3: Write Back with "Clean" Basis
         # ======================================================================
-        if self.logical_tracking == "slabs":
-            self._slabs_absorb_projected(
-                temp_full, num_stabs, num_logs, back_propagated_paulis)
-            # The original reset-seeded refresh still owns S and L. Absorbed
-            # rows are redundant witnesses, not additional physical state.
-            full_matrix = full_matrix[:num_stabs + num_logs]
-            full_records = full_records[:num_stabs + num_logs]
         if retain_measured_qubits:
             # The projected measurement rows are the freshest representatives
             # of the post-measurement state. Keep an independent subset with
@@ -1619,6 +1623,18 @@ class SyndromeTracker:
             measured_basis = back_propagated_paulis[
                 measured_basis_indices
             ]
+
+        if self.logical_tracking == "slabs":
+            refresh_complement_indices = self._slabs_absorb_projected(
+                temp_full, num_stabs, num_logs,
+                measured_basis if retain_measured_qubits else back_propagated_paulis,
+            )
+            # Absorbed rows are redundant witnesses, not additional physical
+            # state. S/L refresh reuses the complement selected above.
+            full_matrix = full_matrix[:num_stabs + num_logs]
+            full_records = full_records[:num_stabs + num_logs]
+
+        if retain_measured_qubits:
             measured_records = [
                 [current_base_idx + idx]
                 for idx in measured_basis_indices
@@ -1632,11 +1648,14 @@ class SyndromeTracker:
             else:
                 reordered_targets = full_matrix
 
-            _, _, complement_indices = solve_linear_decomposition(
-                basis=measured_basis,
-                targets=reordered_targets,
-                reduce_weight=False,
-            )
+            if self.logical_tracking == "slabs":
+                complement_indices = refresh_complement_indices
+            else:
+                _, _, complement_indices = solve_linear_decomposition(
+                    basis=measured_basis,
+                    targets=reordered_targets,
+                    reduce_weight=False,
+                )
 
             old_stab_basis_indices = []
             new_log_basis_indices = []
@@ -1725,10 +1744,13 @@ class SyndromeTracker:
             reordered_targets = full_matrix
             reordered_records = full_records
 
-        _, is_dependent, new_basis_indices = solve_linear_decomposition(
-            basis=back_propagated_paulis,
-            targets=reordered_targets
-        )
+        if self.logical_tracking == "slabs":
+            new_basis_indices = refresh_complement_indices
+        else:
+            _, is_dependent, new_basis_indices = solve_linear_decomposition(
+                basis=back_propagated_paulis,
+                targets=reordered_targets
+            )
 
         # Map reordered indices back to original full_matrix semantics:
         # reordered[0..num_logs-1]       = original logicals  (full_matrix[num_stabs..end])
@@ -2073,6 +2095,9 @@ class SyndromeTracker:
                 Used only by slabs to decide which absorbed directions remain
                 code checks; omitted means no continuing code declaration.
         """
+
+        if self.logical_tracking == "slabs":
+            self._sort_stabilizers_by_record_presence()
 
         num_new_meas = final_paulis.shape[0]
         base_meas_idx = self.total_measurements
