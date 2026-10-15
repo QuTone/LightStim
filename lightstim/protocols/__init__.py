@@ -1,5 +1,6 @@
 from .memory import MemoryExperiment
 from .rotated_surface_enlarge import RotatedSurfaceEnlargeExperiment
+from .rotated_surface_shrink import RotatedSurfaceShrinkExperiment
 from .bell_teleportation import BellTeleportTG, BellTeleportZZLS, BellTeleportXXLS
 from .gate_teleport import SGateTeleportExperiment
 from .ls_distillation import (
