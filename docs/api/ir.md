@@ -906,3 +906,62 @@ X/Z preparation, source SE, contraction, and final readout experiment, with
 optional whole-circuit noise. See the executed
 [shrinking notebook](../../notebooks/LogicalOps/rotated_surface_shrink.ipynb)
 for configuration and the full `detslice-with-ops-svg` diagram.
+
+## 7. Unrotated surface-code enlargement
+
+**Module:** `lightstim.qec_code.surface_code.unrotated.operation`
+
+The unrotated operation set uses the same executor interface:
+
+```python
+from lightstim.qec_code.surface_code.unrotated import (
+    UnrotatedSurfaceCode,
+    UnrotatedSurfaceCodeExtractionBlock,
+    UnrotatedSurfaceCodeLogicalOpSet,
+)
+
+executor.register_op_set(
+    UnrotatedSurfaceCode,
+    UnrotatedSurfaceCodeLogicalOpSet(UnrotatedSurfaceCodeExtractionBlock),
+)
+patch = executor.apply_logical_operation(
+    "enlarge", [patch], target_distance=5, direction="+x,+y", rounds=2,
+)
+```
+
+The source must be an initialized, encoded, defect-free square patch with
+odd distance at least 3. The target is a larger odd distance; only `+x,+y`
+growth is supported. Native layouts, translations, coordinate transposition,
+and subclasses implementing uniform coordinate scaling are supported.
+Other rotations and modified check geometry are rejected. Register the builder
+and tracker with `QECSystem` before growth, as for rotated enlargement.
+
+Only new data are initialized. In the **native unrotated frame** relative to
+the retained corner, `y >= x` receives `RX` and `y < x` receives `R`.
+The rule is mapped through the patch's coordinate transform, so a transposed
+display reverses the apparent sides without exchanging Pauli labels. It is
+not a universal rule for arbitrary surface-code orientations. For native
+distance 3 to 5 growth, 28 data sites are added: 16 in X and 12 in Z.
+
+This preserves both canonical logical operators: logical X lies on the left
+edge, whose added sites have X=+1; logical Z lies on the top edge, whose added
+sites have Z=+1. All target stabilizers commute with these extended logicals.
+Measuring them preserves the logical state while determining target check
+signs; newly introduced checks need not have outcome +1. Their actual records
+are retained by the tracker, without postselection. Tests verify exact signed
+Stim flows for both logical generators and every target check, including
+translated, transposed, and scaled distance 3→5, 3→7, and 5→7 growth. Encoded
+Bell-state tests additionally exercise an untouched entangled reference.
+
+`rounds` counts all native target SE cycles, including the growth projection;
+each uses four CNOT layers. Added-data initialization occurs once. No old data
+are reset, spectator patches are not operated on, and no noise or rejection
+policy is introduced by enlargement itself. The returned current patch view
+has the new distances, geometry, stabilizers, and logical operators; its
+registered name and retained physical IDs stay unchanged. The old handle
+retires. Failed validation or extraction leaves the original state unchanged.
+
+These checks establish ideal logical-state preservation and valid detector
+construction. They do not assert that one growth round provides target-distance
+fault tolerance, or remove faults already logical at the smaller input distance.
+Circuit-level performance must be evaluated for the complete noisy protocol.

@@ -6,6 +6,7 @@ from lightstim.ir.operation import CSSLogicalOpSet
 from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.qec_code.surface_code.unrotated.code_patch import UnrotatedSurfaceCode
+from .enlargement import enlarge as _enlarge
 
 
 # ------------------------------------------------------------------------------
@@ -127,6 +128,7 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
     Inherits transversal_cnot from CSSLogicalOpSet and adds:
     - fold-transversal H and S gates (y=x diagonal reflection symmetry)
     - state_injection and logical_unencode (corner injection protocol)
+    - permanent corner-anchored enlargement with native four-layer SE
 
     Available via LogicalExecutor:
         executor.apply_logical_operation("fold_transversal_hadamard", [patch])
@@ -134,12 +136,27 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         executor.apply_logical_operation("transversal_cnot", [ctrl, tgt])
         executor.apply_logical_operation("state_injection", [patch], ...)
         executor.apply_logical_operation("logical_unencode", [patch], ...)
+        patch = executor.apply_logical_operation("enlarge", [patch], target_distance=5)
     """
 
     def __init__(self, extraction_block_class: Type = None):
         super().__init__()
         self.name = "UnrotatedSurfaceCode"
         self.extraction_block_class = extraction_block_class
+
+    def enlarge(
+        self, builder: CircuitBuilder, patch: QECPatch, *,
+        target_distance: int, direction: str = "+x,+y", rounds: int = 1,
+    ) -> QECPatch:
+        """Grow toward +x,+y, retaining data and the protected logical state.
+
+        Supports native and uniformly scaled, optionally transposed layouts.
+        ``rounds`` counts target-code SE rounds including the growth projection;
+        all use the native four-CNOT-layer schedule. The returned global patch
+        replaces the old registered definition without changing its name.
+        """
+        return _enlarge(builder, patch, target_distance=target_distance,
+                        direction=direction, rounds=rounds)
 
     # ------------------------------------------------------------------
     # Fold-transversal gates
