@@ -207,29 +207,25 @@ class V2ReadoutMixin:
                             + [list(row) for row in self.logicals.records]
                             + [list(row) for row in self.absorbed_ops.records])
         destroyed = set()
-        for row, record in zip(measured, absolute):
-            anti = (record_state.anticommuting(row) if record_state is not None else
-                    np.flatnonzero(check_commutativity(row[None, :], full.matrix)[0]))
-            anti = [int(index) for index in anti if int(index) not in destroyed]
-            if not anti:
-                continue
-            pivot = anti[0]
-            if pivot >= physical_end:
-                raise RuntimeError("L_absorbed supplied the only anticommuting readout pivot")
-            if record_state is not None:
-                record_state.project(row, pivot, record, sorted(destroyed))
-                destroyed.add(pivot)
-                continue
-            for other in anti[1:]:
-                unknown = any(record < 0 for record in full.records[other] + full.records[pivot])
-                full.update_row(other, pivot)
-                if unknown and not any(record < 0 for record in full.records[other]):
-                    full.records[other].append(-1)
-            full.replace_row(pivot, row, [record])
-            destroyed.add(pivot)
-
         if record_state is not None:
+            destroyed = set(record_state.project_readout_batch(measured, absolute, physical_end))
             full.records = record_state.records()
+        else:
+            for row, record in zip(measured, absolute):
+                anti = np.flatnonzero(check_commutativity(row[None, :], full.matrix)[0])
+                anti = [int(index) for index in anti if int(index) not in destroyed]
+                if not anti:
+                    continue
+                pivot = anti[0]
+                if pivot >= physical_end:
+                    raise RuntimeError("L_absorbed supplied the only anticommuting readout pivot")
+                for other in anti[1:]:
+                    unknown = any(record < 0 for record in full.records[other] + full.records[pivot])
+                    full.update_row(other, pivot)
+                    if unknown and not any(record < 0 for record in full.records[other]):
+                        full.records[other].append(-1)
+                full.replace_row(pivot, row, [record])
+                destroyed.add(pivot)
 
         def known_indices(start, stop):
             return [index for index in range(start, stop)

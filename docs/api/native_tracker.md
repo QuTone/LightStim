@@ -60,6 +60,11 @@ use its coordinates; projection updates source-row coordinates and records in
 C++, using the pivot chosen by the current Tracker. Redundant rows retain their
 individual records, and unknown placeholders cannot cancel into known values.
 Measured ancilla factors are replaced by their records in the native engine.
+The whole measurement loop and destructive-readout projection loop execute in
+C++, with typed relation results instead of per-measurement Python calls.
+Python emits the returned annotation/history events in order; if a later
+measurement fails, earlier emissions survive while the temporary projected
+frame and classification updates remain uncommitted.
 
 The current Tracker specifies bare/dressed classification, exact-check
 preference, logical-history capture, postselection subspaces and staged readout.

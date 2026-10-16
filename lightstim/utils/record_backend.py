@@ -18,7 +18,8 @@ def record_state_class():
     try:
         from .cpp._pauli_backend_cpp import PersistentRecordState, PackedRows
         required = ("commuting_relation", "coordinate_rows", "fold_rows", "trace_qubits",
-                    "begin_measurement_batch", "measurement_anticommuting", "measurement_relation")
+                    "begin_measurement_batch", "measurement_anticommuting", "measurement_relation",
+                    "process_measurement_batch", "project_readout_batch")
         if not all(hasattr(PersistentRecordState, name) for name in required):
             raise ImportError("The installed native Tracker extension is from an older source revision")
     except (ImportError, OSError) as error:

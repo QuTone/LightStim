@@ -30,7 +30,6 @@ class PersistentRecordState {
     std::vector<Bits> batch_x, batch_z;
     Indices batch_previous;
     bool batch_active = false;
-    bool reading_batch_relation = false;
     bool relation_cache_valid = false;
     size_t relation_ns = 0, relation_nl = 0;
     Indices relation_dressed, relation_bare, relation_known, relation_physical;
@@ -259,26 +258,37 @@ class PersistentRecordState {
         }
         return s;
     }
-    py::tuple decompose_coordinates(const Bits &a, Bits b, const Indices &indices) const {
-        py::array_t<uint8_t> coeff(coordinates.size());
-        std::fill_n(coeff.mutable_data(), coordinates.size(), uint8_t{0});
-        for (uint64_t w : a) if (w) return py::make_tuple(coeff, false, Record{});
+    struct Decomposition {
+        bool represented = false;
+        Bits selected;
+        Record parity;
+    };
+    struct Relation {
+        std::string kind;
+        Record parity;
+        Indices logical;
+        py::tuple python() const { return py::make_tuple(kind, parity, logical); }
+    };
+    Decomposition decompose_coordinates_native(const Bits &a, Bits b, const Indices &indices) const {
+        Decomposition result{false, Bits((coordinates.size() + 63) / 64, 0), {}};
+        for (uint64_t w : a) if (w) return result;
         auto entry = solver_cache.find(indices);
         if (entry == solver_cache.end()) {
             if (solver_cache.size() >= 8) solver_cache.clear();
             entry = solver_cache.emplace(indices, make_solver(indices)).first;
         }
         const auto &solver = entry->second;
-        Bits selected((coordinates.size() + 63) / 64, 0);
         for (size_t p = 0; p < n; p++) {
             if (!bit(b, p)) continue;
-            if (solver.pivots[p].empty()) return py::make_tuple(coeff, false, Record{});
-            xorin(b, solver.pivots[p]); xorin(selected, solver.coeffs[p]);
+            if (solver.pivots[p].empty()) {
+                std::fill(result.selected.begin(), result.selected.end(), uint64_t{0});
+                return result;
+            }
+            xorin(b, solver.pivots[p]); xorin(result.selected, solver.coeffs[p]);
         }
         Record occurrences;
         bool unknown = false;
-        for (size_t k = 0; k < coordinates.size(); k++) if (bit(selected, k)) {
-            coeff.mutable_data()[k] = 1;
+        for (size_t k = 0; k < coordinates.size(); k++) if (bit(result.selected, k)) {
             occurrences.insert(occurrences.end(), row_records[k].begin(), row_records[k].end());
             for (int64_t r : row_records[k]) unknown |= r < 0;
         }
@@ -293,7 +303,15 @@ class PersistentRecordState {
             i = j;
         }
         if (unknown && (record.empty() || record.front() >= 0)) record.insert(record.begin(), -1);
-        return py::make_tuple(coeff, true, record);
+        result.represented = true;
+        result.parity = std::move(record);
+        return result;
+    }
+    py::tuple decompose_coordinates(const Bits &a, Bits b, const Indices &indices) const {
+        auto result = decompose_coordinates_native(a, std::move(b), indices);
+        py::array_t<uint8_t> coeff(coordinates.size());
+        for (size_t i = 0; i < coordinates.size(); i++) coeff.mutable_data()[i] = bit(result.selected, i);
+        return py::make_tuple(coeff, result.represented, result.parity);
     }
 public:
     PersistentRecordState(const Rows &rows, const std::vector<Record> &records)
@@ -417,8 +435,13 @@ public:
     py::tuple commuting_relation(const Rows &target, size_t ns, size_t nl,
                                   const Indices &dressed, const Rows &measurements,
                                   size_t index, int64_t base_record) {
+        return commuting_relation_native(validate_target(target), ns, nl, dressed,
+                                          measurements, index, base_record, false).python();
+    }
+    Relation commuting_relation_native(const uint8_t *row, size_t ns, size_t nl,
+                                       const Indices &dressed, const Rows &measurements,
+                                       size_t index, int64_t base_record, bool from_batch) {
         using namespace lightstim_packed;
-        const auto *row = validate_target(target);
         validate_rows(measurements);
         if (ns + nl > coordinates.size() || index >= (size_t)measurements.shape(0))
             throw std::out_of_range("Relation source range is invalid");
@@ -445,7 +468,7 @@ public:
         const auto &known = relation_known;
         const auto &physical = relation_physical;
         Bits a, b;
-        if (reading_batch_relation) { a = batch_x.at(index); b = batch_z.at(index); }
+        if (from_batch) { a = batch_x.at(index); b = batch_z.at(index); }
         else { begin(); query_coordinates(row, a, b); }
         bool frame_z = !std::any_of(a.begin(), a.end(), [](uint64_t w) { return w != 0; });
         // Existing local-check representatives have priority over every
@@ -456,14 +479,14 @@ public:
             Record parity = normalized(row_records[i]);
             xor_records(parity, Record{base_record + (int64_t)index});
             counters["exact_relations"]++;
-            return py::make_tuple("detector", parity, Indices{});
+            return {"detector", std::move(parity), {}};
         }
-        for (size_t j = (reading_batch_relation ? batch_previous.at(index) : 0); j < index; j++)
-            if (reading_batch_relation || std::equal(row, row + 2 * n, measurements.data() + j * 2 * n))
-                return py::make_tuple("detector", Record{base_record + (int64_t)j,
-                                      base_record + (int64_t)index}, Indices{});
+        for (size_t j = (from_batch ? batch_previous.at(index) : 0); j < index; j++)
+            if (from_batch || std::equal(row, row + 2 * n, measurements.data() + j * 2 * n))
+                return {"detector", Record{base_record + (int64_t)j,
+                                      base_record + (int64_t)index}, {}};
         auto bare_rows = coordinate_rows(bare);
-        if (reading_batch_relation) {
+        if (from_batch) {
             for (size_t j = 0; j < index; j++) {
                 bare_rows.data.push_back(join_coordinates(batch_x[j], batch_z[j]));
             }
@@ -482,27 +505,24 @@ public:
             auto parity = combine_record_lineage(coeff.data[0], records);
             xor_records(parity, Record{base_record + (int64_t)index});
             counters["prefix_decompositions"]++;
-            return py::make_tuple("detector", parity, Indices{});
+            return {"detector", std::move(parity), {}};
         }
-        auto result = decompose_coordinates(a, b, known);
+        auto result = decompose_coordinates_native(a, b, known);
         counters["decompositions"]++;
-        if (!result[1].cast<bool>()) {
-            auto potential = decompose_coordinates(a, b, physical);
-            if (potential[1].cast<bool>()) {
-                auto coeff = potential[0].cast<Rows>();
+        if (!result.represented) {
+            auto potential = decompose_coordinates_native(a, b, physical);
+            if (potential.represented) {
                 for (size_t i = ns; i < ns + nl; i++)
-                    if (coeff.data()[i] && std::any_of(row_records[i].begin(), row_records[i].end(),
+                    if (bit(potential.selected, i) && std::any_of(row_records[i].begin(), row_records[i].end(),
                                                      [](int64_t r) { return r < 0; }))
                         throw std::invalid_argument("Cannot capture logical history from an unmeasured logical record");
             }
-            return py::make_tuple("unknown", Record{}, Indices{});
+            return {"unknown", {}, {}};
         }
-        auto coeff = result[0].cast<Rows>();
-        auto parity = result[2].cast<Record>();
-        xor_records(parity, Record{base_record + (int64_t)index});
+        xor_records(result.parity, Record{base_record + (int64_t)index});
         Indices logical;
-        for (size_t i = ns; i < ns + nl; i++) if (coeff.data()[i]) logical.push_back(i - ns);
-        return py::make_tuple("logical", parity, logical);
+        for (size_t i = ns; i < ns + nl; i++) if (bit(result.selected, i)) logical.push_back(i - ns);
+        return {"logical", std::move(result.parity), std::move(logical)};
     }
     void begin_measurement_batch(const Rows &measurements) {
         validate_rows(measurements);
@@ -538,14 +558,85 @@ public:
     py::tuple measurement_relation(size_t index, size_t ns, size_t nl,
                                     const Indices &dressed, int64_t base_record) {
         if (!batch_active || index >= batch_x.size()) throw std::out_of_range("No active measurement batch at this index");
-        Rows target((py::ssize_t)(2 * n));
-        std::copy_n(batch_rows.data() + index * 2 * n, 2 * n, target.mutable_data());
-        reading_batch_relation = true;
-        try {
-            auto result = commuting_relation(target, ns, nl, dressed, batch_rows, index, base_record);
-            reading_batch_relation = false;
-            return result;
-        } catch (...) { reading_batch_relation = false; throw; }
+        return commuting_relation_native(batch_rows.data() + index * 2 * n, ns, nl,
+                                          dressed, batch_rows, index, base_record, true).python();
+    }
+    py::dict process_measurement_batch(const Rows &measurements, size_t ns, size_t nl,
+                                      const Indices &dressed, const Indices &classified,
+                                      int64_t base_record) {
+        if (ns + nl > coordinates.size()) throw std::out_of_range("Measurement source range is invalid");
+        begin_measurement_batch(measurements);
+        std::set<size_t> classified_rows(classified.begin(), classified.end());
+        std::vector<std::pair<size_t, Relation>> events;
+        std::string error_type, error_message;
+        counters["native_measurement_batches"]++;
+        for (size_t i = 0; i < batch_x.size(); i++) {
+            const auto *row = batch_rows.data() + i * 2 * n;
+            try {
+                auto anti = measurement_anticommuting(i);
+                if (!anti.empty()) {
+                    // Source rows are ordered S, L, L_absorbed. A redundant
+                    // S row remains an eligible pivot before every L row.
+                    size_t pivot = anti.front();
+                    if (pivot >= ns + nl)
+                        throw std::runtime_error("L_absorbed cannot be an independent projection pivot");
+                    project_row(row, pivot, Record{base_record + (int64_t)i});
+                    if (pivot >= ns) {
+                        for (size_t j : anti) if (j != pivot) classified_rows.erase(j);
+                    } else {
+                        classified_rows.insert(pivot);
+                    }
+                    continue;
+                }
+                if (std::none_of(row, row + 2 * n, [](uint8_t v) { return v != 0; })) {
+                    events.push_back({i, {"detector", Record{base_record + (int64_t)i}, {}}});
+                    continue;
+                }
+                auto relation = commuting_relation_native(row, ns, nl, dressed,
+                                                           batch_rows, i, base_record, true);
+                if (relation.kind != "unknown") events.emplace_back(i, std::move(relation));
+            } catch (const std::invalid_argument &error) {
+                error_type = "ValueError"; error_message = error.what(); break;
+            } catch (const std::out_of_range &error) {
+                error_type = "IndexError"; error_message = error.what(); break;
+            } catch (const std::runtime_error &error) {
+                error_type = "RuntimeError"; error_message = error.what(); break;
+            }
+        }
+        // Python must replay earlier circuit/history events before raising a
+        // later semantic error. The caller operates on a transaction clone,
+        // and commits neither this frame nor classified rows on failure.
+        py::list output;
+        for (const auto &[index, relation] : events)
+            output.append(py::make_tuple(index, relation.kind, relation.parity, relation.logical));
+        py::dict result;
+        result["events"] = std::move(output);
+        result["classified"] = Indices(classified_rows.begin(), classified_rows.end());
+        result["error"] = py::none();
+        if (!error_type.empty()) result["error"] = py::make_tuple(error_type, error_message);
+        return result;
+    }
+    Indices project_readout_batch(const Rows &measurements, const Record &records,
+                                 size_t physical_end) {
+        validate_rows(measurements);
+        if (records.size() != (size_t)measurements.shape(0))
+            throw std::invalid_argument("Readout record count differs from measurements");
+        if (physical_end > coordinates.size()) throw std::out_of_range("Readout source range is invalid");
+        begin_measurement_batch(measurements);
+        Indices destroyed;
+        counters["native_readout_batches"]++;
+        for (size_t i = 0; i < batch_x.size(); i++) {
+            auto anti = measurement_anticommuting(i);
+            auto pivot = std::find_if(anti.begin(), anti.end(), [&](size_t row) {
+                return !std::binary_search(destroyed.begin(), destroyed.end(), row);
+            });
+            if (pivot == anti.end()) continue;
+            if (*pivot >= physical_end)
+                throw std::runtime_error("L_absorbed supplied the only anticommuting readout pivot");
+            project_row(batch_rows.data() + i * 2 * n, *pivot, Record{records[i]}, destroyed);
+            destroyed.insert(std::lower_bound(destroyed.begin(), destroyed.end(), *pivot), *pivot);
+        }
+        return destroyed;
     }
     Indices refresh_complement(const Rows &measurements, size_t ns, size_t nl) {
         using namespace lightstim_packed;
@@ -785,7 +876,9 @@ public:
         counters["packed_physical_adoptions"]++;
     }
     void project(const Rows &target, size_t pivot, const Record &record, const Indices &excluded = {}) {
-        const auto *row = validate_target(target);
+        project_row(validate_target(target), pivot, record, excluded);
+    }
+    void project_row(const uint8_t *row, size_t pivot, const Record &record, const Indices &excluded = {}) {
         if (pivot >= coordinates.size()) throw std::out_of_range("Projection pivot out of range");
         counters["projections"]++;
         relation_cache_valid = false;
@@ -1030,6 +1123,8 @@ inline void bind_persistent_record_state(py::module_ &mod) {
         .def("begin_measurement_batch", &PersistentRecordState::begin_measurement_batch)
         .def("measurement_anticommuting", &PersistentRecordState::measurement_anticommuting)
         .def("measurement_relation", &PersistentRecordState::measurement_relation)
+        .def("process_measurement_batch", &PersistentRecordState::process_measurement_batch)
+        .def("project_readout_batch", &PersistentRecordState::project_readout_batch)
         .def("refresh_complement", &PersistentRecordState::refresh_complement)
         .def("refresh_sources", &PersistentRecordState::refresh_sources)
         .def("nonzero_rows", &PersistentRecordState::nonzero_rows)

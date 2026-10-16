@@ -135,3 +135,143 @@ def test_failed_mid_measurement_keeps_preprojection_public_banks(native, monkeyp
     for bank, (matrix, records) in zip((tracker.stabilizers, tracker.logicals), before):
         np.testing.assert_array_equal(bank.matrix, matrix)
         assert bank.records == records
+
+
+@pytest.mark.parametrize("mode", ["reference", "persistent"])
+@pytest.mark.parametrize("mask", [None, [True, False, False, False, True],
+                                   [False, True, False, False, True]])
+@pytest.mark.parametrize("early_annotation_error", [False, True])
+def test_batch_failure_preserves_ordered_prior_events_and_public_state(
+    native, monkeypatch, mode, mask, early_annotation_error,
+):
+    from lightstim.ir.logical_history import LogicalHistoryRelation
+
+    monkeypatch.setenv("LIGHTSTIM_TRACKER_BACKEND", mode)
+    tracker = SyndromeTracker(4, post_select_detector_coords={(0, 0, 0), (1, 0, 0)})
+    source = np.zeros((4, 8), dtype=np.uint8)
+    source[:, 4:] = np.eye(4, dtype=np.uint8)
+    tracker.stabilizers.add_stabilizers(source[[0, 2]], [[2, 2, 3], [7]])
+    tracker.logicals.add_stabilizers(source[[1, 3]], [[4, 4, 6], [-1]])
+    tracker._classified_stabilizer_rows = {0}
+    tracker.total_measurements = 10
+    if mode == "persistent":
+        tracker._sync_record_state()
+        tracker._read_record_state()
+    before = [(bank.matrix.copy(), copy.deepcopy(bank.records))
+              for bank in (tracker.stabilizers, tracker.logicals)]
+    # Flag -> exact check -> logical history -> projection -> unknown logical.
+    # A late error preserves prior emissions, but must not commit projection.
+    measurements = np.zeros((5, 8), dtype=np.uint8)
+    measurements[1], measurements[2], measurements[4] = source[[0, 1, 3]]
+    measurements[3, 2] = 1
+    coords = [(i, 0) for i in range(5)]
+    if early_annotation_error:
+        # The first nonsuppressed check fails before the later native error;
+        # event replay must preserve that error precedence and history prefix.
+        coords = []
+    circuit = stim.Circuit()
+    expected_error = IndexError if early_annotation_error else ValueError
+    with pytest.raises(expected_error):
+        tracker.process_mid_measurement(
+            circuit, np.eye(8, dtype=np.uint8), measurements, None,
+            [0, 0, 1, 2, 3], ["Z", "Z", "Z", "X", "Z"], coords, set(),
+            no_detector_mask=mask,
+            circuit_chunk=stim.Circuit("M 0 0 1\nMX 2\nM 3"))
+
+    assert tracker.total_measurements == 15
+    assert tracker._classified_stabilizer_rows == {0}
+    for bank, (matrix, records) in zip((tracker.stabilizers, tracker.logicals), before):
+        np.testing.assert_array_equal(bank.matrix, matrix)
+        assert bank.records == records
+    expected = stim.Circuit()
+    if not early_annotation_error:
+        if mask is None or not mask[0]:
+            expected.append("DETECTOR", [stim.target_rec(-5)], [0, 0, 0], tag="post-select")
+        if mask is None or not mask[1]:
+            expected.append("DETECTOR", [stim.target_rec(i) for i in (-13, -12, -4)],
+                            [1, 0, 0], tag="post-select")
+    assert circuit == expected
+    assert tracker.logical_history == ([] if early_annotation_error else [
+        LogicalHistoryRelation(records=(6, 12), measurement_index=12, logical_indices=(0,))])
+
+
+def test_native_batch_uses_redundant_stabilizer_before_protected_rows(native):
+    rows = np.tile(np.array([[0, 1]], dtype=np.uint8), (4, 1))
+    state = native.PersistentRecordState(rows, [[1], [2], [3], [4]])
+    result = state.process_measurement_batch(np.array([[1, 0]], dtype=np.uint8),
+                                             2, 1, [], [], 10)
+    assert result == {"events": [], "classified": [0], "error": None}
+    np.testing.assert_array_equal(state.rows(), [[1, 0], [0, 0], [0, 0], [0, 0]])
+    assert state.records() == [[10], [1, 2], [1, 3], [1, 4]]
+    assert state.stats["native_measurement_batches"] == 1
+
+
+def test_native_batch_carries_absorbed_pivot_error_after_prior_flag(native):
+    state = native.PersistentRecordState(np.array([[0, 1]], dtype=np.uint8), [[2]])
+    result = state.process_measurement_batch(np.array([[0, 0], [1, 0]], dtype=np.uint8),
+                                             0, 0, [], [], 10)
+    assert result["events"] == [(0, "detector", [10], [])]
+    assert result["error"] == ("RuntimeError", "L_absorbed cannot be an independent projection pivot")
+    np.testing.assert_array_equal(state.rows(), [[0, 1]])
+    assert state.records() == [[2]]
+
+
+@pytest.mark.parametrize("n", [3, 65])
+def test_native_readout_projection_batch_matches_dense_elimination(native, n):
+    rows = np.zeros((n + 1, 2 * n), dtype=np.uint8)
+    rows[:n, n:] = np.eye(n, dtype=np.uint8)
+    rows[n] = rows[0] ^ rows[1]
+    records = [[-1]] + [[i] for i in range(1, n)] + [[-1]]
+    measured = np.zeros((3, 2 * n), dtype=np.uint8)
+    measured[np.arange(3), [0, n - 1, 1]] = 1
+    absolute = [n + 4, n + 7, n + 9]
+    expected, expected_records = rows.copy(), copy.deepcopy(records)
+    destroyed = set()
+    for row, record in zip(measured, absolute):
+        commutators = (row[:n] @ expected[:, n:].T + row[n:] @ expected[:, :n].T) % 2
+        anti = [int(i) for i in np.flatnonzero(commutators) if int(i) not in destroyed]
+        if not anti:
+            continue
+        pivot = anti[0]
+        for other in anti[1:]:
+            unknown = any(i < 0 for i in expected_records[other] + expected_records[pivot])
+            expected[other] ^= expected[pivot]
+            parity = set(expected_records[other]) ^ set(expected_records[pivot])
+            if unknown:
+                parity.add(-1)
+            expected_records[other] = sorted(parity)
+        expected[pivot] = row
+        expected_records[pivot] = [record]
+        destroyed.add(pivot)
+    state = native.PersistentRecordState(rows, records)
+    assert state.project_readout_batch(measured, absolute, n) == sorted(destroyed)
+    np.testing.assert_array_equal(state.rows(), expected)
+    assert state.records() == expected_records
+    assert state.stats["native_readout_batches"] == 1
+
+
+@pytest.mark.parametrize("mode", ["reference", "persistent"])
+def test_readout_batch_failure_keeps_preprojection_banks(native, monkeypatch, mode):
+    monkeypatch.setenv("LIGHTSTIM_TRACKER_BACKEND", mode)
+    tracker = SyndromeTracker(2)
+    tracker.stabilizers.add_stabilizers(np.array([[0, 0, 1, 0]], dtype=np.uint8), [[3]])
+    # Deliberately invalid witness: the second measurement must reject an
+    # independent absorbed-only pivot after the first has projected S.
+    tracker.absorbed_ops.add_stabilizers(np.array([[0, 0, 0, 1]], dtype=np.uint8), [[4]])
+    if mode == "persistent":
+        tracker._sync_record_state()
+        tracker._read_record_state()
+    before = [(bank.matrix.copy(), copy.deepcopy(bank.records))
+              for bank in (tracker.stabilizers, tracker.logicals, tracker.absorbed_ops)]
+    circuit = stim.Circuit()
+    with pytest.raises(RuntimeError, match="L_absorbed supplied the only anticommuting readout pivot"):
+        tracker.process_data_measurement(
+            circuit, np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=np.uint8),
+            {0: (0, 0), 1: (1, 0)})
+    assert circuit == stim.Circuit()
+    assert tracker.total_measurements == 2
+    for bank, (matrix, records) in zip(
+        (tracker.stabilizers, tracker.logicals, tracker.absorbed_ops), before,
+    ):
+        np.testing.assert_array_equal(bank.matrix, matrix)
+        assert bank.records == records

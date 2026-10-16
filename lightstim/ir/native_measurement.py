@@ -5,7 +5,6 @@ path. Only its storage and linear algebra change: current rows, record updates,
 projection, refresh and quotient selection remain in one native engine.
 """
 
-import numpy as np
 import stim
 
 from .logical_history import LogicalHistoryRelation
@@ -26,27 +25,13 @@ def process_mid_measurement(
     state = tracker._sync_record_state().copy()
     ns, nl, na = (tracker.stabilizers.count, tracker.logicals.count,
                   tracker.absorbed_ops.count)
-    classified = set(tracker._classified_stabilizer_rows)
-    state.begin_measurement_batch(measurements)
-    for i, measurement in enumerate(measurements):
-        anti = state.measurement_anticommuting(i)
-        if anti:
-            pivot = tracker._slabs_projection_pivot(None, ns, nl, anti)
-            state.project(measurement, pivot, base + i)
-            if pivot >= ns:
-                classified.difference_update(int(j) for j in anti if j != pivot)
-            else:
-                classified.add(int(pivot))
-            continue
-        if not measurement.any():
-            if no_detector_mask is None or not no_detector_mask[i]:
-                position = list(coords[i]) + [0]
-                _append_detector(
-                    circuit, [stim.target_rec(base + i - tracker.total_measurements)],
-                    position, post_select=tuple(position) in tracker.post_select_detector_coords)
-            continue
-        kind, parity, logical_indices = state.measurement_relation(
-            i, ns, nl, sorted(tracker._dressed_stabilizer_rows), base)
+    batch = state.process_measurement_batch(
+        measurements, ns, nl, sorted(tracker._dressed_stabilizer_rows),
+        sorted(tracker._classified_stabilizer_rows), base)
+    # Tracking runs for the whole batch in native code; annotation policy
+    # stays at this public boundary. Preserve ordered partial emissions if a
+    # later measurement fails, while leaving the temporary frame uncommitted.
+    for i, kind, parity, logical_indices in batch["events"]:
         if kind == "logical":
             tracker.logical_history.append(LogicalHistoryRelation(
                 records=tuple(parity), measurement_index=base + i,
@@ -56,6 +41,11 @@ def process_mid_measurement(
             _append_detector(
                 circuit, [stim.target_rec(r - tracker.total_measurements) for r in parity],
                 position, post_select=tuple(position) in tracker.post_select_detector_coords)
+    if batch["error"] is not None:
+        error_type, message = batch["error"]
+        errors = {"ValueError": ValueError, "IndexError": IndexError, "RuntimeError": RuntimeError}
+        raise errors[error_type](message)
+    classified = set(batch["classified"])
 
     if retain:
         measured_indices = PackedBasis(state.coordinate_paulis(measurements)).selected
