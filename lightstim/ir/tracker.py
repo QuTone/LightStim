@@ -8,6 +8,7 @@ from ..utils.subsystem_algebra import (
     combine_records, independent_row_indices, intersect_row_spaces, reduce_modulo,
 )
 from ..utils.tableau_utils import stabilizers_to_symplectic
+from ..utils.pauli_backend import propagate_paulis
 from .logical_history import (
     LogicalHistoryRelation,
     append_logical_history_observables,
@@ -983,20 +984,21 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             )
 
         if self.stabilizers.count > 0:
-            self.stabilizers.matrix = (self.stabilizers.matrix @ symplectic_matrix) % 2
-            self.stabilizers.matrix = self.stabilizers.matrix.astype(np.uint8)
+            self.stabilizers.matrix = propagate_paulis(
+                self.stabilizers.matrix, symplectic_matrix)
 
         if self.logicals.count > 0:
-            self.logicals.matrix = (self.logicals.matrix @ symplectic_matrix) % 2
-            self.logicals.matrix = self.logicals.matrix.astype(np.uint8)
+            self.logicals.matrix = propagate_paulis(
+                self.logicals.matrix, symplectic_matrix)
         # Fix C: the absorbed operators are Pauli strings too — apply the same
         # Clifford so they stay in the current frame (else the span overlap
         # with stabilizers drifts).
         if self.absorbed_ops.count > 0:
-            self.absorbed_ops.matrix = (self.absorbed_ops.matrix @ symplectic_matrix) % 2
-            self.absorbed_ops.matrix = self.absorbed_ops.matrix.astype(np.uint8)
+            self.absorbed_ops.matrix = propagate_paulis(
+                self.absorbed_ops.matrix, symplectic_matrix)
         if self.logical_tracking == "slabs" and self._v2_role_space is not None:
-            self._v2_role_space = (self._v2_role_space @ symplectic_matrix) % 2
+            self._v2_role_space = propagate_paulis(
+                self._v2_role_space, symplectic_matrix)
 
 
     def _reject_reset_over_banked(self, touched_qubits, *, context):
@@ -1340,6 +1342,7 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         temp_full.matrix = full_matrix
         temp_full.records = full_records
         classified_rows = set(self._classified_stabilizer_rows)
+        relation_context = {}
 
         for i in range(num_meas):
             meas_pauli = back_propagated_paulis[i]
@@ -1351,6 +1354,9 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             anti_comm_indices = np.where(comm_check[0])[0]
 
             if len(anti_comm_indices) > 0:
+                # Projection changes rows/records. Commuting v2 relations only
+                # emit outputs, so their lookup context can otherwise persist.
+                relation_context.clear()
                 # --- Case A: Anti-commutes (State Update) ---
                 pivot = (self._slabs_projection_pivot(
                     temp_full, num_stabs, num_logs, anti_comm_indices)
@@ -1404,7 +1410,8 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
                 if self.logical_tracking == "slabs":
                     kind, records, logical_indices = self._v2_commuting_relation(
                         temp_full, num_stabs, num_logs, meas_pauli,
-                        back_propagated_paulis, current_base_idx, i)
+                        back_propagated_paulis, current_base_idx, i,
+                        context=relation_context)
                     if kind == "logical":
                         self.logical_history.append(LogicalHistoryRelation(
                             records=tuple(records), measurement_index=meas_abs_idx,
@@ -1658,8 +1665,8 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             }
             self._record_measurement_logical_effects(
                 surviving_logical_indices,
-                old_logicals_current_frame=(
-                    full_matrix[num_stabs:] @ forward_symplectic_matrix) % 2,
+                old_logicals_current_frame=propagate_paulis(
+                    full_matrix[num_stabs:], forward_symplectic_matrix),
             )
             return set()
 
@@ -1839,8 +1846,8 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         ) if new_log_basis_indices else set()
         self._record_measurement_logical_effects(
             surviving_log_indices,
-            old_logicals_current_frame=(
-                full_matrix[num_stabs:] @ forward_symplectic_matrix) % 2,
+            old_logicals_current_frame=propagate_paulis(
+                full_matrix[num_stabs:], forward_symplectic_matrix),
         )
         return {
             num_output_stabilizers + position

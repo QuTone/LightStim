@@ -1,0 +1,4 @@
+include lightstim/utils/cpp/*.h
+include third_party/stim/LICENSE
+recursive-include third_party/stim/src *.h *.inl *.cc
+global-exclude *.test.cc *.perf.cc *.pybind.cc

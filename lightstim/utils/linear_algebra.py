@@ -371,6 +371,24 @@ def solve_linear_decomposition(
     n_basis = basis.shape[0] if basis.shape[0] > 0 else 0
     n_targets = targets.shape[0]
 
+    # Unsigned inverse-tableau coordinates preserve the earliest original
+    # independent basis rows. Keep weight-reduction policy on the reference
+    # path, because choosing a different redundant representative changes
+    # measurement-record expressions even when the Pauli span is identical.
+    if not reduce_weight:
+        from .pauli_backend import solve_commuting_decomposition
+        native = solve_commuting_decomposition(basis, targets)
+        if native is not None:
+            coeffs, is_dependent, new_basis_indices = native
+            if new_basis_indices and n_basis and n_targets:
+                # The public solver historically orders new dimensions by
+                # connected binary-column component, then source row. Native
+                # selection has the same pivots; preserve that presentation.
+                blocks = _find_blocks(np.vstack([basis, targets]))
+                component = {row: k for k, block in enumerate(blocks) for row in block}
+                new_basis_indices.sort(key=lambda i: (component[n_basis + i], i))
+            return coeffs, is_dependent, new_basis_indices
+
     # --- Block-diagonal detection ---
     # Stack all vectors (basis + targets) and find independent blocks.
     # If multiple blocks exist, solve each independently for a large speedup.

@@ -17,10 +17,18 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      matrix:
+        pauli-backend: [reference, native]
+    env:
+      LIGHTSTIM_PAULI_BACKEND: ${{ matrix.pauli-backend }}
+      LIGHTSTIM_BUILD_JOBS: 2
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          submodules: true
 
       - name: Set up Python
         uses: actions/setup-python@v7

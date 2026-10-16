@@ -13,6 +13,7 @@ from ..utils.linear_algebra import (
 from ..utils.subsystem_algebra import (
     independent_row_indices, combine_records, reduce_modulo,
 )
+from ..utils.pauli_backend import propagate_paulis
 
 
 class BareDressedRoles:
@@ -75,7 +76,7 @@ class BareDressedRoles:
         """
         from .tracker_algebra import Rows
 
-        matrix = selected.matrix @ forward_symplectic_matrix % 2
+        matrix = propagate_paulis(selected.matrix, forward_symplectic_matrix)
         records = selected.records
         if measurement_qubit_indices is not None:
             qubits = list(measurement_qubit_indices)
@@ -266,7 +267,8 @@ class BareDressedRoles:
         self._v2_sync_budget()
 
     def _v2_commuting_relation(self, full, num_stabs, num_logs, measurement,
-                               previous_measurements, measurement_base_index, index):
+                               previous_measurements, measurement_base_index, index,
+                               *, context=None):
         """Classify a commuting measurement using bare and earlier measurements.
 
         A fresh measured constraint supplies repeat-check information even if
@@ -276,9 +278,22 @@ class BareDressedRoles:
         participating current L rows for historical API diagnostics; dressed
         directions do not acquire fictitious L indices.
         """
-        bare = [i for i in range(num_stabs)
-                if i not in self._dressed_stabilizer_rows
-                and all(r >= 0 for r in full.records[i])]
+        # The builder's projection loop invalidates this local context after
+        # every row/record mutation. It never survives an atomic operation.
+        if context is None:
+            context = {}
+        if not context:
+            bare = [i for i in range(num_stabs)
+                    if i not in self._dressed_stabilizer_rows
+                    and all(r >= 0 for r in full.records[i])]
+            exact_rows = {}
+            for i in bare:
+                exact_rows.setdefault(np.asarray(full.matrix[i], dtype=np.uint8).tobytes(), i)
+            context.update(
+                bare=bare, exact_rows=exact_rows,
+                known=[i for i in range(num_stabs + num_logs)
+                       if all(r >= 0 for r in full.records[i])])
+        bare = context["bare"]
         prefix = previous_measurements[:index]
         # Preserve an existing check's record representative before choosing
         # another decomposition of a redundant S_bare basis.  The difference
@@ -286,8 +301,7 @@ class BareDressedRoles:
         # by a product of other checks can make elementary faults touch many
         # detectors.  Exact matching is also the common repeated-SE case and
         # needs no new elimination of the unchanged bare space.
-        exact = next((i for i in bare
-                      if np.array_equal(full.matrix[i], measurement)), None)
+        exact = context["exact_rows"].get(np.asarray(measurement, dtype=np.uint8).tobytes())
         if exact is not None:
             parity = set(full.records[exact])
             parity.symmetric_difference_update([measurement_base_index + index])
@@ -305,8 +319,7 @@ class BareDressedRoles:
             parity = set(combine_records(coeff, records)[0])
             parity.symmetric_difference_update([measurement_base_index + index])
             return "detector", sorted(parity), ()
-        known = [i for i in range(num_stabs + num_logs)
-                 if all(r >= 0 for r in full.records[i])]
+        known = context["known"]
         coeff, dependent, _ = solve_linear_decomposition(
             basis=full.matrix[known], targets=measurement.reshape(1, -1),
             reduce_weight=False)
