@@ -37,7 +37,8 @@ def extensions():
             + [str(STIM_SRC / path) for path in STIM_SOURCES]
             + [str(path.relative_to(ROOT)) for path in gates],
             include_dirs=[str(STIM_SRC)],
-            depends=["lightstim/utils/cpp/pauli_propagation.h"],
+            depends=["lightstim/utils/cpp/pauli_propagation.h",
+                     "lightstim/utils/cpp/persistent_record_state.h"],
             cxx_std=20, optional=True,
         ))
     else:
@@ -62,5 +63,20 @@ class BuildExt(build_ext):
         super().build_extensions()
 
 
-ParallelCompile("LIGHTSTIM_BUILD_JOBS", default=2, needs_recompile=naive_recompile).install()
+# pybind11's naive_recompile checks only .cc mtimes. The state engine is in a
+# header, so an editable rebuild must also invalidate objects after header or
+# build-configuration changes (including changes in the pinned Stim checkout).
+_header_mtime = max(
+    [Path(__file__).stat().st_mtime]
+    + [p.stat().st_mtime
+       for base in (ROOT / "lightstim/utils/cpp", ROOT / STIM_SRC)
+       for pattern in ("*.h", "*.inl") for p in base.rglob(pattern)]
+)
+
+
+def needs_recompile(obj, src):
+    return naive_recompile(obj, src) or Path(obj).stat().st_mtime < _header_mtime
+
+
+ParallelCompile("LIGHTSTIM_BUILD_JOBS", default=2, needs_recompile=needs_recompile).install()
 setup(ext_modules=extensions(), cmdclass={"build_ext": BuildExt})

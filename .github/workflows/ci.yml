@@ -19,9 +19,16 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        pauli-backend: [reference, native]
+        include:
+          - pauli-backend: reference
+            tracker-backend: reference
+          - pauli-backend: native
+            tracker-backend: reference
+          - pauli-backend: native
+            tracker-backend: persistent
     env:
       LIGHTSTIM_PAULI_BACKEND: ${{ matrix.pauli-backend }}
+      LIGHTSTIM_TRACKER_BACKEND: ${{ matrix.tracker-backend }}
       LIGHTSTIM_BUILD_JOBS: 2
 
     steps:

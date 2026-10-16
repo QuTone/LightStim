@@ -9,6 +9,7 @@ from ..utils.subsystem_algebra import (
 )
 from ..utils.tableau_utils import stabilizers_to_symplectic
 from ..utils.pauli_backend import propagate_paulis
+from ..utils.record_backend import record_state_class
 from .logical_history import (
     LogicalHistoryRelation,
     append_logical_history_observables,
@@ -153,6 +154,34 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
         self.post_select_detector_coords = post_select_detector_coords or set()
         self.post_select_row_indices = set()  # Stabilizer row indices to post-select in process_data_measurement
+        # Public PauliTableau arrays remain mutable. Reconcile them at native
+        # operation boundaries, retaining the engine's inverse frame between
+        # calls. Legacy policy continues through its original implementation.
+        self._record_state_type = record_state_class()
+        self._record_state = None
+
+    def _sync_record_state(self, matrix=None, records=None):
+        if self._record_state_type is None or self.logical_tracking != "slabs":
+            return None
+        if matrix is None:
+            banks = (self.stabilizers, self.logicals, self.absorbed_ops)
+            matrix = np.vstack([bank.matrix for bank in banks])
+            records = [list(row) for bank in banks for row in bank.records]
+        if self._record_state is None or self._record_state.num_qubits != self.num_qubits:
+            self._record_state = self._record_state_type(matrix, records)
+        else:
+            self._record_state.replace_state(matrix, records)
+        return self._record_state
+
+    def _read_record_state(self):
+        matrix = self._record_state.rows()
+        records = self._record_state.records()
+        start = 0
+        for bank in (self.stabilizers, self.logicals, self.absorbed_ops):
+            stop = start + bank.count
+            bank.matrix = matrix[start:stop].copy()
+            bank.records = records[start:stop]
+            start = stop
 
     def set_expected_logicals(self, k: int):
         """
@@ -930,7 +959,8 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
     def process_unitary_block(self, circuit_chunk: stim.Circuit):
         """Forward-propagate the tracked state through a Clifford circuit."""
         self._apply_symplectic_matrix(
-            self.get_forward_symplectic_matrix(circuit_chunk, self.num_qubits)
+            self.get_forward_symplectic_matrix(circuit_chunk, self.num_qubits),
+            circuit_chunk=circuit_chunk,
         )
 
     @staticmethod
@@ -975,13 +1005,25 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             ] = z2z
         return full_M
 
-    def _apply_symplectic_matrix(self, symplectic_matrix: np.ndarray) -> None:
+    def _apply_symplectic_matrix(self, symplectic_matrix: np.ndarray, *,
+                                 circuit_chunk=None, fold_measurements=None) -> None:
         expected_shape = (2 * self.num_qubits, 2 * self.num_qubits)
         if symplectic_matrix.shape != expected_shape:
             raise ValueError(
                 f"Expected a symplectic matrix with shape {expected_shape}; "
                 f"got {symplectic_matrix.shape}."
             )
+
+        state = self._sync_record_state() if circuit_chunk is not None else None
+        if state is not None:
+            state.unitary(str(circuit_chunk))
+            if fold_measurements is not None:
+                state.fold_measured(*fold_measurements)
+            self._read_record_state()
+            if self._v2_role_space is not None:
+                self._v2_role_space = propagate_paulis(
+                    self._v2_role_space, symplectic_matrix)
+            return
 
         if self.stabilizers.count > 0:
             self.stabilizers.matrix = propagate_paulis(
@@ -1258,6 +1300,8 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         measurement_coords: list,
         discarded_measurement_qubit_indices: Set[int],
         no_detector_mask: Optional[np.ndarray] = None,
+        *,
+        circuit_chunk: Optional[stim.Circuit] = None,
     ) -> Set[int]:
         """
         Update the tracked state across one physical measurement block.
@@ -1341,6 +1385,8 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         temp_full = PauliTableau(self.num_qubits)
         temp_full.matrix = full_matrix
         temp_full.records = full_records
+        record_state = self._sync_record_state(full_matrix, full_records)
+        native_projection_pending = False
         classified_rows = set(self._classified_stabilizer_rows)
         relation_context = {}
 
@@ -1350,8 +1396,11 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             meas_abs_idx = current_base_idx + i
 
             # Check commutativity against existing stabilizers and logicals
-            comm_check = check_commutativity(meas_row, full_matrix)
-            anti_comm_indices = np.where(comm_check[0])[0]
+            if record_state is not None:
+                anti_comm_indices = record_state.anticommuting(meas_pauli)
+            else:
+                comm_check = check_commutativity(meas_row, full_matrix)
+                anti_comm_indices = np.where(comm_check[0])[0]
 
             if len(anti_comm_indices) > 0:
                 # Projection changes rows/records. Commuting v2 relations only
@@ -1361,6 +1410,18 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
                 pivot = (self._slabs_projection_pivot(
                     temp_full, num_stabs, num_logs, anti_comm_indices)
                     if self.logical_tracking == "slabs" else anti_comm_indices[0])
+                if record_state is not None:
+                    record_state.project(meas_pauli, pivot, meas_abs_idx)
+                    # Consecutive projections remain entirely native. A dense
+                    # snapshot is needed only when Python evaluates a relation
+                    # or refreshes roles at the end of this measurement block.
+                    native_projection_pending = True
+                    if pivot >= num_stabs:
+                        classified_rows.difference_update(int(j) for j in anti_comm_indices
+                                                          if j != pivot)
+                    else:
+                        classified_rows.add(int(pivot))
+                    continue
                 # Update other anti-commuting rows
                 for other in anti_comm_indices:
                     if other == pivot:
@@ -1408,10 +1469,14 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
                     continue
 
                 if self.logical_tracking == "slabs":
+                    if native_projection_pending:
+                        full_matrix[:] = record_state.rows()
+                        full_records[:] = record_state.records()
+                        native_projection_pending = False
                     kind, records, logical_indices = self._v2_commuting_relation(
                         temp_full, num_stabs, num_logs, meas_pauli,
                         back_propagated_paulis, current_base_idx, i,
-                        context=relation_context)
+                        context=relation_context, record_state=record_state)
                     if kind == "logical":
                         self.logical_history.append(LogicalHistoryRelation(
                             records=tuple(records), measurement_index=meas_abs_idx,
@@ -1541,6 +1606,9 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         # ======================================================================
         # Step 3: Write Back with "Clean" Basis
         # ======================================================================
+        if native_projection_pending:
+            full_matrix[:] = record_state.rows()
+            full_records[:] = record_state.records()
         if retain_measured_qubits:
             # The projected measurement rows are the freshest representatives
             # of the post-measurement state. Keep an independent subset with
@@ -1653,7 +1721,8 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
                         )
                 self.post_select_row_indices = new_post_select_rows
 
-            self._apply_symplectic_matrix(forward_symplectic_matrix)
+            self._apply_symplectic_matrix(forward_symplectic_matrix,
+                                          circuit_chunk=circuit_chunk)
             if self.logical_tracking == "slabs":
                 self._v2_restore_postselection(
                     self._v2_forward_postselection(postselection, forward_symplectic_matrix),
@@ -1762,12 +1831,17 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         # The measurement update above occurred at the block's input boundary.
         # Evolve the reset-seeded output basis through the extraction circuit,
         # then eliminate terminal syndrome-ancilla factors using their outcomes.
-        self._apply_symplectic_matrix(forward_symplectic_matrix)
-        self._replace_measured_ancillas_with_records(
-            measurement_qubit_indices=measurement_qubit_indices,
-            measurement_bases=measurement_bases,
-            measurement_base_idx=current_base_idx,
-        )
+        native_fold = record_state is not None and circuit_chunk is not None
+        self._apply_symplectic_matrix(
+            forward_symplectic_matrix, circuit_chunk=circuit_chunk,
+            fold_measurements=(measurement_qubit_indices, measurement_bases,
+                               current_base_idx) if native_fold else None)
+        if not native_fold:
+            self._replace_measured_ancillas_with_records(
+                measurement_qubit_indices=measurement_qubit_indices,
+                measurement_bases=measurement_bases,
+                measurement_base_idx=current_base_idx,
+            )
 
         # Flag reset rows forward-propagate into measured ancilla factors only.
         # Once those factors are replaced by their records, the Pauli row is

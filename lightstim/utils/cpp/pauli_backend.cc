@@ -9,6 +9,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <cstdint>
+#include <bit>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -184,6 +185,8 @@ public:
     }
 };
 
+#include "persistent_record_state.h"
+
 PYBIND11_MODULE(_pauli_backend_cpp, mod) {
     mod.doc() = "Unsigned Pauli algebra, inverse-tableau core adapted from Hou Yuewen's PR #110";
     py::class_<CommutingBasis>(mod, "CommutingBasis")
@@ -193,4 +196,5 @@ PYBIND11_MODULE(_pauli_backend_cpp, mod) {
         .def("extended", &CommutingBasis::extended)
         .def("decompose", &CommutingBasis::decompose);
     mod.def("propagate_paulis", &propagate_paulis);
+    bind_persistent_record_state(mod);
 }

@@ -11,6 +11,8 @@ in [the Tracker specification](slabs_tracker.md).
 git submodule update --init third_party/stim
 pip install -e .
 LIGHTSTIM_PAULI_BACKEND=native python your_experiment.py
+# Opt into persistent physical-state and record tracking:
+LIGHTSTIM_PAULI_BACKEND=native LIGHTSTIM_TRACKER_BACKEND=persistent python your_experiment.py
 ```
 
 Building the inverse-tableau kernel requires a C++20 compiler and the pinned
@@ -18,6 +20,12 @@ Stim source submodule. `pip` installs pybind11 into its isolated build
 environment. Source distributions include the required Stim sources and license.
 Both native extensions are optional: without a compiler or the Stim checkout,
 the ordinary Python installation remains usable.
+
+A wheel built with the extensions contains the compiled backend, so its users
+do not need a compiler, pybind11, or a Stim source checkout. The repository does
+not yet publish a complete platform/Python wheel matrix; source installs need
+the build tools above to obtain acceleration. Public Python Stim is still a
+normal dependency, and no private ABI is shared with its installed extension.
 
 `LIGHTSTIM_PAULI_BACKEND` supports:
 
@@ -36,6 +44,41 @@ This is an algebra backend, not the `LIGHTSTIM_DETECTOR_BACKEND=record_tableau`
 annotator from the original PR. That older annotator is not part of this
 integration.
 
+`LIGHTSTIM_TRACKER_BACKEND=reference` (default) uses the existing execution
+structure with whichever algebra backend is selected. `persistent` requires
+the new native extension and uses a persistent inverse frame for the slabs
+Tracker's physical state and record expressions. It raises a clear import
+error if unavailable; it does not silently disable the engine. Explicit legacy
+logical tracking retains its existing Python implementation.
+
+## Persistent state and records
+
+The opt-in `PersistentRecordState` adapts PR #110's inverse-frame evolution,
+generator re-basing, and record-parity arithmetic to the merged Tracker's
+policies. Clifford gates update the same inverse tableau. Measurement queries
+use its coordinates; projection updates source-row coordinates and records in
+C++, using the pivot chosen by the current Tracker. Redundant rows retain their
+individual records, and unknown placeholders cannot cancel into known values.
+Measured ancilla factors are replaced by their records in the native engine.
+
+The Tracker still owns bare/dressed classification, exact-check preference,
+logical-history capture, postselection subspaces, and staged readout. Role and
+gauge spaces are not inserted as extra state constraints. At these semantic
+boundaries the existing algorithms can inspect dense rows. Public tableaus
+remain mutable; the engine reconciles those rows into its existing frame before
+the next native operation. This boundary import/export and the remaining
+Python algebra are real costs, so persistence alone does not establish the
+original PR's reported end-to-end speedup.
+
+Deep copies have independent inverse frames and records. Register expansion
+creates an engine for the new width on the next native operation. Diagnostic
+`tracker._record_state.stats` counts constructions, reconciliations, native
+gates, queries, projections, folds, and snapshots for the current engine.
+
+Neither backend changes Builder's declared measurement blocks, classification
+boundaries, or repeat compression. Differential tests compare intermediate
+state/records, role metadata and history as well as exact emitted circuits.
+
 ## Computation and preserved contracts
 
 For a commuting basis, the engine anchors the earliest independent original
@@ -52,7 +95,8 @@ reference solver. Dependent original rows remain available to the Tracker's
 exact local-check preference. New target directions preserve the public
 solver's existing component order. General noncommuting spaces and
 `reduce_weight=True` retain the original solver, including its representative
-choices. The native engine never receives measurement records.
+choices. This stateless algebra path never receives measurement records; the
+separately selected persistent engine described above does.
 
 Pauli frame propagation uses a packed XOR product instead of dense unsigned
 integer matrix multiplication. This includes stabilizers, live logicals,

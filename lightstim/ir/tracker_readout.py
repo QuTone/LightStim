@@ -128,16 +128,21 @@ class V2ReadoutMixin:
         full.records = ([list(self.stabilizers.records[index]) for index in order]
                         + [list(row) for row in self.logicals.records]
                         + [list(row) for row in self.absorbed_ops.records])
+        record_state = self._sync_record_state(full.matrix, full.records)
         destroyed = set()
         for row, record in zip(measured, absolute):
-            anti = [int(index) for index in np.flatnonzero(
-                check_commutativity(row[None, :], full.matrix)[0])
-                if int(index) not in destroyed]
+            anti = (record_state.anticommuting(row) if record_state is not None else
+                    np.flatnonzero(check_commutativity(row[None, :], full.matrix)[0]))
+            anti = [int(index) for index in anti if int(index) not in destroyed]
             if not anti:
                 continue
             pivot = anti[0]
             if pivot >= physical_end:
                 raise RuntimeError("L_absorbed supplied the only anticommuting readout pivot")
+            if record_state is not None:
+                record_state.project(row, pivot, record, sorted(destroyed))
+                destroyed.add(pivot)
+                continue
             for other in anti[1:]:
                 unknown = any(record < 0 for record in full.records[other] + full.records[pivot])
                 full.update_row(other, pivot)
@@ -145,6 +150,10 @@ class V2ReadoutMixin:
                     full.records[other].append(-1)
             full.replace_row(pivot, row, [record])
             destroyed.add(pivot)
+
+        if record_state is not None and destroyed:
+            full.matrix = record_state.rows()
+            full.records = record_state.records()
 
         def known_part(start, stop):
             indices = [index for index in range(start, stop)

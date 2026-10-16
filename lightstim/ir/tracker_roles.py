@@ -268,7 +268,7 @@ class BareDressedRoles:
 
     def _v2_commuting_relation(self, full, num_stabs, num_logs, measurement,
                                previous_measurements, measurement_base_index, index,
-                               *, context=None):
+                               *, context=None, record_state=None):
         """Classify a commuting measurement using bare and earlier measurements.
 
         A fresh measured constraint supplies repeat-check information even if
@@ -320,13 +320,25 @@ class BareDressedRoles:
             parity.symmetric_difference_update([measurement_base_index + index])
             return "detector", sorted(parity), ()
         known = context["known"]
-        coeff, dependent, _ = solve_linear_decomposition(
-            basis=full.matrix[known], targets=measurement.reshape(1, -1),
-            reduce_weight=False)
+        if record_state is None:
+            coeff, dependent, _ = solve_linear_decomposition(
+                basis=full.matrix[known], targets=measurement.reshape(1, -1),
+                reduce_weight=False)
+        else:
+            native_coeff, native_dependent, native_parity = record_state.decompose(
+                measurement, known)
+            coeff = np.asarray(native_coeff, dtype=np.uint8)[known][None, :]
+            dependent = [native_dependent]
         if not dependent[0]:
-            candidate, represented, _ = solve_linear_decomposition(
-                basis=full.matrix[:num_stabs + num_logs],
-                targets=measurement.reshape(1, -1), reduce_weight=False)
+            if record_state is None:
+                candidate, represented, _ = solve_linear_decomposition(
+                    basis=full.matrix[:num_stabs + num_logs],
+                    targets=measurement.reshape(1, -1), reduce_weight=False)
+            else:
+                candidate_row, represented_row, _ = record_state.decompose(
+                    measurement, list(range(num_stabs + num_logs)))
+                candidate = np.asarray(candidate_row, dtype=np.uint8)[None, :]
+                represented = [represented_row]
             if represented[0] and any(
                 i >= num_stabs and any(r < 0 for r in full.records[int(i)])
                 for i in np.flatnonzero(candidate[0])
@@ -335,7 +347,8 @@ class BareDressedRoles:
             # An unknown placeholder cannot establish a deterministic parity.
             # The physical refresh below still records the new measurement.
             return "unknown", [], ()
-        parity = set(combine_records(coeff, [full.records[i] for i in known])[0])
+        parity = set(native_parity if record_state is not None else
+                     combine_records(coeff, [full.records[i] for i in known])[0])
         parity.symmetric_difference_update([measurement_base_index + index])
         logical_indices = tuple(known[int(i)] - num_stabs
                                 for i in np.flatnonzero(coeff[0])
