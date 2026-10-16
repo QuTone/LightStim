@@ -76,6 +76,30 @@ existing algebra. This integration therefore does not imply the original
 record-tableau annotator's reported speedups: performance must be measured
 against the current Tracker with equivalent outputs.
 
+## Repeated rounds and measurement boundaries
+
+Both algebra backends use the same Builder and Tracker control flow. Each
+declared physical measurement block receives its own tracker update; Builder
+classifies/rebases the state after the complete syndrome-extraction round.
+Subsystem classification also runs at each physical block boundary. Selecting
+`native` preserves these boundaries and the existing Stim `REPEAT` packaging.
+
+Builder can advance a verified single-logical steady state after evaluating
+two probe rounds. This shortcut requires stable detector and state transitions,
+no logical history or postselection, and no accumulated logical-record delta.
+When the shortcut is unavailable, Builder executes every remaining round and
+may still pack byte-identical emitted bodies into `REPEAT`. Output compression
+therefore does not imply that repeated Tracker computation was skipped. In
+particular, nonempty logical-record deltas retain explicit updates so a later
+history relation can access the complete record expression.
+
+The original PR #110 annotator used a separate `_repeat` path: it replayed every
+iteration on its record tableau, then repacked identical annotated bodies or
+periodic detector differences. That annotator is not used here. Reference and
+native measurements should use the same round counts and measurement grouping;
+memory cases with verified state advancement do not establish the speedup for
+logical protocols that must execute each round.
+
 ## Validation
 
 `tests/test_pauli_backend.py` compares exact coefficients and extension indices
