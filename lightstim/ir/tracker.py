@@ -1,7 +1,9 @@
 import stim
 import warnings
 import numpy as np
-from ..utils.linear_algebra import check_commutativity, kernel_gf2, solve_linear_decomposition
+from ..utils.linear_algebra import (
+    check_commutativity, kernel_gf2, row_echelon, solve_linear_decomposition,
+)
 from ..utils.subsystem_algebra import (
     combine_records, independent_row_indices, intersect_row_spaces, reduce_modulo,
 )
@@ -11,6 +13,8 @@ from .logical_history import (
     append_logical_history_observables,
 )
 from .tableau import PauliTableau
+from .tracker_roles import BareDressedRoles
+from .tracker_readout import V2ReadoutMixin
 from typing import List, Dict, Tuple, Optional, Set, FrozenSet, Any
 
 # Tag for post-selection: detectors with this tag are used for post-selection filtering
@@ -93,17 +97,25 @@ def _append_detector(
         circuit.append("DETECTOR", args, coords)
 
 
-class SyndromeTracker:
+class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
     def __init__(
         self,
         num_qubits: int,
         expected_num_logicals: int = 0,
         post_select_detector_coords: Optional[Set[Tuple[float, ...]]] = None,
+        *,
+        logical_tracking: str = "slabs",
     ):
+        if logical_tracking not in ("legacy", "slabs"):
+            raise ValueError("logical_tracking must be 'legacy' or 'slabs'")
+        self.logical_tracking = logical_tracking
         # Number of physical qubits (include data, syndrome, and potentially other ancilla qubits)
         self.num_qubits = num_qubits
         # Number of logical qubits (should be the total number of logical qubits in the QEC system)
         self.expected_num_logicals = expected_num_logicals
+        # Preparation requirements belong to the declaration. The live v2
+        # protected rank can change at measurement/code boundaries.
+        self._declared_num_logicals = expected_num_logicals
         # Total number of measurements
         self.total_measurements = 0
         self.total_observables = 0
@@ -127,21 +139,14 @@ class SyndromeTracker:
         # are initially unclassified; empty records alone cannot distinguish
         # those preparation constraints from established code stabilizers.
         self._classified_stabilizer_rows: Set[int] = set()
-        # Absorbed logical operators (Fix C): the measured Pauli strings that were folded
-        # into the stabilizer group by a merge (e.g. a joint ZZ over two |0>) and STILL
-        # hold a trapped logical DOF. Persisted across rounds/PPMs, so an absorb that an
-        # intervening round does not re-measure is not lost (this is what the old per-round
-        # gauge tally missed — pitfall B). THE census ledger: every path that absorbs a
-        # logical DOF records the operator here, and the count is always DERIVED via
-        # num_absorbed_dof() (the ledger's own GF(2) rank; logical-equivalence dedup
-        # happens at insertion — record_absorbed_op, the ledger's only entrance) —
-        # there is deliberately no
-        # separately maintained integer, because a bare counter demands perfect
-        # increment/decrement pairing from every path and drifts silently when one
-        # forgets. Self-correcting: once an absorbed relation is read out
-        # (process_data_measurement), its row is dropped and stops being
-        # counted. OPERATOR-ONLY: the .records side of this tableau is never
-        # written (see record_absorbed_op).
+        # The physical S table is partitioned by its current bare/dressed
+        # roles.  This is row metadata, not another quantum-state tableau.
+        self._dressed_stabilizer_rows: Set[int] = set()
+        self._v2_role_space = None
+        # L_absorbed represents the current S_dressed quotient modulo
+        # S_bare and L, with the same record expressions. It is redundant
+        # state, never a second source of logical observables. Explicit legacy
+        # controls retain their historical operator-only absorbed ledger.
         self.absorbed_ops = PauliTableau(num_qubits)
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
@@ -154,21 +159,151 @@ class SyndromeTracker:
         (e.g. some logicals are fixed into stabilizers)
         """
         self.expected_num_logicals = k
+        self._declared_num_logicals = k
+
+    @property
+    def absorbed_logicals(self) -> PauliTableau:
+        """L_absorbed in slabs mode; alias of the original third tableau.
+
+        Unlike the legacy operator-only ledger, slabs rows carry records and
+        are redundant constraints in span(S, L). No private state copy exists.
+        """
+        return self.absorbed_ops
+
+    def _sort_stabilizers_by_record_presence(self):
+        """Order S for mid-measurement projection and reset tracing.
+
+        Bare rows precede dressed rows; within each role, empty record
+        expressions precede nonempty expressions. This selects representatives
+        after classification and does not infer roles from record emptiness.
+        Preserve the relative order within each group and remap all row metadata.
+        """
+        if self.logical_tracking == "slabs":
+            # Bare constraints have projection priority over every protected
+            # constraint. Preserve the established within-role record order.
+            order = sorted(range(self.stabilizers.count), key=lambda i: (
+                i in self._dressed_stabilizer_rows,
+                bool(self.stabilizers.records[i])))
+        else:
+            empty = [i for i, records in enumerate(self.stabilizers.records) if not records]
+            other = [i for i, records in enumerate(self.stabilizers.records) if records]
+            order = empty + other
+        if order == list(range(self.stabilizers.count)):
+            return
+        self.stabilizers.matrix = self.stabilizers.matrix[order]
+        self.stabilizers.records = [self.stabilizers.records[i] for i in order]
+        remap = {old: new for new, old in enumerate(order)}
+        self._dressed_stabilizer_rows = {
+            remap[i] for i in self._dressed_stabilizer_rows if i in remap
+        }
+        self._classified_stabilizer_rows = {
+            remap[i] for i in self._classified_stabilizer_rows
+        }
+        self.post_select_row_indices = {
+            remap[i] for i in self.post_select_row_indices
+        }
+        old_swlc = sorted(self.stabilizer_with_logical_components)
+        if self._gauge_logical_vectors:
+            vectors_by_row = dict(zip(old_swlc, self._gauge_logical_vectors))
+            self._gauge_logical_vectors = [
+                vectors_by_row[i] for i in sorted(old_swlc, key=remap.__getitem__)
+            ]
+        self.stabilizer_with_logical_components = {remap[i] for i in old_swlc}
+
+    def _slabs_projection_pivot(self, full, num_stabs, num_logs, anti, excluded=()):
+        """Use an anticommuting S row before either protected tableau.
+
+        Do not prefilter S against L/L_absorbed: a redundant S row is still
+        eligible as the projection pivot. The caller updates all three tables.
+        """
+        excluded = set(excluded)
+        candidates = [int(i) for i in anti if int(i) not in excluded]
+        stabs = [i for i in candidates if i < num_stabs]
+        if stabs:
+            return stabs[0]
+        if candidates:
+            if candidates[0] >= num_stabs + num_logs:
+                raise RuntimeError("L_absorbed cannot be an independent projection pivot")
+            return candidates[0]
+        raise RuntimeError("Anticommuting constraint has no projection pivot")
+
+    def _v2_refresh_complement(self, full, num_stabs, num_logs, measurements):
+        """C: canonicalize L, then select one [L; S] complement modulo M.
+
+        The projected absorbed rows are carried into D with the same frame
+        update. D rebuilds them from current dressed rows; they never supply
+        an extra physical state direction or a historical record bank.
+        """
+        section = slice(num_stabs, num_stabs + num_logs)
+        if num_logs:
+            old_records = full.records[section]
+            canonical, _, transform, _ = row_echelon(full.matrix[section], reduced=True)
+            new_records = combine_records(transform, old_records)
+            for i, coefficients in enumerate(transform):
+                if (any(r < 0 for j in np.flatnonzero(coefficients) for r in old_records[int(j)])
+                        and not any(r < 0 for r in new_records[i])):
+                    new_records[i].append(UNMEASURED_STAB_RECORD)
+            full.matrix[section] = canonical.astype(np.uint8)
+            full.records[section] = new_records
+        _, _, complement = solve_linear_decomposition(
+            basis=measurements,
+            targets=np.vstack([full.matrix[section], full.matrix[:num_stabs]]),
+            reduce_weight=False)
+        self.absorbed_ops.matrix = full.matrix[num_stabs + num_logs:].copy()
+        self.absorbed_ops.records = [list(r) for r in full.records[num_stabs + num_logs:]]
+        return complement
+
+    def _slabs_discard_qubits(self, qubits):
+        """Partial trace before a reset, with joint S/L/L_absorbed elimination.
+
+        A reset forgets the previous outcome: retain only combinations with
+        zero X AND Z support on the reset qubits. There is no measurement record
+        to substitute here. Fresh preparation is added by the original caller.
+        """
+        self._sort_stabilizers_by_record_presence()
+        qubits = sorted(set(qubits))
+        postselection = self._v2_trace_postselection(
+            self._v2_capture_postselection(), qubits)
+        ns, nl = self.stabilizers.count, self.logicals.count
+        full = PauliTableau(self.num_qubits)
+        full.matrix = np.vstack([self.stabilizers.matrix, self.logicals.matrix,
+                                 self.absorbed_logicals.matrix])
+        full.records = [list(r) for tab in (self.stabilizers, self.logicals,
+                                            self.absorbed_logicals) for r in tab.records]
+        removed = set()
+        for column in qubits + [self.num_qubits + q for q in qubits]:
+            affected = [int(i) for i in np.flatnonzero(full.matrix[:, column])
+                        if int(i) not in removed]
+            if not affected:
+                continue
+            pivot = self._slabs_projection_pivot(full, ns, nl, affected, removed)
+            for other in affected:
+                if other != pivot:
+                    unknown = any(r < 0 for r in full.records[other] + full.records[pivot])
+                    full.update_row(other, pivot)
+                    if unknown and not any(r < 0 for r in full.records[other]):
+                        full.records[other].append(UNMEASURED_STAB_RECORD)
+            full.matrix[pivot] = 0
+            full.records[pivot] = []
+            removed.add(pivot)
+        kept = [i for i in range(full.count) if i not in removed and full.matrix[i].any()]
+        for tab, lo, hi in ((self.stabilizers, 0, ns),
+                            (self.logicals, ns, ns + nl),
+                            (self.absorbed_logicals, ns + nl, full.count)):
+            indices = [i for i in kept if lo <= i < hi]
+            tab.matrix = full.matrix[indices].copy()
+            tab.records = [list(full.records[i]) for i in indices]
+        self._remap_rows_after_removal([i for i in range(ns) if i not in kept])
+        self._v2_restore_postselection(postselection)
+        self._v2_rebuild_absorbed()
+        self._v2_sync_budget()
 
     def num_absorbed_dof(self) -> int:
-        """Number of banked absorbed logical DOFs (cross-round persistent):
-        the GF(2) rank of the ledger itself.
+        """Rank of current absorbed representatives (legacy: ledger rank).
 
-        Deliberately NOT quotiented by the current stabilizer bank: after a
-        merge the joint's CLOSURE row (same relation, carrying the merge
-        records) legitimately lives in the bank, and modding the ledger by
-        the bank would cancel the banked DOF against its own reflection
-        (found the hard way: the census tripped on a measurement-block
-        round over post-PPM state).  Logical-equivalence deduplication
-        happens at INSERTION instead — see record_absorbed_op — so two
-        representatives differing by a stabilizer never both enter the
-        ledger, while a banked relation keeps counting regardless of how
-        the group later expresses it."""
+        In v2 these rows are independent modulo S_bare+L by construction.
+        They must not be added to rank(S,L), where they are already present.
+        """
         return _gf2_rank(self.absorbed_ops.matrix)
 
     def record_absorbed_op(self, op: np.ndarray) -> bool:
@@ -182,15 +317,28 @@ class SyndromeTracker:
         relation the stabilizer group already carries.  Returns True iff a
         new row was banked.
 
-        The ledger is OPERATOR-ONLY: absorbed_ops.records is never written.
-        Banked-parity retrieval (per-relation measurement records) has no
-        consumer in the retained scope and returns with the liveness
-        layer's readout of banked relations."""
+        Legacy mode stores only the operator. In v2 this compatibility
+        entry point explicitly moves a known logical direction into S_dressed,
+        retaining its records and rebuilding the current absorbed quotient.
+        It cannot insert a separate historical constraint."""
         op = (np.asarray(op, dtype=np.uint8).reshape(-1) % 2).copy()
         if not op.any():
             return False
         A = self.absorbed_ops
-        basis_parts = [M for M in (self.stabilizers.matrix, A.matrix)
+        if self.logical_tracking == "slabs":
+            # Unknown placeholders carry no eigenvalue. In particular, two
+            # occurrences of -1 must not XOR into a fabricated known value.
+            # Exclude them from both canonical reduction and reconstruction.
+            known_rows = [
+                [i for i, records in enumerate(tableau.records)
+                 if all(record >= 0 for record in records)]
+                for tableau in (self.stabilizers, self.logicals, A)
+            ]
+            reduction_matrices = (
+                self.stabilizers.matrix[known_rows[0]], A.matrix[known_rows[2]])
+        else:
+            reduction_matrices = (self.stabilizers.matrix, A.matrix)
+        basis_parts = [M for M in reduction_matrices
                        if M.shape[0] > 0]
         if basis_parts:
             reduced, pivots = _gf2_rref(np.vstack(basis_parts))
@@ -200,6 +348,32 @@ class SyndromeTracker:
             if not op.any():
                 return False
         op = op.astype(np.uint8).reshape(1, -1)
+        if self.logical_tracking == "slabs":
+            tableaus = (self.stabilizers, self.logicals, A)
+            known = np.vstack([tableau.matrix[indices]
+                               for tableau, indices in zip(tableaus, known_rows)])
+            records = [tableau.records[i]
+                       for tableau, indices in zip(tableaus, known_rows) for i in indices]
+            coefficients, dependent, _ = solve_linear_decomposition(
+                basis=known, targets=op, reduce_weight=False)
+            if not dependent[0]:
+                raise ValueError("An absorbed logical must be a known constraint in span(S, L)")
+            chosen_records = combine_records(coefficients, records)
+            if any(r < 0 for row in chosen_records for r in row):
+                raise ValueError("An absorbed logical must have known measurement records")
+            # An explicit absorption changes the S/L partition. It cannot
+            # create an independent historical bank outside current S_dressed.
+            new_row = self.stabilizers.count
+            self.stabilizers.add_stabilizers(op, chosen_records)
+            self._dressed_stabilizer_rows.add(new_row)
+            _, _, surviving = solve_linear_decomposition(
+                basis=self.stabilizers.matrix, targets=self.logicals.matrix,
+                reduce_weight=False)
+            self.logicals.matrix = self.logicals.matrix[surviving].copy()
+            self.logicals.records = [self.logicals.records[int(i)] for i in surviving]
+            self._v2_rebuild_absorbed()
+            self._v2_sync_budget()
+            return True
         A.matrix = (np.vstack([A.matrix, op]).astype(np.uint8)
                     if A.count else op)
         return True
@@ -242,6 +416,13 @@ class SyndromeTracker:
         self.stabilizers.expand(delta)
         self.logicals.expand(delta)
         self.absorbed_ops.expand(delta)
+        if self._v2_role_space is not None:
+            old_n = self.num_qubits
+            zeros = np.zeros((len(self._v2_role_space), delta), dtype=np.uint8)
+            self._v2_role_space = np.hstack([
+                self._v2_role_space[:, :old_n], zeros,
+                self._v2_role_space[:, old_n:], zeros,
+            ])
         self.num_qubits += delta
 
 
@@ -267,6 +448,9 @@ class SyndromeTracker:
 
         self._classified_stabilizer_rows = {
             shift(i) for i in self._classified_stabilizer_rows if i not in rem
+        }
+        self._dressed_stabilizer_rows = {
+            shift(i) for i in self._dressed_stabilizer_rows if i not in rem
         }
         if self.post_select_row_indices:
             self.post_select_row_indices = {
@@ -295,6 +479,11 @@ class SyndromeTracker:
 
         Same logic applied to logical rows.
         """
+        if self.logical_tracking == "slabs":
+            # Reinitialization forgets the old subsystem; retain its physical
+            # partial trace instead of leaving unsupported Pauli constraints.
+            self._slabs_discard_qubits(qubit_indices)
+            return
         n = self.num_qubits
         qubit_set = set(qubit_indices)
 
@@ -348,7 +537,9 @@ class SyndromeTracker:
                 f"stabilizer basis is about to be recombined; row indices "
                 f"would silently point at different rows. Resolve or clear "
                 f"the post-selection marks first.")
-        if self.stabilizer_with_logical_components:
+        if (self.stabilizer_with_logical_components
+                and (self.logical_tracking != "slabs"
+                     or self.stabilizer_with_logical_components != self._dressed_stabilizer_rows)):
             raise RuntimeError(
                 f"{context}: stabilizer_with_logical_components is non-empty "
                 f"but the stabilizer basis is about to be recombined; the "
@@ -466,6 +657,10 @@ class SyndromeTracker:
         self.logicals.matrix = new_log_matrix
         self.logicals.records = new_log_records
 
+        if self.logical_tracking == "slabs":
+            self._dressed_stabilizer_rows = set()
+            self._v2_classify_stabilizers(canonical_basis)
+
         self.validate_logical_count(context="stabilizer canonicalization")
 
     def _subsystem_spaces(self, system):
@@ -510,8 +705,12 @@ class SyndromeTracker:
         if not getattr(system, "active_gauges", ()):
             return
         self._reject_pending_row_metadata("subsystem classification")
-        if self.absorbed_ops.count or self._gauge_logical_vectors:
+        if self.logical_tracking != "slabs" and (self.absorbed_ops.count or self._gauge_logical_vectors):
             raise RuntimeError("Subsystem classification does not yet support pending absorbed logical relations.")
+        if (self.logical_tracking == "slabs" and self.absorbed_ops.count
+                and (not self._dressed_stabilizer_rows
+                     or len(self.absorbed_ops.records) != self.absorbed_ops.count)):
+            raise RuntimeError("Subsystem classification received pending absorbed logical relations without current dressed rows.")
         center, gauges = self._subsystem_spaces(system)
         state = np.vstack([self.stabilizers.matrix, self.logicals.matrix])
         records = self.stabilizers.records + self.logicals.records
@@ -545,11 +744,13 @@ class SyndromeTracker:
         center_known = not reduce_modulo(center, state).any()
         if require_complete and not center_known:
             raise RuntimeError("Subsystem code centre is not yet established by initialization and gauge measurements.")
-        if center_known and logical_rows.shape[0] != self.expected_num_logicals:
+        required_logicals = (self._declared_num_logicals if self.logical_tracking == "slabs"
+                             else self.expected_num_logicals)
+        if center_known and logical_rows.shape[0] != required_logicals:
             raise RuntimeError(
                 "Subsystem classification requires initialized protected logical states: "
                 f"found {logical_rows.shape[0]} known bare logical constraints, expected "
-                f"{self.expected_num_logicals}. Logical/gauge entanglement, mixed logical "
+                f"{required_logicals}. Logical/gauge entanglement, mixed logical "
                 "states, or a changed code boundary need additional support."
             )
 
@@ -565,6 +766,10 @@ class SyndromeTracker:
         self._classified_stabilizer_rows = set(range(gauge_rows.shape[0]))
         self.logicals.matrix = logical_rows
         self.logicals.records = combine_records(logical_coefficients, records)
+        if self.logical_tracking == "slabs":
+            self._dressed_stabilizer_rows = set()
+            self._v2_rebuild_absorbed()
+            self._v2_sync_budget()
 
     def logical_canonicalization(
         self,
@@ -705,10 +910,12 @@ class SyndromeTracker:
             stabilizer_qubits: Qubits whose preparation is declared auxiliary
                 by the protocol, rather than an encoded logical input.
         """
-        self._reject_reset_over_banked(
-            {int(c) % self.num_qubits
-             for c in np.flatnonzero(init_tableau.any(axis=0))},
-            context="process_initialization")
+        touched = {int(c) % self.num_qubits
+                   for c in np.flatnonzero(init_tableau.any(axis=0))}
+        if self.logical_tracking == "slabs":
+            self._slabs_discard_qubits(touched)
+        else:
+            self._reject_reset_over_banked(touched, context="process_initialization")
         first_row = self.stabilizers.count
         self.stabilizers.add_stabilizers(init_tableau)
         if stabilizer_qubits:
@@ -788,6 +995,8 @@ class SyndromeTracker:
         if self.absorbed_ops.count > 0:
             self.absorbed_ops.matrix = (self.absorbed_ops.matrix @ symplectic_matrix) % 2
             self.absorbed_ops.matrix = self.absorbed_ops.matrix.astype(np.uint8)
+        if self.logical_tracking == "slabs" and self._v2_role_space is not None:
+            self._v2_role_space = (self._v2_role_space @ symplectic_matrix) % 2
 
 
     def _reject_reset_over_banked(self, touched_qubits, *, context):
@@ -806,6 +1015,9 @@ class SyndromeTracker:
         n = self.num_qubits
         cols = [q for q in touched_qubits] + [n + q for q in touched_qubits]
         if A.matrix[:, cols].any():
+            if self.logical_tracking == "slabs":
+                self._slabs_discard_qubits(touched_qubits)
+                return
             raise RuntimeError(
                 f"{context}: reset touches qubits that still carry banked "
                 f"absorbed relations — resolve them via a corridor/patch "
@@ -818,6 +1030,15 @@ class SyndromeTracker:
     ) -> None:
         """Apply physical reset operations to the current tracked state."""
         if reset_paulis.shape[0] == 0:
+            return
+
+        if self.logical_tracking == "slabs":
+            touched = {int(c) % self.num_qubits
+                       for c in np.flatnonzero(reset_paulis.any(axis=0))}
+            self._slabs_discard_qubits(touched)
+            self.stabilizers.add_stabilizers(reset_paulis)
+            self._v2_rebuild_absorbed()
+            self._v2_sync_budget()
             return
 
 
@@ -937,7 +1158,8 @@ class SyndromeTracker:
         for tableau_name, tableau in (
             ("stabilizer", self.stabilizers),
             ("logical", self.logicals),
-        ):
+        ) + ((("absorbed logical", self.absorbed_logicals),)
+             if self.logical_tracking == "slabs" else ()):
             for row_idx in range(tableau.count):
                 records = set(tableau.records[row_idx])
 
@@ -984,6 +1206,13 @@ class SyndromeTracker:
         (i.e. after the block's forward symplectic), so the recorded
         operators live in the same frame as every other tableau row.
         """
+        if self.logical_tracking == "slabs":
+            # Active-code classification is completed by the Builder in its
+            # correct code frame. Absorbed rows are current dressed witnesses,
+            # not an independent historical-output ledger.
+            self._v2_rebuild_absorbed()
+            self._v2_sync_budget()
+            return
         if self._gauge_logical_vectors:
             gauge_matrix = np.array(
                 self._gauge_logical_vectors,
@@ -1079,28 +1308,11 @@ class SyndromeTracker:
         self.stabilizer_with_logical_components = set()
         self._gauge_logical_vectors = []
 
-        # Reorder stabilizer rows: empty-record rows first.
-        # Fresh init rows (rec=[]) represent newly introduced qubits whose DOF should
-        # be consumed first by measurements, before established stabilizers with SE records.
-        # This produces cleaner detectors and correct logical observable construction.
-        num_stabs_pre = self.stabilizers.count
-        if num_stabs_pre > 0:
-            empty_indices = [i for i in range(num_stabs_pre) if self.stabilizers.records[i] == []]
-            other_indices = [i for i in range(num_stabs_pre) if self.stabilizers.records[i] != []]
-            if empty_indices and other_indices:  # only reorder if there's a mix
-                reorder = empty_indices + other_indices
-                self.stabilizers.matrix = self.stabilizers.matrix[reorder]
-                self.stabilizers.records = [self.stabilizers.records[i] for i in reorder]
-                self._classified_stabilizer_rows = {
-                    new for new, old in enumerate(reorder)
-                    if old in self._classified_stabilizer_rows
-                }
-                # Remap post_select_row_indices
-                if self.post_select_row_indices:
-                    idx_map = {old: new for new, old in enumerate(reorder)}
-                    self.post_select_row_indices = {
-                        idx_map.get(k, k) for k in self.post_select_row_indices
-                    }
+        self._sort_stabilizers_by_record_presence()
+        input_dressed = set(self._dressed_stabilizer_rows)
+        postselection = (self._v2_project_postselection(
+            self._v2_capture_postselection(), back_propagated_paulis)
+            if self.logical_tracking == "slabs" else None)
 
         # ======================================================================
         # Step 1: Combine Stabilizers and Logicals into Full Tableau
@@ -1120,6 +1332,9 @@ class SyndromeTracker:
         # ======================================================================
         # Step 2: Process Back-propagated Pauli measurements (Update / Detector)
         # ======================================================================
+        if self.logical_tracking == "slabs":
+            full_matrix = np.vstack([full_matrix, self.absorbed_logicals.matrix])
+            full_records = full_records + [list(r) for r in self.absorbed_logicals.records]
         # Use a temporary tableau view so we can call update_row / replace_row.
         temp_full = PauliTableau(self.num_qubits)
         temp_full.matrix = full_matrix
@@ -1137,10 +1352,19 @@ class SyndromeTracker:
 
             if len(anti_comm_indices) > 0:
                 # --- Case A: Anti-commutes (State Update) ---
-                pivot = anti_comm_indices[0]
+                pivot = (self._slabs_projection_pivot(
+                    temp_full, num_stabs, num_logs, anti_comm_indices)
+                    if self.logical_tracking == "slabs" else anti_comm_indices[0])
                 # Update other anti-commuting rows
-                for other in anti_comm_indices[1:]:
+                for other in anti_comm_indices:
+                    if other == pivot:
+                        continue
+                    has_unknown = (self.logical_tracking == "slabs"
+                                   and any(r < 0 for r in
+                                           temp_full.records[other] + temp_full.records[pivot]))
                     temp_full.update_row(other, pivot) # (target, source)
+                    if has_unknown and not any(r < 0 for r in temp_full.records[other]):
+                        temp_full.records[other].append(UNMEASURED_STAB_RECORD)
                     # Projection can multiply a code constraint by a fresh
                     # preparation constraint without changing its code role.
                     # Explicit logical provenance, however, must not be
@@ -1153,7 +1377,7 @@ class SyndromeTracker:
                 if pivot < num_stabs:
                     classified_rows.add(int(pivot))
 
-                if pivot >= num_stabs:
+                if pivot >= num_stabs and self.logical_tracking != "slabs":
                     # If the pivot is a logical operator and is replaced by a measurement, decreases one degree of freedom
                     self.expected_num_logicals -= 1
 
@@ -1175,6 +1399,22 @@ class SyndromeTracker:
                             coords,
                             post_select=tuple(coords) in self.post_select_detector_coords,
                         )
+                    continue
+
+                if self.logical_tracking == "slabs":
+                    kind, records, logical_indices = self._v2_commuting_relation(
+                        temp_full, num_stabs, num_logs, meas_pauli,
+                        back_propagated_paulis, current_base_idx, i)
+                    if kind == "logical":
+                        self.logical_history.append(LogicalHistoryRelation(
+                            records=tuple(records), measurement_index=meas_abs_idx,
+                            logical_indices=logical_indices))
+                    elif kind == "detector" and (no_detector_mask is None or not no_detector_mask[i]):
+                        coords = list(measurement_coords[i]) + [0]
+                        _append_detector(
+                            circuit,
+                            [stim.target_rec(r - self.total_measurements) for r in records],
+                            coords, post_select=tuple(coords) in self.post_select_detector_coords)
                     continue
 
                 if full_matrix.shape[0] > 0:
@@ -1252,7 +1492,7 @@ class SyndromeTracker:
                                 ))
                                 self.stabilizer_with_logical_components.add(i)
                                 # Track which logical indices this measurement involves (for rank computation)
-                                log_vec = np.zeros(num_logs, dtype=np.uint8)
+                                log_vec = np.zeros(full_matrix.shape[0] - num_stabs, dtype=np.uint8)
                                 for c in comp_indices:
                                     if c >= num_stabs:
                                         log_vec[c - num_stabs] = 1
@@ -1312,6 +1552,18 @@ class SyndromeTracker:
             measured_basis = back_propagated_paulis[
                 measured_basis_indices
             ]
+
+        if self.logical_tracking == "slabs":
+            refresh_complement_indices = self._v2_refresh_complement(
+                temp_full, num_stabs, num_logs,
+                measured_basis if retain_measured_qubits else back_propagated_paulis,
+            )
+            # Absorbed rows are redundant witnesses, not additional physical
+            # state. S/L refresh reuses the complement selected above.
+            full_matrix = full_matrix[:num_stabs + num_logs]
+            full_records = full_records[:num_stabs + num_logs]
+
+        if retain_measured_qubits:
             measured_records = [
                 [current_base_idx + idx]
                 for idx in measured_basis_indices
@@ -1325,11 +1577,14 @@ class SyndromeTracker:
             else:
                 reordered_targets = full_matrix
 
-            _, _, complement_indices = solve_linear_decomposition(
-                basis=measured_basis,
-                targets=reordered_targets,
-                reduce_weight=False,
-            )
+            if self.logical_tracking == "slabs":
+                complement_indices = refresh_complement_indices
+            else:
+                _, _, complement_indices = solve_linear_decomposition(
+                    basis=measured_basis,
+                    targets=reordered_targets,
+                    reduce_weight=False,
+                )
 
             old_stab_basis_indices = []
             new_log_basis_indices = []
@@ -1355,6 +1610,12 @@ class SyndromeTracker:
                 list(full_records[idx])
                 for idx in old_stab_basis_indices
             ]
+            if self.logical_tracking == "slabs":
+                self._dressed_stabilizer_rows = {
+                    len(measured_records) + j
+                    for j, idx in enumerate(old_stab_basis_indices)
+                    if idx in input_dressed
+                }
             self._classified_stabilizer_rows = set(range(len(measured_records))) | {
                 len(measured_records) + j
                 for j, idx in enumerate(old_stab_basis_indices)
@@ -1368,7 +1629,7 @@ class SyndromeTracker:
                 for idx in new_log_basis_indices
             ]
 
-            if self.post_select_row_indices:
+            if self.post_select_row_indices and self.logical_tracking != "slabs":
                 new_post_select_rows = set()
                 for old_idx in self.post_select_row_indices:
                     if old_idx >= num_stabs:
@@ -1386,6 +1647,10 @@ class SyndromeTracker:
                 self.post_select_row_indices = new_post_select_rows
 
             self._apply_symplectic_matrix(forward_symplectic_matrix)
+            if self.logical_tracking == "slabs":
+                self._v2_restore_postselection(
+                    self._v2_forward_postselection(postselection, forward_symplectic_matrix),
+                    circuit=circuit, measurement_coords=measurement_coords)
             surviving_logical_indices = {
                 idx - num_stabs
                 for idx in new_log_basis_indices
@@ -1418,10 +1683,13 @@ class SyndromeTracker:
             reordered_targets = full_matrix
             reordered_records = full_records
 
-        _, is_dependent, new_basis_indices = solve_linear_decomposition(
-            basis=back_propagated_paulis,
-            targets=reordered_targets
-        )
+        if self.logical_tracking == "slabs":
+            new_basis_indices = refresh_complement_indices
+        else:
+            _, is_dependent, new_basis_indices = solve_linear_decomposition(
+                basis=back_propagated_paulis,
+                targets=reordered_targets
+            )
 
         # Map reordered indices back to original full_matrix semantics:
         # reordered[0..num_logs-1]       = original logicals  (full_matrix[num_stabs..end])
@@ -1478,6 +1746,11 @@ class SyndromeTracker:
 
         self.stabilizers.matrix = np.vstack([reset_paulis, old_stab_matrix])
         self.stabilizers.records = new_stab_records + old_stab_records
+        if self.logical_tracking == "slabs":
+            self._dressed_stabilizer_rows = {
+                num_meas + j for j, idx in enumerate(old_stab_basis_indices)
+                if idx in input_dressed
+            }
 
         # The measurement update above occurred at the block's input boundary.
         # Evolve the reset-seeded output basis through the extraction circuit,
@@ -1501,6 +1774,11 @@ class SyndromeTracker:
             for output_idx, measurement_idx in enumerate(kept_output_indices)
         }
         num_output_stabilizers = len(kept_output_indices)
+        if self.logical_tracking == "slabs":
+            self._dressed_stabilizer_rows = {
+                num_output_stabilizers + j for j, idx in enumerate(old_stab_basis_indices)
+                if idx in input_dressed
+            }
         self._classified_stabilizer_rows = set(range(num_output_stabilizers)) | {
             num_output_stabilizers + j
             for j, idx in enumerate(old_stab_basis_indices)
@@ -1523,7 +1801,7 @@ class SyndromeTracker:
         # Update post_select_row_indices: map old full_matrix indices to new stabilizer indices.
         # - Old stab rows in old_stab_basis_indices follow the retained output rows.
         # - Dependent rows (absorbed into measurement basis) → find which measurement rows captured them
-        if self.post_select_row_indices:
+        if self.post_select_row_indices and self.logical_tracking != "slabs":
             new_ps = set()
             # Map old stab rows that survived
             for j, old_idx in enumerate(old_stab_basis_indices):
@@ -1543,6 +1821,15 @@ class SyndromeTracker:
                             if int(m) in measurement_to_output_row
                         )
             self.post_select_row_indices = new_ps
+
+        if self.logical_tracking == "slabs":
+            self._v2_restore_postselection(
+                self._v2_forward_postselection(
+                    postselection, forward_symplectic_matrix,
+                    measurement_qubit_indices=measurement_qubit_indices,
+                    measurement_bases=measurement_bases,
+                    measurement_base_idx=current_base_idx),
+                circuit=circuit, measurement_coords=measurement_coords)
 
         # Account for logical components measured by this physical block. The
         # Builder validates the final logical count at its chosen boundary.
@@ -1618,6 +1905,10 @@ class SyndromeTracker:
             old_to_new[idx] for idx in self._classified_stabilizer_rows
             if idx in old_to_new
         }
+        self._dressed_stabilizer_rows = {
+            old_to_new[idx] for idx in self._dressed_stabilizer_rows
+            if idx in old_to_new
+        }
         if kept_indices:
             self.stabilizers.matrix = self.stabilizers.matrix[kept_indices]
         else:
@@ -1646,6 +1937,10 @@ class SyndromeTracker:
 
     def validate_logical_count(self, *, context: str = "tracker state") -> None:
         """Check that explicit and measurement-absorbed logical DOFs add up."""
+        if self.logical_tracking == "slabs":
+            self._v2_rebuild_absorbed()
+            self._v2_validate_roles(context=context)
+            return
         absorbed = self.num_absorbed_dof()
         actual = self.logicals.count + absorbed
         if actual != self.expected_num_logicals:
@@ -1736,6 +2031,10 @@ class SyndromeTracker:
             for idx in logical_indices
         ]
 
+        if self.logical_tracking == "slabs":
+            self._dressed_stabilizer_rows = set()
+            self._v2_classify_stabilizers(canonical_basis)
+
         self.validate_logical_count(context="code-basis rebase")
 
 
@@ -1744,7 +2043,9 @@ class SyndromeTracker:
                                   final_paulis: np.ndarray,
                                   idx_to_coord_map: Dict[int, Tuple[float, float]],
                                   syndrome_qubit_indices: set = None,
-                                  resolve_absorbed: bool = True):
+                                  resolve_absorbed: bool = True,
+                                  active_stabilizers: Optional[np.ndarray] = None,
+                                  measurement_record_indices=None):
         """
         Handles Final Data Qubit Measurements using Gaussian Elimination.
 
@@ -1760,7 +2061,22 @@ class SyndromeTracker:
                 final-round detectors with the syndrome grid rather than the data grid.
                 Coordinates are deduplicated: if a syndrome coord is already used by
                 a previous detector, the data qubit fallback is applied instead.
+            active_stabilizers: Pauli rows of the code that continues after
+                this destructive readout, in the same physical register.
+                Used by v2 to classify the remaining S rows and rebuild the
+                current absorbed quotient after closure extraction; omitted
+                means no continuing code declaration.
         """
+
+        if self.logical_tracking == "slabs":
+            return self._process_v2_data_measurement(
+                circuit, final_paulis, idx_to_coord_map,
+                syndrome_qubit_indices=syndrome_qubit_indices,
+                resolve_absorbed=resolve_absorbed,
+                active_stabilizers=active_stabilizers,
+                measurement_record_indices=measurement_record_indices)
+        if measurement_record_indices is not None:
+            raise ValueError("Explicit readout stages require the default bare/dressed tracker")
 
         num_new_meas = final_paulis.shape[0]
         base_meas_idx = self.total_measurements
@@ -1935,7 +2251,9 @@ class SyndromeTracker:
                     pivot = stab_candidates[0] if stab_candidates else anti_comm_indices[0]
                 destroyed_rows.add(pivot) # Mark pivot as destroyed
 
-                for other in anti_comm_indices[1:]:
+                for other in anti_comm_indices:
+                    if other == pivot:
+                        continue
                     temp_full.update_row(other, pivot)
                     if pivot >= num_stabs:
                         self._classified_stabilizer_rows.discard(int(other))

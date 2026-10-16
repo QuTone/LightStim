@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from itertools import groupby
 from typing import FrozenSet, Literal, Optional, Sequence, Tuple
@@ -210,17 +211,23 @@ class RotatedSurfaceDefectMemoryExperiment:
             unaffected_stabilizers=baseline_active - affected,
         )
 
+        # Both punctured gauge families remain code constraints across the
+        # alternating schedule. A phase chooses which ones to measure; it
+        # does not turn the other family's known products into logical data.
+        system.active_stabilizer_indices = set(baseline_active)
+
         for basis, phase in groupby(self.gauge_schedule):
             selected_gauges = {
                 uid
                 for uid in defect.affected_stabilizers
                 if system.stabilizers[uid].get("type") == basis
             }
-            system.active_stabilizer_indices = (
+            extraction_system = copy.copy(system)
+            extraction_system.active_stabilizer_indices = (
                 set(defect.unaffected_stabilizers) | selected_gauges
             )
             builder.apply_syndrome_extraction(
-                RotatedSurfaceCodeExtractionBlock(system).circuit,
+                RotatedSurfaceCodeExtractionBlock(extraction_system).circuit,
                 rounds=sum(1 for _ in phase),
             )
 

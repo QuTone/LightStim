@@ -4,7 +4,7 @@ import stim
 import numpy as np
 from typing import Type, Literal, Optional, Any, Dict, Tuple
 
-from lightstim.ir.builder import CircuitBuilder
+from lightstim.ir.builder import CircuitBuilder, DataReadoutStage
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.ir.qec_system import QECSystem
 from lightstim.noise.config import NoiseConfig
@@ -41,9 +41,11 @@ class CNOTLSExperiment:
                  noise_params: Optional[NoiseConfig] = None,
                  noise_model: Optional[str] = 'circuit_level',
                  if_detector: bool = True,
-                 rotate_patches: bool = True):
+                 rotate_patches: bool = True,
+                 logical_tracking: Literal["legacy", "slabs"] = "slabs"):
         """
         Args:
+            logical_tracking: Use the S/L/L_absorbed tracker by default; "legacy" is an explicit regression control.
             patch_config: Configuration dict for all Ancilla, Control, and Target patches (passed to UnrotatedSurfaceCode).
             offset_ct: (dx, dy) offset for Target patch relative to Control patch.
             offset_ta: (dx, dy) offset for Ancilla patch relative to Target patch.
@@ -80,6 +82,7 @@ class CNOTLSExperiment:
         self.noise_model = noise_model
         self.if_detector = if_detector
         self.rotate_patches = rotate_patches
+        self.logical_tracking = logical_tracking
         
         # Internal state
         self.system: Optional[QECSystem] = None
@@ -169,7 +172,8 @@ class CNOTLSExperiment:
         num_qubits = self.system.num_qubits
         num_logicals = self.system.num_logicals
         
-        self.tracker = SyndromeTracker(num_qubits=num_qubits, expected_num_logicals=num_logicals)
+        self.tracker = SyndromeTracker(num_qubits=num_qubits, expected_num_logicals=num_logicals,
+                                      logical_tracking=self.logical_tracking)
         self.builder = CircuitBuilder(
             tracker=self.tracker,
             system_config=self.system,
@@ -284,7 +288,10 @@ class CNOTLSExperiment:
         # Add second coupler measurements (first coupler already measured at deactivation)
         measure_dict.update(coupler_init_dict_2)
         
-        self.builder.apply_data_readout(final_measurements=measure_dict)
+        self.builder.apply_staged_data_readout(measure_dict, stages=(
+            DataReadoutStage(tuple(coupler_init_dict_2), (second_coupler,)),
+            DataReadoutStage(tuple(q for q in measure_dict if q not in coupler_init_dict_2)),
+        ))
         
         # 11. Noise injection
         # ----------------------------------------------------------------------

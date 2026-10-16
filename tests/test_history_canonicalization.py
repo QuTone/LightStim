@@ -128,7 +128,11 @@ def test_classified_roles_reset_and_auxiliary_initialization_are_distinct():
     tracker.stabilizer_canonicalization(_declared_z_checks((0,), (1,)))
     tracker.process_resets(_z(2, 0).reshape(1, -1))
     # Reset's new preparation has not been classified by a protocol yet.
-    assert tracker._classified_stabilizer_rows == {1}
+    # Partial trace removes the old Z0 row, then appends fresh Z0. The
+    # surviving classified operator is Z1, irrespective of row numbering.
+    np.testing.assert_array_equal(
+        tracker.stabilizers.matrix[sorted(tracker._classified_stabilizer_rows)],
+        _z(2, 1).reshape(1, -1))
     tracker.reset_records_for_qubits({0})
     assert tracker._classified_stabilizer_rows == {0}
     tracker.process_initialization(
