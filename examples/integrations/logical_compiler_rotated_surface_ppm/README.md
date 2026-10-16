@@ -86,6 +86,10 @@ Z product, a pure X product, and an executable mixed `XZX` product using one
 conjugate-frame patch. The benchmark compiles with `rounds=1` for compact
 physical-circuit inspection.
 
+The default tracker emits twelve logical observables, including the three
+joint-measurement consistencies. With the single extraction round used here,
+the annotated circuit has graphlike distance 1 despite using distance-3 patches.
+
 Each neighbouring patch position is separated by one full coarse routing cell.
 This is a routing-channel layout, not a compact packing: the current backend's
 coarse cell has pitch `2d+2`, and the reserved corridor is deliberately wide

@@ -462,10 +462,48 @@ from lightstim.ir.tracker import SyndromeTracker
 
 tracker = SyndromeTracker(
     num_qubits,               # Initial system size
-    expected_num_logicals=0,  # k — the tracker validates against this at every SE round
+    expected_num_logicals=0,  # Initial encoded-state declaration
     post_select_detector_coords=None,  # Set[Tuple[float,...]] — coords where detectors get post-select tag
+    logical_tracking="slabs",  # Default; "legacy" is an explicit regression control
 )
 ```
+
+The default `slabs` mode uses three tableaus: `stabilizers` (S), `logicals`
+(L), and `absorbed_logicals` (L_absorbed, an alias of `absorbed_ops`). Each row
+carries its Pauli operator and measurement-record parity. S is partitioned into
+`S_bare`, the known constraints in the current code/gauge role space, and
+`S_dressed`, its remaining directions carrying protected information.
+
+Projection updates all three tableaus, choosing a bare S pivot before a
+dressed S pivot or an L pivot. Mid-measurement refresh canonicalizes L and
+selects its surviving complement once. After propagation into the output
+frame, S is classified against the declared code space. L_absorbed is rebuilt
+from the current dressed directions independent modulo S_bare and L; it is
+redundant state information, not a separate source of observables. Previously
+closed logical relations remain in `logical_history`.
+
+Destructive readout projects each declared measurement stage jointly and
+computes the full intersections of the surviving bare and total state spaces
+with the measured span. This also closes products whose individual rows are
+not readable. Observable emission uses S_dressed and L, while preserving
+already established record-only relations and exact postselection constraints.
+Initialization, emission, and postselection remain integrated with the existing
+builder paths.
+`TwoPatchLSExperiment`, `CNOTLSExperiment`, and `RotatedSurfacePPMExperiment`
+also use this default. `logical_tracking="legacy"` is retained only for explicit
+regression comparisons, not as a protocol-dependent choice.
+
+`CircuitBuilder` supplies continuing active checks from the existing
+`QECSystem.active_stabilizers` and active-qubit set. Direct tracker callers can
+pass `active_stabilizers=` to `process_data_measurement`; these rows declare
+the continuing code, not known eigenvalues. Omission means no continuing-code
+declaration. An active check's record expression is reconstructed from S.
+
+Protocols that combine a split with final data readout declare their tracking
+boundaries through `DataReadoutStage` and `apply_staged_data_readout`. These
+stages preserve the original physical measurement layer, record order, TICKs,
+and noise placement. The tracker does not infer corridor or patch ownership.
+See the [algorithm and API contract](slabs_tracker.md).
 
 ### Key state
 
@@ -473,8 +511,9 @@ tracker = SyndromeTracker(
 |---|---|---|
 | `tracker.stabilizers` | `PauliTableau` | Rows = current stabilizer generators (GF(2) symplectic) |
 | `tracker.logicals` | `PauliTableau` | Rows = current logical operators |
+| `tracker.absorbed_logicals` | `PauliTableau` | Current dressed representatives modulo S_bare and L; redundant with S/L |
 | `tracker.total_measurements` | `int` | Running count of all measurements so far |
-| `tracker.expected_num_logicals` | `int` | Decremented when a logical is consumed by a gate |
+| `tracker.expected_num_logicals` | `int` | Current known protected rank, `rank(S,L) - rank(S_bare)`, in default mode |
 | `tracker.num_qubits` | `int` | System size (expanded by `expand()`) |
 
 ### Methods called by `CircuitBuilder` (you usually don't call these directly)

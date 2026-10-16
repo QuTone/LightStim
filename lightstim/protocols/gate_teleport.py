@@ -21,6 +21,7 @@ from typing import Any, Dict, Literal, Optional, Tuple, Type
 
 import stim
 
+from lightstim.ir.builder import DataReadoutStage
 from lightstim.ir.experiment import QECExperiment
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.noise.config import NoiseConfig
@@ -241,7 +242,13 @@ class SGateTeleportExperiment(QECExperiment):
         resource_basis = "X" if self.method == "ZZ" else "Z"
         final_meas.update({q: resource_basis for q in _patch_data(self.system, self.resource_name)})
         final_meas.update({q: "X" for q in coupler_data})
-        self.builder.apply_data_readout(final_measurements=final_meas)
+        if coupler_data:
+            self.builder.apply_staged_data_readout(final_meas, stages=(
+                DataReadoutStage(tuple(coupler_data), (self.coupler_name,)),
+                DataReadoutStage(tuple(q for q in final_meas if q not in coupler_data)),
+            ))
+        else:
+            self.builder.apply_data_readout(final_measurements=final_meas)
 
     def build(self) -> stim.Circuit:
         from lightstim.ir.qec_system import QECSystem

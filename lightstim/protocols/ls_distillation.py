@@ -23,7 +23,7 @@ from lightstim.qec_code.surface_code.unrotated import (
 )
 from lightstim.qec_code.surface_code.unrotated.operation import _get_fold_yx_pairs
 from lightstim.ir.qec_system import QECSystem
-from lightstim.ir.builder import CircuitBuilder
+from lightstim.ir.builder import CircuitBuilder, DataReadoutStage
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.simulation.decoder_backend.pipeline import SimulationPipeline
 from lightstim.simulation.decoder_backend.config import DecoderConfig
@@ -166,8 +166,10 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
         for q in system.data_indices:
             if system.index_to_owner_map.get(q) == 'W5':
                 measure_mid[q] = 'X'
-        builder.apply_data_readout(final_measurements=measure_mid)
-        builder.deactivate_coupler(coupler_name)
+        builder.apply_staged_data_readout(measure_mid, stages=(
+            DataReadoutStage(tuple(cd), (coupler_name,)),
+            DataReadoutStage(tuple(q for q in measure_mid if q not in cd)),
+        ))
 
         if i < len(subsets) - 1:
             prepare_y('W5')

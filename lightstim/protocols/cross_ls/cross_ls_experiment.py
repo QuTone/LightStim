@@ -11,7 +11,7 @@ import numpy as np
 import stim
 
 from lightstim.ir.experiment import QECExperiment
-from lightstim.ir.builder import CircuitBuilder
+from lightstim.ir.builder import CircuitBuilder, DataReadoutStage
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.ir.qec_system import QECSystem
 from lightstim.qec_code.surface_code.unrotated import UnrotatedSurfaceCode, UnrotatedSurfaceCodeExtractionBlock, UnrotatedSurfaceCodeLogicalOpSet
@@ -245,6 +245,18 @@ class CrossLSExperiment(QECExperiment):
             if s.get("patch_name") == "pqrm"
         }
         self.system.active_stabilizer_indices.update(pqrm_stab_uids)
+        # The merged coupler declares the commuting bridge extensions of these
+        # PQRM X checks. Retire the incompatible split-code representatives now,
+        # before the first merged SE, and restore them at explicit deactivation.
+        merged_z = [set(check["pauli"]) for check in self.system.active_stabilizers_z]
+        replaced_pqrm_x = {
+            uid for uid in pqrm_stab_uids
+            if self.system.stabilizers[uid].get("type") == "X"
+            and any(len(set(self.system.stabilizers[uid]["pauli"]) & z) % 2
+                    for z in merged_z)
+        }
+        self.system.active_stabilizer_indices.difference_update(replaced_pqrm_x)
+        self.system.paused_stabilizer_indices[coupler_name].update(replaced_pqrm_x)
 
         # --- 9. SE rounds ---
         se_block = SurfacePQRMSEBlock(self.system)
@@ -289,7 +301,13 @@ class CrossLSExperiment(QECExperiment):
 
         if self.if_detector:
             self._mark_terminal_pqrm_x_checks_for_postselection()
-        builder.apply_data_readout(final_measurements=final_measurements)
+        # Keep terminal PS selection above, before either projection. The
+        # tracker transports that constraint space across the explicit split.
+        corridor = tuple(coupler_data_init)
+        builder.apply_staged_data_readout(final_measurements, stages=(
+            DataReadoutStage(corridor, (coupler_name,)),
+            DataReadoutStage(tuple(q for q in final_measurements if q not in coupler_data_init)),
+        ))
         builder.to_stim_circuit()
 
         # --- 11. Noise (optional) ---

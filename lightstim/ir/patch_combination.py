@@ -92,8 +92,11 @@ def _prepare_tracker(tracker, system, target_basis):
 
     known_stabs = [i for i, parity in enumerate(tracker.stabilizers.records)
                    if all(r >= 0 for r in parity)]
+    required_logicals = (tracker._declared_num_logicals
+                         if tracker.logical_tracking == "slabs"
+                         else tracker.expected_num_logicals)
     if (_contains(tracker.stabilizers.matrix[known_stabs], target_basis)
-            and tracker.logicals.count == tracker.expected_num_logicals):
+            and tracker.logicals.count == required_logicals):
         tracker.validate_logical_count(context="patch combination")
         return None
 
