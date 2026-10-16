@@ -126,7 +126,10 @@ class BareDressedRoles:
 
                     if existing_selected_parities is None:
                         existing_selected_parities = {}
-                        cursor = 0
+                        # Builder may pass a buffered round instead of the
+                        # full circuit. Its rec targets still refer to the
+                        # global measurement stream, including earlier rounds.
+                        cursor = self.total_measurements - circuit.num_measurements
                         for instruction in circuit.flattened():
                             if instruction.name == "DETECTOR" and instruction.tag == "post-select":
                                 parity = _parity_mask(cursor + target.value

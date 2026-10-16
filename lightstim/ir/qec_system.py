@@ -457,7 +457,12 @@ class QECSystem:
             # reduced budget back up to the stale static total. For registration before
             # any consumption this equals the old `expected := num_logicals` (they match
             # then); a coupler adds 0 logicals, so it leaves the budget untouched.
-            self._tracker.expected_num_logicals += self.num_logicals - n_log_old
+            added_logicals = self.num_logicals - n_log_old
+            self._tracker.expected_num_logicals += added_logicals
+            if self._tracker.logical_tracking == "slabs":
+                # Preparation requirements are separate from the live rank,
+                # but both grow when a new encoded patch is registered.
+                self._tracker._declared_num_logicals += added_logicals
         if self._builder is not None and n_old < self.num_qubits:
             self._builder.append_coordinates_for_new_qubits(n_old)
 
