@@ -10,10 +10,14 @@ import numpy as np
 import stim
 
 from .tableau import PauliTableau
-from .tracker_algebra import Rows, readout_closures, record_dependencies
+from .tracker_algebra import (
+    Rows, ClosureRows, ReadoutClosures, RecordDependencies,
+    readout_closures, record_dependencies,
+)
 from ..utils.linear_algebra import (
     check_commutativity, kernel_gf2, solve_linear_decomposition,
 )
+from ..utils.pauli_backend import multiply_binary
 from ..utils.subsystem_algebra import (
     combine_records, independent_row_indices, intersect_row_spaces, reduce_modulo,
 )
@@ -43,6 +47,65 @@ def _contains_parity(basis, value):
             return False
         value ^= basis[pivot]
     return True
+
+
+def _coordinate_readout_closures(state, known_banks, unknown_logicals, measurements, postselection):
+    """Close current native source coordinates without exporting physical state.
+
+    Every closed physical row is reconstructed from its measurement lineage;
+    this also preserves the exact row needed by detector coordinate selection.
+    Full X/Z role coordinates are allowed. Source-lineage dependency ordering
+    is invariant under the inverse tableau's invertible coordinate transform.
+    """
+    from ..utils.cpp._pauli_backend_cpp import (
+        PackedRows, PackedBasis, packed_readout_closures, packed_dependencies,
+        packed_multiply, packed_combine_records,
+    )
+
+    banks = [state.coordinate_rows(indices) for indices in known_banks]
+    sources = banks[0].combined(banks[1]).combined(banks[2])
+    indices = [index for bank in known_banks for index in bank]
+    source_records = state.records_selected(indices)
+    measurement_coordinates = state.coordinate_paulis(measurements.matrix)
+    physical_measurements = PackedRows(measurements.matrix)
+    empty = PackedRows(np.zeros((0, measurements.matrix.shape[1]), dtype=np.uint8))
+    native = packed_readout_closures(*banks, measurement_coordinates, [])
+    if unknown_logicals:
+        known_closed = native["detectors"]["rows"].combined(native["observables"]["rows"])
+        potential = packed_readout_closures(
+            sources.combined(state.coordinate_rows(unknown_logicals)), empty, empty,
+            measurement_coordinates, [])["detectors"]["rows"]
+        if PackedBasis(known_closed).residues(potential).numpy().any():
+            raise RuntimeError(
+                "process_data_measurement: a logical observable closes with "
+                "UNMEASURED sentinel records; its parity was never banked "
+                "and cannot be emitted.")
+
+    def dependencies(rows, records):
+        lineage = packed_dependencies(rows)
+        return RecordDependencies(lineage.numpy(), tuple(
+            tuple(parity) for parity in packed_combine_records(lineage, records)))
+
+    def translate(result, packed_sources, records):
+        def closed(name):
+            value = result[name]
+            physical = packed_multiply(value["measurement_lineage"], physical_measurements)
+            history = packed_combine_records(value["state_lineage"], records)
+            measured = packed_combine_records(value["measurement_lineage"], measurements.records)
+            return ClosureRows(
+                Rows(physical.numpy(), history), value["state_lineage"].numpy(),
+                value["measurement_lineage"].numpy(),
+                tuple(tuple(sorted(set(old) ^ set(new))) for old, new in zip(history, measured)))
+        return ReadoutClosures(closed("detectors"), closed("observables"),
+                               closed("postselection"), dependencies(packed_sources, records))
+
+    closure = translate(native, sources, source_records)
+    selected_coordinates = state.coordinate_paulis(postselection.matrix)
+    ps_native = packed_readout_closures(
+        selected_coordinates, empty, empty, measurement_coordinates, [])
+    ps_closure = translate(ps_native, selected_coordinates, postselection.records)
+    bare_dependencies = dependencies(banks[0], state.records_selected(known_banks[0]))
+    return closure, ps_closure, bare_dependencies
 
 
 class V2ReadoutMixin:
@@ -99,12 +162,21 @@ class V2ReadoutMixin:
             raise IndexError("Postselected stabilizer row lies outside S")
         selected = [index for index in selected
                     if all(record >= 0 for record in self.stabilizers.records[index])]
-        selected_matrix = self.stabilizers.matrix[selected]
+        record_state = self._sync_record_state()
+        if record_state is not None:
+            # Reference readout projects a temporary full table. An unknown
+            # logical closure can still reject the readout after projection;
+            # the caller's S/L banks must retain their pre-call state then.
+            # Measurement counters and any already emitted physical circuit
+            # retain their existing reference error behavior.
+            record_state = record_state.copy()
+        selected_matrix = (record_state.rows_selected(selected) if record_state is not None
+                           else self.stabilizers.matrix[selected])
         selected_records = [self.stabilizers.records[index] for index in selected]
         if len(selected_matrix):
             commutators = check_commutativity(selected_matrix, measured)
             ps_combinations = kernel_gf2(commutators.T)
-            postselection = Rows(ps_combinations @ selected_matrix % 2,
+            postselection = Rows(multiply_binary(ps_combinations, selected_matrix),
                                  combine_records(ps_combinations, selected_records))
         else:
             postselection = empty
@@ -123,12 +195,17 @@ class V2ReadoutMixin:
         n_logicals = self.logicals.count
         physical_end = n_stabilizers + n_logicals
         full = PauliTableau(self.num_qubits)
-        full.matrix = np.vstack([self.stabilizers.matrix[order],
-                                 self.logicals.matrix, self.absorbed_ops.matrix]).copy()
-        full.records = ([list(self.stabilizers.records[index]) for index in order]
-                        + [list(row) for row in self.logicals.records]
-                        + [list(row) for row in self.absorbed_ops.records])
-        record_state = self._sync_record_state(full.matrix, full.records)
+        if record_state is not None:
+            native_order = order + list(range(n_stabilizers,
+                n_stabilizers + n_logicals + self.absorbed_ops.count))
+            full.records = record_state.records_selected(native_order)
+            record_state.adopt_coordinates(record_state.coordinate_rows(native_order), full.records)
+        else:
+            full.matrix = np.vstack([self.stabilizers.matrix[order],
+                                     self.logicals.matrix, self.absorbed_ops.matrix]).copy()
+            full.records = ([list(self.stabilizers.records[index]) for index in order]
+                            + [list(row) for row in self.logicals.records]
+                            + [list(row) for row in self.absorbed_ops.records])
         destroyed = set()
         for row, record in zip(measured, absolute):
             anti = (record_state.anticommuting(row) if record_state is not None else
@@ -151,42 +228,42 @@ class V2ReadoutMixin:
             full.replace_row(pivot, row, [record])
             destroyed.add(pivot)
 
-        if record_state is not None and destroyed:
-            full.matrix = record_state.rows()
+        if record_state is not None:
             full.records = record_state.records()
 
-        def known_part(start, stop):
-            indices = [index for index in range(start, stop)
-                       if index not in destroyed
-                       and all(record >= 0 for record in full.records[index])]
-            return Rows(full.matrix[indices], [full.records[index] for index in indices])
+        def known_indices(start, stop):
+            return [index for index in range(start, stop)
+                    if index not in destroyed
+                    and all(record >= 0 for record in full.records[index])]
 
-        bare = known_part(0, n_bare)
-        dressed = known_part(n_bare, n_stabilizers)
-        logical = known_part(n_stabilizers, physical_end)
+        known_banks = [known_indices(0, n_bare), known_indices(n_bare, n_stabilizers),
+                       known_indices(n_stabilizers, physical_end)]
         unknown_logicals = [index for index in range(n_stabilizers, physical_end)
                             if index not in destroyed
                             and any(record < 0 for record in full.records[index])]
-        if unknown_logicals:
-            # Geometry can show that a logical readout closes even though its
-            # eigenvalue was never banked. Do not silently omit that requested
-            # logical output. Compare full intersections so products of rows,
-            # not just individually readable unknown L rows, are checked.
-            known_state = np.vstack([bare.matrix, dressed.matrix, logical.matrix])
-            known_closed, _ = intersect_row_spaces(known_state, measured)
-            potential_closed, _ = intersect_row_spaces(
-                np.vstack([known_state, full.matrix[unknown_logicals]]), measured)
-            if reduce_modulo(potential_closed, known_closed).any():
-                raise RuntimeError(
-                    "process_data_measurement: a logical observable closes with "
-                    "UNMEASURED sentinel records; its parity was never banked "
-                    "and cannot be emitted.")
-        # Unknown preparation placeholders are never allowed to manufacture
-        # an eigenvalue by canceling two occurrences of the -1 sentinel.
-        closure = readout_closures(bare, dressed, logical, measurements,
-                                   include_dependencies=True)
-        ps_closure = readout_closures(postselection, empty, empty, measurements,
+        if record_state is not None:
+            closure, ps_closure, bare_dependencies = _coordinate_readout_closures(
+                record_state, known_banks, unknown_logicals, measurements, postselection)
+        else:
+            bare, dressed, logical = [Rows(full.matrix[indices],
+                [full.records[index] for index in indices]) for indices in known_banks]
+            if unknown_logicals:
+                # Unknown L cannot supply a readout value, including a product
+                # that becomes measurable only together with known rows.
+                known_state = np.vstack([bare.matrix, dressed.matrix, logical.matrix])
+                known_closed, _ = intersect_row_spaces(known_state, measured)
+                potential_closed, _ = intersect_row_spaces(
+                    np.vstack([known_state, full.matrix[unknown_logicals]]), measured)
+                if reduce_modulo(potential_closed, known_closed).any():
+                    raise RuntimeError(
+                        "process_data_measurement: a logical observable closes with "
+                        "UNMEASURED sentinel records; its parity was never banked "
+                        "and cannot be emitted.")
+            closure = readout_closures(bare, dressed, logical, measurements,
                                       include_dependencies=True)
+            ps_closure = readout_closures(postselection, empty, empty, measurements,
+                                         include_dependencies=True)
+            bare_dependencies = record_dependencies(bare)
 
         # Coordinate selection follows the native final-readout convention:
         # historical syndrome position first, then support on measured data.
@@ -285,7 +362,6 @@ class V2ReadoutMixin:
         # A dependent state representation can carry a genuine record-only
         # relation. Close it before basis reduction discards a Pauli-zero row.
         # Relations already emitted or archived retain their original role.
-        bare_dependencies = record_dependencies(bare)
         for parity in bare_dependencies.records:
             emit(parity, zero, parity, record_only=True)
         for parity in closure.source_dependencies.records:
@@ -316,30 +392,53 @@ class V2ReadoutMixin:
         stab_indices = [index for index in range(n_stabilizers) if index not in destroyed]
         log_indices = [index for index in range(n_stabilizers, physical_end)
                        if index not in destroyed]
-        stab_matrix, stab_records = fold(full.matrix[stab_indices],
-                                         [full.records[index] for index in stab_indices])
-        log_matrix, log_records = fold(full.matrix[log_indices],
-                                       [full.records[index] for index in log_indices])
         ps_matrix, ps_records = fold(postselection.matrix, postselection.records)
         ps_survivors = [index for index, row in enumerate(ps_matrix) if row.any()]
         ps_matrix = ps_matrix[ps_survivors]
         ps_records = [ps_records[index] for index in ps_survivors]
 
-        # Preserve exact surviving PS constraints before selecting an ordinary
-        # S complement, so downstream selectors retain the same signed space.
-        # Known rows precede unknown placeholders when choosing representatives.
-        stab_order = ([i for i, records in enumerate(stab_records) if all(r >= 0 for r in records)]
-                      + [i for i, records in enumerate(stab_records) if any(r < 0 for r in records)])
-        candidates = np.vstack([ps_matrix, stab_matrix[stab_order]])
-        additional = [index - len(ps_matrix) for index in independent_row_indices(candidates)
-                      if index >= len(ps_matrix)]
-        chosen_stabs = [stab_order[index] for index in additional]
-        self.stabilizers.matrix = np.vstack([ps_matrix, stab_matrix[chosen_stabs]])
-        self.stabilizers.records = ps_records + [stab_records[index] for index in chosen_stabs]
+        # Preserve exact surviving PS constraints before the ordinary S
+        # complement. Native folds retain physical-column canonical residues;
+        # only closure and source dependency algebra is coordinate invariant.
+        if record_state is not None:
+            from ..utils.cpp._pauli_backend_cpp import PackedRows, PackedBasis
+
+            stab_rows, stab_records = record_state.fold_rows(
+                stab_indices, measured, measurements.records)
+            log_rows, log_records = record_state.fold_rows(
+                log_indices, measured, measurements.records)
+            stab_order = ([i for i, records in enumerate(stab_records) if all(r >= 0 for r in records)]
+                          + [i for i, records in enumerate(stab_records) if any(r < 0 for r in records)])
+            ps_rows = PackedRows(ps_matrix)
+            candidates = ps_rows.combined(stab_rows.select(stab_order))
+            additional = [index - len(ps_rows) for index in PackedBasis(candidates).selected
+                          if index >= len(ps_rows)]
+            chosen_stabs = [stab_order[index] for index in additional]
+            final_stabs = ps_rows.combined(stab_rows.select(chosen_stabs))
+            chosen_logicals = PackedBasis(log_rows).selected
+            final_logs = log_rows.select(chosen_logicals)
+            final_records = (ps_records + [stab_records[index] for index in chosen_stabs]
+                             + [log_records[index] for index in chosen_logicals])
+            record_state.adopt_physical(final_stabs.combined(final_logs), final_records)
+            self._record_state = record_state
+            self._read_record_state((len(final_stabs), len(final_logs), 0))
+        else:
+            stab_matrix, stab_records = fold(full.matrix[stab_indices],
+                                             [full.records[index] for index in stab_indices])
+            log_matrix, log_records = fold(full.matrix[log_indices],
+                                           [full.records[index] for index in log_indices])
+            stab_order = ([i for i, records in enumerate(stab_records) if all(r >= 0 for r in records)]
+                          + [i for i, records in enumerate(stab_records) if any(r < 0 for r in records)])
+            candidates = np.vstack([ps_matrix, stab_matrix[stab_order]])
+            additional = [index - len(ps_matrix) for index in independent_row_indices(candidates)
+                          if index >= len(ps_matrix)]
+            chosen_stabs = [stab_order[index] for index in additional]
+            self.stabilizers.matrix = np.vstack([ps_matrix, stab_matrix[chosen_stabs]])
+            self.stabilizers.records = ps_records + [stab_records[index] for index in chosen_stabs]
+            chosen_logicals = independent_row_indices(log_matrix)
+            self.logicals.matrix = log_matrix[chosen_logicals]
+            self.logicals.records = [log_records[index] for index in chosen_logicals]
         self.post_select_row_indices = set(range(len(ps_matrix)))
-        chosen_logicals = independent_row_indices(log_matrix)
-        self.logicals.matrix = log_matrix[chosen_logicals]
-        self.logicals.records = [log_records[index] for index in chosen_logicals]
         self._classified_stabilizer_rows = set(range(self.stabilizers.count))
         self.stabilizer_with_logical_components = set()
         self._gauge_logical_vectors = []

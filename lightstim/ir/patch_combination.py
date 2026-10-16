@@ -76,6 +76,10 @@ def _global_view(system, local, mapping, name):
 
 def _prepare_tracker(tracker, system, target_basis):
     """A classification change may use known rows, never invented constraints."""
+    # Reading a native bank can materialize its writable view, and validation
+    # may reconcile that view with the inverse frame. Keep even these private
+    # representation changes out of the live tracker until adoption succeeds.
+    tracker = copy.deepcopy(tracker)
     if tracker.num_qubits != system.num_qubits:
         raise ValueError("Tracker register does not match the system register.")
     if tracker.num_absorbed_dof() or tracker._gauge_logical_vectors:
@@ -106,7 +110,7 @@ def _prepare_tracker(tracker, system, target_basis):
     active = _matrix(system.active_stabilizers, system.data_indices, system.num_qubits)
     if not _contains(full[known], active):
         raise ValueError("Cannot reclassify while active code checks remain unestablished.")
-    staged = copy.deepcopy(tracker)
+    staged = tracker
     staged.stabilizer_canonicalization(system)
     staged.rebase_stabilizers_onto_code_basis(system)
     staged.validate_logical_count(context="patch combination")

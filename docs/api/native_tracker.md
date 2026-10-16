@@ -33,7 +33,7 @@ normal dependency, and no private ABI is shared with its installed extension.
 | --- | --- |
 | `auto` (default) | Use the native algebra when installed, otherwise the reference implementation. |
 | `reference` | Use the original decomposition and NumPy propagation. The existing GF(2) C++ RREF may still be used. |
-| `native` | Require the native extension; raise an import error if it is unavailable. Noncommuting bases and greedy weight reduction still use the general solver. |
+| `native` | Require the native extension; accelerate general binary subspaces, lineage, records and Pauli propagation. Greedy coefficient-weight reduction retains its reference policy. |
 
 The default build uses the compiler's portable architecture target. A local
 build can opt into `LIGHTSTIM_NATIVE_ARCH=native`. Do not distribute such a
@@ -61,19 +61,48 @@ C++, using the pivot chosen by the current Tracker. Redundant rows retain their
 individual records, and unknown placeholders cannot cancel into known values.
 Measured ancilla factors are replaced by their records in the native engine.
 
-The Tracker still owns bare/dressed classification, exact-check preference,
-logical-history capture, postselection subspaces, and staged readout. Role and
-gauge spaces are not inserted as extra state constraints. At these semantic
-boundaries the existing algorithms can inspect dense rows. Public tableaus
-remain mutable; the engine reconciles those rows into its existing frame before
-the next native operation. This boundary import/export and the remaining
-Python algebra are real costs, so persistence alone does not establish the
-original PR's reported end-to-end speedup.
+The current Tracker specifies bare/dressed classification, exact-check
+preference, logical-history capture, postselection subspaces and staged readout.
+Their native execution uses packed source coordinates and lineage. A role or
+gauge declaration can be noncommuting, so it uses the full inverse-frame X/Z
+coordinates; it is never inserted as an extra conditional-state constraint.
+Intersections are constructed from dependencies of source residues, retaining
+the original-source coefficients. DET, OBS and postselection closures share
+the same measurement basis instead of independently reducing physical matrices.
+
+The inverse engine is authoritative during native measurement blocks.
+Projection, relation queries, logical canonicalization, basis refresh,
+ancilla-record folding and row selection execute without a dense Python-state
+round trip. Classification and absorbed-quotient reconstruction apply source
+lineages directly to generator coordinates. Destructive readout computes its
+closures there too; physical detector supports are reconstructed from measured
+rows. Native packed physical views remain necessary where the public contract
+chooses a particular physical-column representative, such as logical RREF and
+destructive support reduction.
+
+Public `PauliTableau.matrix` and `records` remain writable. Native-backed banks
+materialize those views on demand; exposed or replaced data is reconciled at
+the next native boundary. Unexposed banks can reuse the engine directly.
+Python still manages Builder boundaries, role metadata, history and annotation
+emission. The preserved semantics do not require the previous repeated dense
+elimination, and this implementation removes that work rather than attributing
+it to a semantic lower bound.
+
+Measurement and destructive-readout transitions clone the native inverse frame
+and records before projection, then commit the completed output. These
+transaction snapshots preserve the reference path's temporary-tableau behavior:
+a later record error cannot expose a partial projection through public banks.
+They copy the existing frame directly, without re-importing physical matrices
+or rebuilding its basis. Persistent tracking therefore describes the retained
+frame and source lineage, not one immutable Python object identity.
 
 Deep copies have independent inverse frames and records. Register expansion
 creates an engine for the new width on the next native operation. Diagnostic
 `tracker._record_state.stats` counts constructions, reconciliations, native
-gates, queries, projections, folds, and snapshots for the current engine.
+gates, queries, projections, folds, coordinate operations and physical exports
+for the current engine. A zero persistent `decompositions` count does not mean
+the engine is idle: exact checks and bare-plus-measurement-prefix relations
+have their own native paths and counters.
 
 Neither backend changes Builder's declared measurement blocks, classification
 boundaries, or repeat compression. Differential tests compare intermediate
@@ -81,11 +110,16 @@ state/records, role metadata and history as well as exact emitted circuits.
 
 ## Computation and preserved contracts
 
-For a commuting basis, the engine anchors the earliest independent original
+For a stateless commuting basis, the engine anchors the earliest independent original
 rows as generators `S_i = C Z_i C†`. Querying `C† P C` returns anticommutation
 coordinates and decomposition coordinates. A target belongs to the supplied
 span only when its X coordinates vanish **and** every used Z generator is
-known. Completing an underconstrained tableau never supplies a new constraint.
+known. In the persistent engine, classification and row recombination can
+replace those individual generators with products. Membership then requires
+that the target's Z coordinates lie in the span of the actual retained source
+coordinate rows; generator presence alone is insufficient. For example, a
+known `Z1*Z2` product does not make `Z1` and `Z2` separately known. Completing an
+underconstrained tableau never supplies a new constraint.
 The construction is unsigned, so redundant binary inputs such as `XX, ZZ, YY`
 are valid even though their positive signed versions cannot all stabilize a
 state.
@@ -93,10 +127,11 @@ state.
 Coefficients refer to the same original independent basis rows as the
 reference solver. Dependent original rows remain available to the Tracker's
 exact local-check preference. New target directions preserve the public
-solver's existing component order. General noncommuting spaces and
-`reduce_weight=True` retain the original solver, including its representative
-choices. This stateless algebra path never receives measurement records; the
-separately selected persistent engine described above does.
+solver's existing component order. General noncommuting spaces use packed
+binary bases with the same earliest-source coefficient convention.
+`reduce_weight=True` retains the original representative-selection policy.
+Native lineage transformations apply the same record parity rules, including
+the distinct treatment of unknown placeholders and Pauli-zero record relations.
 
 Pauli frame propagation uses a packed XOR product instead of dense unsigned
 integer matrix multiplication. This includes stabilizers, live logicals,
@@ -113,20 +148,27 @@ When a new basis strictly extends a cached row prefix, the engine copies that
 tableau and anchors only the appended rows. Existing cache entries remain
 immutable, so branches with different suffixes cannot contaminate one another.
 
-The backend still constructs an inverse basis when the supplied space changes
-without a reusable prefix.
-Role intersections, readout closures, and logical canonicalization retain their
-existing algebra. This integration therefore does not imply the original
-record-tableau annotator's reported speedups: performance must be measured
-against the current Tracker with equivalent outputs.
+The general packed-basis cache likewise reuses growing source prefixes while
+keeping earlier branches immutable. Native Tracker operations use persistent
+coordinate handles directly whenever possible. The mathematical operations
+and representative choices remain those of the current Tracker; their storage
+and execution have changed. Performance comparisons must still use equivalent
+constructors, outputs, native GF(2) baselines and timing scopes.
 
 ## Repeated rounds and measurement boundaries
 
-Both algebra backends use the same Builder and Tracker control flow. Each
+Both algebra backends preserve the same Builder scheduling and Tracker
+transition boundaries; the persistent implementation executes those
+transitions through native coordinate operations. Each
 declared physical measurement block receives its own tracker update; Builder
 classifies/rebases the state after the complete syndrome-extraction round.
 Subsystem classification also runs at each physical block boundary. Selecting
 `native` preserves these boundaries and the existing Stim `REPEAT` packaging.
+
+Builder supplies the original Clifford circuit chunk for every native
+measurement transition. Direct calls to `process_mid_measurement` that supply
+only a symplectic matrix and omit `circuit_chunk` retain the compatible matrix
+execution path, while using the selected algebra backend.
 
 Builder can advance a verified single-logical steady state after evaluating
 two probe rounds. This shortcut requires stable detector and state transitions,
@@ -150,16 +192,23 @@ logical protocols that must execute each round.
 against the reference solver, including incomplete and redundant bases, cache
 invalidation, arbitrary Pauli propagation, and machine-word boundaries.
 Protocol differential tests compare emitted circuits and logical history.
-CI runs the existing non-slow test suite with both backend settings, including
-the bare/dressed, logical-history, postselection, and staged-readout regressions.
+`test_native_role_algebra.py` compares exact role/readout lineage on arbitrary
+subspaces and under invertible changes of coordinates. Frozen #124 oracle
+fixtures in `test_full_tracker_semantic_oracle.py` compare complete boundary
+states and emitted circuits, independently of the modified reference path.
+CI runs reference algebra, native algebra and the persistent Tracker, including
+the bare/dressed, logical-history, postselection and staged-readout regressions.
 
 ```bash
 LIGHTSTIM_PAULI_BACKEND=reference python -m pytest tests/ -m 'not slow' --timeout=90
 LIGHTSTIM_PAULI_BACKEND=native python -m pytest tests/ -m 'not slow' --timeout=90
+LIGHTSTIM_PAULI_BACKEND=native LIGHTSTIM_TRACKER_BACKEND=persistent python -m pytest tests/ -m 'not slow' --timeout=90
 python benchmarks/tracker/benchmark_pauli_backend.py --validate --output /tmp/pauli-backend.json
 ```
 
-One local run (Python 3.10, Python Stim 1.15, native Stim 1.16, portable build,
+The following is a **historical kernel-only run**, before the persistent
+role/closure engine, and is not a performance result for the current source.
+That local run (Python 3.10, Python Stim 1.15, native Stim 1.16, portable build,
 C++ RREF enabled in both modes) produced the following cold-cache medians of
 three trials. Each uses unrotated memory with `rounds=d`; all emitted circuits
 were byte-identical and passed DEM/noiseless checks.

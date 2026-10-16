@@ -37,8 +37,8 @@ def extensions():
             + [str(STIM_SRC / path) for path in STIM_SOURCES]
             + [str(path.relative_to(ROOT)) for path in gates],
             include_dirs=[str(STIM_SRC)],
-            depends=["lightstim/utils/cpp/pauli_propagation.h",
-                     "lightstim/utils/cpp/persistent_record_state.h"],
+            depends=[str(path.relative_to(ROOT))
+                     for path in sorted((ROOT / "lightstim/utils/cpp").glob("*.h"))],
             cxx_std=20, optional=True,
         ))
     else:

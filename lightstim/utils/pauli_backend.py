@@ -1,12 +1,14 @@
-"""Optional unsigned Pauli algebra acceleration for the existing tracker.
+"""Optional native Pauli algebra under the existing Tracker role policy.
 
-The inverse-tableau method follows Hou Yuewen's scalability contribution in
-LightStim PR #110.  Record expressions, role classification, and logical
-history stay with the tracker; this module only handles binary Pauli rows.
+The persistent inverse-tableau architecture follows Hou Yuewen's scalability
+contribution in LightStim PR #110. Packed source-coordinate algebra extends it
+with exact S_bare/S_dressed/L classification and readout closure lineages,
+including arbitrary noncommuting role spaces. Tracker still decides projection
+pivots, detector/logical roles, postselection, and absorbed-history policy.
 
 Set ``LIGHTSTIM_PAULI_BACKEND`` to ``reference`` to disable acceleration or to
-``native`` to require the compiled extension.  The default, ``auto``, uses the
-extension when available.  Noncommuting bases still use the general solver.
+``native`` to require the compiled extension. The default, ``auto``, uses the
+extension when available. Older extensions retain the commuting-only fallback.
 """
 
 from collections import OrderedDict
@@ -26,6 +28,19 @@ except (ImportError, OSError) as error:
     _CommutingBasis = None
     _propagate_paulis_native = None
     _NATIVE_IMPORT_ERROR = error
+
+# The role algebra is optional independently of older compiled extensions.
+try:
+    from .cpp import _pauli_backend_cpp as _packed_native
+    PackedRows = _packed_native.PackedRows
+    PackedBasis = _packed_native.PackedBasis
+except (ImportError, OSError, AttributeError):
+    _packed_native = None
+    PackedRows = PackedBasis = None
+
+_packed_basis_cache = OrderedDict()
+_packed_basis_cache_bytes = 0
+
 
 _NATIVE_AVAILABLE = _CommutingBasis is not None
 _CACHE_MAX_ENTRIES = 8
@@ -56,10 +71,12 @@ def _use_native():
 
 def _clear_basis_cache():
     """Release cached algebra state, including unsupported-basis entries."""
-    global _basis_cache_bytes
+    global _basis_cache_bytes, _packed_basis_cache_bytes
     with _basis_cache_lock:
         _basis_cache.clear()
         _basis_cache_bytes = 0
+        _packed_basis_cache.clear()
+        _packed_basis_cache_bytes = 0
 
 
 def _get_basis(matrix):
@@ -164,3 +181,53 @@ def propagate_paulis(rows, forward):
     if use_native:
         return _propagate_paulis_native(rows, forward)
     return ((rows @ forward) % 2).astype(np.uint8)
+
+
+def use_packed_algebra():
+    """Whether the optional full-coordinate role algebra is selected."""
+    return _use_native() and PackedRows is not None
+
+
+def _get_packed_basis(matrix):
+    """Cache immutable packed source bases by content, never mutable identity."""
+    global _packed_basis_cache_bytes
+    matrix = np.ascontiguousarray(matrix, dtype=np.uint8) & np.uint8(1)
+    key = (matrix.shape, matrix.tobytes())
+    with _basis_cache_lock:
+        if key in _packed_basis_cache:
+            result, size = _packed_basis_cache.pop(key)
+            _packed_basis_cache[key] = result, size
+            return result
+        parent = None
+        parent_rows = -1
+        for (shape, contents), (candidate, _) in reversed(_packed_basis_cache.items()):
+            if (shape[1] == matrix.shape[1] and parent_rows < shape[0] < matrix.shape[0]
+                    and key[1].startswith(contents)):
+                parent, parent_rows = candidate, shape[0]
+        result = parent.extended(matrix[parent_rows:]) if parent is not None else PackedBasis(matrix)
+        size = len(key[1]) + result.estimated_bytes + 128
+        if _CACHE_MAX_ENTRIES > 0 and size <= _CACHE_MAX_BYTES:
+            while _packed_basis_cache and (len(_packed_basis_cache) >= _CACHE_MAX_ENTRIES
+                    or _packed_basis_cache_bytes + size > _CACHE_MAX_BYTES):
+                _, (_, previous_size) = _packed_basis_cache.popitem(last=False)
+                _packed_basis_cache_bytes -= previous_size
+            _packed_basis_cache[key] = result, size
+            _packed_basis_cache_bytes += size
+        return result
+
+
+def solve_packed_decomposition(basis, targets):
+    """General source-coordinate decomposition, including noncommuting roles."""
+    if not use_packed_algebra():
+        return None
+    basis, targets = np.asarray(basis), np.asarray(targets)
+    if basis.ndim != 2 or targets.ndim != 2 or basis.shape[1] != targets.shape[1]:
+        raise ValueError("Basis and targets must be matrices of the same width")
+    return _get_packed_basis(basis).decompose(targets)
+
+
+def multiply_binary(coefficients, rows):
+    """GF(2) product using word XOR instead of dense integer multiplication."""
+    if use_packed_algebra():
+        return _packed_native.packed_multiply(PackedRows(coefficients), PackedRows(rows)).numpy()
+    return ((np.asarray(coefficients, dtype=np.uint8) @ np.asarray(rows, dtype=np.uint8)) % 2).astype(np.uint8)

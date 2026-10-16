@@ -3,7 +3,8 @@
 // The inverse query and generator re-basing below are adapted from Hou Yuewen
 // (isaachyw)'s record-tableau engine, QuTone/LightStim PR #110, commit 37df61c.
 // Original author: isaachyw <isaachyw@umich.edu>. Apache-2.0 (repository LICENSE).
-// This module deliberately owns no detector, logical-role, or record policy.
+// Tracker retains detector/logical policy and prescribes source rows/pivots.
+// Native kernels execute its exact role algebra and record transformations.
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -185,6 +186,7 @@ public:
     }
 };
 
+#include "packed_row_algebra.h"
 #include "persistent_record_state.h"
 
 PYBIND11_MODULE(_pauli_backend_cpp, mod) {
@@ -196,5 +198,6 @@ PYBIND11_MODULE(_pauli_backend_cpp, mod) {
         .def("extended", &CommutingBasis::extended)
         .def("decompose", &CommutingBasis::decompose);
     mod.def("propagate_paulis", &propagate_paulis);
+    lightstim_packed::bind(mod);
     bind_persistent_record_state(mod);
 }

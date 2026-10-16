@@ -165,6 +165,22 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             return None
         if matrix is None:
             banks = (self.stabilizers, self.logicals, self.absorbed_ops)
+            offset = 0
+            unexposed = self._record_state is not None
+            matrices_unexposed = unexposed
+            for bank in banks:
+                indices = range(offset, offset + bank.count)
+                unexposed = unexposed and getattr(
+                    bank, "native_is_unexposed", lambda *_: False)(self._record_state, indices)
+                matrices_unexposed = matrices_unexposed and getattr(
+                    bank, "native_matrix_is_unexposed", lambda *_: False)(self._record_state, indices)
+                offset += bank.count
+            if unexposed and self._record_state.num_qubits == self.num_qubits:
+                return self._record_state
+            if matrices_unexposed and self._record_state.num_qubits == self.num_qubits:
+                self._record_state.replace_records(
+                    [list(row) for bank in banks for row in bank.records])
+                return self._record_state
             matrix = np.vstack([bank.matrix for bank in banks])
             records = [list(row) for bank in banks for row in bank.records]
         if self._record_state is None or self._record_state.num_qubits != self.num_qubits:
@@ -173,14 +189,20 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             self._record_state.replace_state(matrix, records)
         return self._record_state
 
-    def _read_record_state(self):
-        matrix = self._record_state.rows()
-        records = self._record_state.records()
+    def _read_record_state(self, counts=None):
+        from .native_tableau import NativePauliTableau
+
         start = 0
-        for bank in (self.stabilizers, self.logicals, self.absorbed_ops):
-            stop = start + bank.count
-            bank.matrix = matrix[start:stop].copy()
-            bank.records = records[start:stop]
+        names = ("stabilizers", "logicals", "absorbed_ops")
+        if counts is None:
+            counts = [getattr(self, name).count for name in names]
+        for name, count in zip(names, counts):
+            bank = getattr(self, name)
+            stop = start + count
+            if not isinstance(bank, NativePauliTableau):
+                bank = NativePauliTableau(self.num_qubits)
+                setattr(self, name, bank)
+            bank.attach(self._record_state, range(start, stop))
             start = stop
 
     def set_expected_logicals(self, k: int):
@@ -220,8 +242,15 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             order = empty + other
         if order == list(range(self.stabilizers.count)):
             return
-        self.stabilizers.matrix = self.stabilizers.matrix[order]
-        self.stabilizers.records = [self.stabilizers.records[i] for i in order]
+        state = self._sync_record_state()
+        if state is not None:
+            ns, nl, na = self.stabilizers.count, self.logicals.count, self.absorbed_ops.count
+            indices = order + list(range(ns, ns + nl + na))
+            state.adopt_coordinates(state.coordinate_rows(indices), state.records_selected(indices))
+            self._read_record_state((ns, nl, na))
+        else:
+            self.stabilizers.matrix = self.stabilizers.matrix[order]
+            self.stabilizers.records = [self.stabilizers.records[i] for i in order]
         remap = {old: new for new, old in enumerate(order)}
         self._dressed_stabilizer_rows = {
             remap[i] for i in self._dressed_stabilizer_rows if i in remap
@@ -295,6 +324,15 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         postselection = self._v2_trace_postselection(
             self._v2_capture_postselection(), qubits)
         ns, nl = self.stabilizers.count, self.logicals.count
+        state = self._sync_record_state()
+        if state is not None:
+            kept, new_ns, new_nl, new_na = state.trace_qubits(qubits, ns, nl)
+            self._read_record_state((new_ns, new_nl, new_na))
+            self._remap_rows_after_removal([i for i in range(ns) if i not in kept])
+            self._v2_restore_postselection(postselection)
+            self._v2_rebuild_absorbed()
+            self._v2_sync_budget()
+            return
         full = PauliTableau(self.num_qubits)
         full.matrix = np.vstack([self.stabilizers.matrix, self.logicals.matrix,
                                  self.absorbed_logicals.matrix])
@@ -947,7 +985,13 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         else:
             self._reject_reset_over_banked(touched, context="process_initialization")
         first_row = self.stabilizers.count
-        self.stabilizers.add_stabilizers(init_tableau)
+        state = self._sync_record_state()
+        if state is not None:
+            nl, na = self.logicals.count, self.absorbed_ops.count
+            state.insert_sources(init_tableau, [[] for _ in range(len(init_tableau))], first_row)
+            self._read_record_state((first_row + len(init_tableau), nl, na))
+        else:
+            self.stabilizers.add_stabilizers(init_tableau)
         if stabilizer_qubits:
             self._classified_stabilizer_rows.update(
                 first_row + i for i, row in enumerate(init_tableau)
@@ -967,9 +1011,10 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
     def get_forward_symplectic_matrix(
         circuit_chunk: stim.Circuit,
         num_qubits: int,
+        *, tableau=None,
     ) -> np.ndarray:
         """Build the padded forward symplectic matrix of a Clifford circuit."""
-        u_tableau = stim.Tableau.from_circuit(
+        u_tableau = tableau if tableau is not None else stim.Tableau.from_circuit(
             circuit_chunk,
             ignore_noise=True,
             ignore_measurement=True,
@@ -1080,7 +1125,13 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             touched = {int(c) % self.num_qubits
                        for c in np.flatnonzero(reset_paulis.any(axis=0))}
             self._slabs_discard_qubits(touched)
-            self.stabilizers.add_stabilizers(reset_paulis)
+            state = self._sync_record_state()
+            if state is not None:
+                ns, nl, na = self.stabilizers.count, self.logicals.count, self.absorbed_ops.count
+                state.insert_sources(reset_paulis, [[] for _ in range(len(reset_paulis))], ns)
+                self._read_record_state((ns + len(reset_paulis), nl, na))
+            else:
+                self.stabilizers.add_stabilizers(reset_paulis)
             self._v2_rebuild_absorbed()
             self._v2_sync_budget()
             return
@@ -1359,6 +1410,16 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         postselection = (self._v2_project_postselection(
             self._v2_capture_postselection(), back_propagated_paulis)
             if self.logical_tracking == "slabs" else None)
+
+        if (self._record_state_type is not None and self.logical_tracking == "slabs"
+                and circuit_chunk is not None):
+            from .native_measurement import process_mid_measurement
+
+            return process_mid_measurement(
+                self, circuit, forward_symplectic_matrix, back_propagated_paulis,
+                reset_paulis, measurement_qubit_indices, measurement_bases,
+                measurement_coords, retain_measured_qubits, no_detector_mask,
+                circuit_chunk, current_base_idx, postselection, input_dressed)
 
         # ======================================================================
         # Step 1: Combine Stabilizers and Logicals into Full Tableau
