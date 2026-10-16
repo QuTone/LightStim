@@ -548,11 +548,16 @@ public:
     }
     Indices measurement_anticommuting(size_t index) {
         if (!batch_active || index >= batch_x.size()) throw std::out_of_range("No active measurement batch at this index");
+        counters["queries"]++;
+        counters["cached_measurement_queries"]++;
+        // Every retained source has inverse-Z coordinates. A measurement
+        // with no inverse-X component therefore commutes with every source,
+        // including dependent rows, without scanning their coordinates.
+        if (std::none_of(batch_x[index].begin(), batch_x[index].end(),
+                         [](uint64_t word) { return word != 0; })) return {};
         Indices anti;
         for (size_t k = 0; k < coordinates.size(); k++)
             if (dot(batch_x[index], coordinates[k])) anti.push_back(k);
-        counters["queries"]++;
-        counters["cached_measurement_queries"]++;
         return anti;
     }
     py::tuple measurement_relation(size_t index, size_t ns, size_t nl,
