@@ -99,7 +99,9 @@ class RotatedSurfacePPMExperiment:
     def __init__(self, patches, ppm_sequence, *, initial_states,
                  final_measure_states, rounds=3, rounds_init=1, idle_rounds=0,
                  noise_params=None, noise_model='circuit_level',
-                 schedule: str = 'auto', colour_swapped=frozenset()):
+                 schedule: str = 'auto', colour_swapped=frozenset(),
+                 logical_tracking: str = 'slabs'):
+        self.logical_tracking = logical_tracking
         self.patches = list(patches)
         self.ppm_sequence = list(ppm_sequence)
         patch_name_list = [s.name for s in self.patches]
@@ -248,7 +250,8 @@ class RotatedSurfacePPMExperiment:
     def _setup(self):
         self.tracker = SyndromeTracker(
             num_qubits=self.system.num_qubits,
-            expected_num_logicals=self.system.num_logicals)
+            expected_num_logicals=self.system.num_logicals,
+            logical_tracking=self.logical_tracking)
         self.builder = CircuitBuilder(tracker=self.tracker,
                                       system_config=self.system,
                                       if_detector=True)
@@ -291,12 +294,18 @@ class RotatedSurfacePPMExperiment:
                     tuple(self.system.qubit_coords[q]), self._orient[nm])
         return se_round_chunk(self.system, domains=domains_merged)
 
-    def _capture_outcome(self, i, step, pre):
+    def _capture_outcome(self, i, step, pre, *, post=None):
         """Bank PPM ``i``'s protocol output: the joint's record parity
-        before the merge (None = free coin) and after the split."""
-        post = record_parity(
-            self.tracker, joint_pauli_vector(self.system,
-                                             step.targets))
+        before the merge (None = free coin) and after the split.
+
+        ``post`` may already be captured from the freshly measured checks.
+        Releasing absorbed logicals can replace that representative with an
+        earlier preparation constraint, which is not the physical PPM output.
+        """
+        if post is None:
+            post = record_parity(
+                self.tracker, joint_pauli_vector(self.system,
+                                                 step.targets))
         self.ppm_outcomes[i] = PPMOutcome(
             step=i, targets=step.targets,
             records_pre_merge=tuple(pre) if pre is not None else None,
@@ -321,13 +330,21 @@ class RotatedSurfacePPMExperiment:
                                     n=self.system.num_qubits)
         self.builder.apply_syndrome_extraction(
             circuit_chunk=self._merged_chunk(i), rounds=self.rounds)
-        # split: the bus/corridor readout measures out the corridor ONLY; the
-        # joint patch-patch relation it created persists, so it must not
-        # resolve absorbed_ops.
+        # Save the actual PPM record expression while the freshest measured
+        # checks still represent it. The requested joint acts on the target
+        # patches and commutes with this corridor readout, so the expression
+        # remains a valid post-split protocol output. Release may otherwise
+        # reconstruct its ideal value from old L rows and erase this history.
+        post = (record_parity(
+            self.tracker, joint_pauli_vector(self.system, step.targets))
+            if self.logical_tracking == "slabs" else None)
+        # The physical split reads the corridor. Legacy uses resolve_absorbed
+        # to retain its operator-only ledger; slabs jointly projects the given
+        # measurement batch and releases surviving absorbed rows afterwards.
         self.builder.deactivate_coupler(cname)
         self.builder.apply_data_readout(final_measurements=dict(coupler_init),
                                         resolve_absorbed=False)
-        self._capture_outcome(i, step, pre)
+        self._capture_outcome(i, step, pre, post=post)
 
     def _init_and_baseline(self, names):
         """Reset the data qubits owned by ``names`` to their initial states,

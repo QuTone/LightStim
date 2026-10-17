@@ -152,8 +152,7 @@ def shrink(builder, patch, *, target_distance, direction="-x,-y", rounds=0):
     ordered = ([q for q, basis in measurements.items() if basis == "X"]
                + [q for q, basis in measurements.items() if basis == "Z"])
     tracker.meas_rec_to_idx_map.update({first_record + i: q for i, q in enumerate(ordered)})
-    if (tracker.expected_num_logicals != before_budget
-            or staged.circuit.num_observables != before_observables):
+    if staged.circuit.num_observables != before_observables:
         raise RuntimeError("Shrinking unexpectedly measured a protected logical degree of freedom")
     columns = ordered + [q + tracker.num_qubits for q in ordered]
     if any(tableau.matrix[:, columns].any() for tableau in (tracker.stabilizers, tracker.logicals)):
@@ -162,6 +161,12 @@ def shrink(builder, patch, *, target_distance, direction="-x,-y", rounds=0):
     # All target checks must follow from real old syndromes and skirt outcomes.
     # Rebase carries those record parities; it cannot invent new constraints.
     tracker.rebase_stabilizers_onto_code_basis(system)
+    # V2 reports the protected rank relative to the current code declaration.
+    # Immediately after skirt readout, shortened target checks need not lie in
+    # the surviving old-code check space. Compare ranks only after adopting
+    # the target declaration and establishing its checks from actual records.
+    if tracker.expected_num_logicals != before_budget:
+        raise RuntimeError("Shrinking changed the protected logical rank after target-code rebase")
     staged._z_only_syn_qubit_indices = None
     staged._z_only_no_detector_mask = None
     staged._z_only_n_meas_per_round = None

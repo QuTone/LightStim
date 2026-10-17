@@ -123,8 +123,16 @@ def _expected_pqrm_checks(exp, circuit):
     bridge = system.coupler_patches["surface_pqrm_coupler"]
     local_to_global = system.local_to_global_map["surface_pqrm_coupler"]
     bridge_qubits = sorted(local_to_global[q] for q in bridge.data_indices)
-    measured_z = [set(row["pauli"]) for row in system.active_stabilizers_z
-                  if row.get("syn_idx") is not None]
+    # The explicit terminal split deactivates the coupler before this oracle
+    # runs. Use its immutable measured-Z geometry, not the final active code.
+    # Other patch Z checks already commute with the encoded PQRM X checks and
+    # have no bridge support; only these merge checks constrain the extension.
+    measured_z = [
+        set(system.stabilizers[uid]["pauli"])
+        for uid in bridge._registered_stabilizer_uids
+        if system.stabilizers[uid].get("type") == "Z"
+        and system.stabilizers[uid].get("syn_idx") is not None
+    ]
     x_checks = [set(row["pauli"]) for row in system.stabilizers
                 if row.get("patch_name") == "pqrm" and row.get("type") == "X"]
 

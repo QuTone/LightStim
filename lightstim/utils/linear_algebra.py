@@ -137,6 +137,12 @@ def check_commutativity(mat_a: np.ndarray, mat_b: np.ndarray) -> np.ndarray:
     if mat_a.shape[1] % 2 != 0:
         raise ValueError(f"Number of columns must be even (2*num_qubits). Got {mat_a.shape[1]} columns")
 
+    from .pauli_backend import use_packed_algebra, _packed_native
+    result_dtype = np.result_type(mat_a.dtype, mat_b.dtype)
+    if (mat_a.dtype.kind in "biu" and mat_b.dtype.kind in "biu"
+            and result_dtype.kind != "b" and use_packed_algebra()):
+        return _packed_native.packed_commutativity(mat_a, mat_b).astype(result_dtype, copy=False)
+
     n = mat_a.shape[1] // 2
     # Symplectic inner product without allocating (2N, 2N) Lambda matrix:
     #   result = A_x @ B_z.T + A_z @ B_x.T  (mod 2)
@@ -207,6 +213,9 @@ def _null_space_gf2(A: np.ndarray) -> np.ndarray:
     Returns:
         (n, k) matrix whose columns span the null space. k = n - rank(A).
     """
+    from .pauli_backend import use_packed_algebra, _packed_native
+    if use_packed_algebra():
+        return _packed_native.packed_nullspace(A).T
     m, n = A.shape
     rref, rank, _, pivot_cols = row_echelon(A.astype(np.uint8).copy(), reduced=True)
     pivot_set = set(pivot_cols)
@@ -215,22 +224,14 @@ def _null_space_gf2(A: np.ndarray) -> np.ndarray:
     if len(free_cols) == 0:
         return np.zeros((n, 0), dtype=np.uint8)
 
-    null_vecs = []
-    for f in free_cols:
-        x = np.zeros(n, dtype=np.uint8)
-        x[f] = 1
-        # Back-substitute: for each pivot row from bottom, express pivot var in terms of rest
-        # Row i has pivot at pivot_cols[i]. rref[i, :] @ x = 0 => x[pivot_cols[i]] = sum_{j!=piv} rref[i,j]*x[j]
-        for i in range(rank - 1, -1, -1):
-            pcol = pivot_cols[i]
-            val = 0
-            for j in range(n):
-                if j != pcol and rref[i, j] and x[j]:
-                    val ^= 1
-            x[pcol] = val
-        null_vecs.append(x)
-
-    return np.column_stack(null_vecs) if null_vecs else np.zeros((n, 0), dtype=np.uint8)
+    # RREF already expresses each pivot variable as a sum of free variables.
+    # Its pivot columns are an identity, so repeated Python back-substitution
+    # computes exactly this block and needlessly costs rank * n * nullity.
+    result = np.zeros((n, len(free_cols)), dtype=np.uint8)
+    result[free_cols, np.arange(len(free_cols))] = 1
+    if pivot_cols:
+        result[np.asarray(pivot_cols)] = rref[:rank, free_cols].astype(np.uint8)
+    return result
 
 
 def _left_null_space_gf2(B: np.ndarray) -> np.ndarray:
@@ -370,6 +371,26 @@ def solve_linear_decomposition(
     """
     n_basis = basis.shape[0] if basis.shape[0] > 0 else 0
     n_targets = targets.shape[0]
+
+    # Unsigned inverse-tableau coordinates preserve the earliest original
+    # independent basis rows. Keep weight-reduction policy on the reference
+    # path, because choosing a different redundant representative changes
+    # measurement-record expressions even when the Pauli span is identical.
+    if not reduce_weight:
+        from .pauli_backend import solve_commuting_decomposition, solve_packed_decomposition
+        native = solve_packed_decomposition(basis, targets)
+        if native is None:
+            native = solve_commuting_decomposition(basis, targets)
+        if native is not None:
+            coeffs, is_dependent, new_basis_indices = native
+            if new_basis_indices and n_basis and n_targets:
+                # The public solver historically orders new dimensions by
+                # connected binary-column component, then source row. Native
+                # selection has the same pivots; preserve that presentation.
+                blocks = _find_blocks(np.vstack([basis, targets]))
+                component = {row: k for k, block in enumerate(blocks) for row in block}
+                new_basis_indices.sort(key=lambda i: (component[n_basis + i], i))
+            return coeffs, is_dependent, new_basis_indices
 
     # --- Block-diagonal detection ---
     # Stack all vectors (basis + targets) and find independent blocks.

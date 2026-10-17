@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "pybind11>=2.12"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -60,6 +60,9 @@ dev = [
     "matplotlib",
     "seaborn",
 ]
+
+[tool.setuptools]
+license-files = ["LICENSE", "third_party/stim/LICENSE"]
 
 [tool.setuptools.packages.find]
 where = ["."]

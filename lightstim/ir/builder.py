@@ -2,7 +2,7 @@ import copy
 import logging
 import stim
 import numpy as np
-from typing import List, Dict, Any, Optional, Union, Literal, Set, Tuple
+from typing import List, Dict, Any, Optional, Union, Literal, Set, Tuple, Sequence
 from dataclasses import dataclass
 
 _log = logging.getLogger(__name__)
@@ -42,6 +42,19 @@ class _MeasurementBlockAnalysis:
     measurement_coords: list
     discarded_measurement_qubit_indices: Set[int]
     no_detector_mask: Optional[np.ndarray]
+
+
+@dataclass(frozen=True)
+class DataReadoutStage:
+    """An explicit protocol boundary within one physical readout moment.
+
+    ``qubits`` selects part of the caller's complete measurement dictionary.
+    Couplers listed here are deactivated before tracking this stage; no gates,
+    measurements, or TICKs are added by the stage boundary itself.
+    """
+
+    qubits: Tuple[int, ...]
+    deactivate_couplers: Tuple[str, ...] = ()
 
 
 class CircuitBuilder:
@@ -151,19 +164,25 @@ class CircuitBuilder:
                 the noise injector skips them (useful for injection-phase init).
         """
         qubit_indices_x = [q for q, b in init_dict.items() if b == 'X']
-        qubit_indices_z = [q for q, b in init_dict.items() if b == 'Z']
         qubit_indices_y = [q for q, b in init_dict.items() if b == 'Y']
+        qubit_indices_z = [q for q, b in init_dict.items() if b == 'Z']
 
         tag = "noiseless" if noiseless else ""
-        # Apply Reset Gate
+        # Match destructive readout's X, Y, Z grouping in both the circuit
+        # and the preparation tableau.
         if qubit_indices_x:
             self.circuit.append("RX", qubit_indices_x, tag=tag)
-        if qubit_indices_z:
-            self.circuit.append("R", qubit_indices_z, tag=tag)
         if qubit_indices_y:
             self.circuit.append("RY", qubit_indices_y, tag=tag)
+        if qubit_indices_z:
+            self.circuit.append("R", qubit_indices_z, tag=tag)
 
-        init_tableau = self._get_initialization_tableau(qubit_indices_x, qubit_indices_z, qubit_indices_y, n)
+        init_tableau = self._get_initialization_tableau(
+            qubit_indices_x=qubit_indices_x,
+            qubit_indices_y=qubit_indices_y,
+            qubit_indices_z=qubit_indices_z,
+            n=n,
+        )
 
         # Auxiliary preparation does not introduce a protected logical input.
         # Its known constraint must retain its stabilizer role even before it
@@ -318,9 +337,10 @@ class CircuitBuilder:
             analyses=analyses,
             shift_round=True,
         )
-        self.tracker.stabilizer_with_logical_components.update(
-            first_round_logical_components
-        )
+        if self.tracker.logical_tracking != "slabs":
+            self.tracker.stabilizer_with_logical_components.update(
+                first_round_logical_components
+            )
         self.circuit += steady_round_body
 
         if rounds <= 2:
@@ -337,13 +357,16 @@ class CircuitBuilder:
             ))
             return
 
-        if getattr(self.system, "active_gauges", ()) or not self._uses_disposable_syndrome_readout(analyses):
+        if (self.tracker.logical_tracking == "slabs"
+                or getattr(self.system, "active_gauges", ())
+                or not self._uses_disposable_syndrome_readout(analyses)):
             # Subsystem rounds must preserve classification at every physical
             # boundary even when the verified periodic compression declines.
             # The legacy disposable fallback reuses a body without verifying it.
             persistent_logical_components = set(
                 self.tracker.stabilizer_with_logical_components
             )
+            explicit_round_bodies = []
             for _ in range(rounds - 2):
                 explicit_round_body = stim.Circuit()
                 explicit_round_body.append("TICK")
@@ -352,13 +375,25 @@ class CircuitBuilder:
                     analyses=analyses,
                     shift_round=True,
                 )
-                self.circuit += explicit_round_body
-                self.tracker.stabilizer_with_logical_components.update(
-                    persistent_logical_components
-                )
-                persistent_logical_components.update(
-                    self.tracker.stabilizer_with_logical_components
-                )
+                explicit_round_bodies.append(explicit_round_body)
+                if self.tracker.logical_tracking != "slabs":
+                    self.tracker.stabilizer_with_logical_components.update(
+                        persistent_logical_components
+                    )
+                    persistent_logical_components.update(
+                        self.tracker.stabilizer_with_logical_components
+                    )
+            # All state updates above really occurred. Compact only byte-equal
+            # emitted bodies; this does not extrapolate an unverified tracker
+            # transition or omit accumulated logical-frame records.
+            first_body = explicit_round_bodies[0]
+            if (not getattr(self.system, "active_gauges", ())
+                    and all(body == first_body for body in explicit_round_bodies[1:])):
+                self.circuit.append(stim.CircuitRepeatBlock(
+                    len(explicit_round_bodies), first_body))
+            else:
+                for body in explicit_round_bodies:
+                    self.circuit += body
             return
 
         self.circuit.append(stim.CircuitRepeatBlock(
@@ -382,6 +417,7 @@ class CircuitBuilder:
                 promotable_stabilizer_rows.append(
                     self.tracker.process_mid_measurement(
                         circuit=stim.Circuit(),
+                        circuit_chunk=analysis.circuit,
                         forward_symplectic_matrix=(
                             analysis.forward_symplectic_matrix
                         ),
@@ -441,6 +477,8 @@ class CircuitBuilder:
         *,
         z_only: bool,
     ) -> _MeasurementBlockAnalysis:
+        tableau = stim.Tableau.from_circuit(
+            circuit, ignore_noise=True, ignore_measurement=True, ignore_reset=True)
         (
             back_propagated_paulis,
             measurement_qubit_indices,
@@ -449,6 +487,7 @@ class CircuitBuilder:
             circuit,
             self.tracker.num_qubits,
             include_measurement_bases=True,
+            tableau=tableau,
         )
         if circuit.num_measurements != len(measurement_qubit_indices):
             raise ValueError(
@@ -465,6 +504,7 @@ class CircuitBuilder:
         forward_symplectic_matrix = self.tracker.get_forward_symplectic_matrix(
             circuit,
             self.tracker.num_qubits,
+            tableau=tableau,
         )
         measurement_coords = [
             self.system.qubit_coords[i]
@@ -513,10 +553,17 @@ class CircuitBuilder:
     ) -> bool:
         """Find and classify a code frame inside a retained-data block."""
         tracker = self.tracker if tracker is None else tracker
+        # Resetting retained data can temporarily leave no protected logical
+        # rows. Frame discovery still has to recover the declared code's k,
+        # rather than accept that temporary tracked rank as its target.
+        required_logicals = (
+            tracker._declared_num_logicals
+            if tracker.logical_tracking == "slabs"
+            else tracker.expected_num_logicals
+        )
         if (
-            tracker.expected_num_logicals == 0
-            or tracker.logicals.count
-            == tracker.expected_num_logicals
+            required_logicals == 0
+            or tracker.logicals.count == required_logicals
         ):
             return False
 
@@ -550,7 +597,7 @@ class CircuitBuilder:
                 probe.rebase_stabilizers_onto_code_basis(self.system)
             except RuntimeError:
                 continue
-            if probe.logicals.count != probe.expected_num_logicals:
+            if probe.logicals.count != required_logicals:
                 continue
 
             tracker.process_unitary_block(prefix)
@@ -572,6 +619,7 @@ class CircuitBuilder:
         subsystem = bool(getattr(self.system, "active_gauges", ()))
         if subsystem:
             tracker.classify_subsystem_state(self.system)
+            self._classify_subsystem_roles(tracker)
         promotable_stabilizer_rows = []
         for block_index, analysis in enumerate(analyses):
             output_circuit += analysis.circuit
@@ -599,6 +647,7 @@ class CircuitBuilder:
             promotable_stabilizer_rows.append(
                 tracker.process_mid_measurement(
                     circuit=output_circuit,
+                    circuit_chunk=analysis.circuit,
                     forward_symplectic_matrix=(
                         analysis.forward_symplectic_matrix
                     ),
@@ -619,6 +668,7 @@ class CircuitBuilder:
             )
             if subsystem:
                 tracker.classify_subsystem_state(self.system)
+                self._classify_subsystem_roles(tracker)
         self._finish_measurement_block_group(
             analyses,
             promotable_stabilizer_rows=tuple(
@@ -647,6 +697,8 @@ class CircuitBuilder:
                 )
             else:
                 tracker.rebase_stabilizers_onto_code_basis(self.system)
+            if tracker.logical_tracking == "slabs":
+                tracker._v2_classify_stabilizers(self._active_role_space(tracker=tracker))
         else:
             tracker.validate_logical_count(
                 context="syndrome-extraction round"
@@ -700,6 +752,7 @@ class CircuitBuilder:
         probe = copy.deepcopy(tracker)
         probe_states = []
         probe_round_bodies = []
+        probe_role_states = []
         previous_logical_records = baseline_logical_records
 
         try:
@@ -715,9 +768,26 @@ class CircuitBuilder:
                 # Compression advances the real tracker without visiting each
                 # measurement. Historical parities need their absolute record
                 # indices from those visits, so use the ordinary update path.
-                if probe.logical_history:
+                if (probe.logical_history
+                        or probe.post_select_row_indices
+                        or probe._gauge_logical_vectors
+                        or probe.logicals.count != 1
+                        or probe.expected_num_logicals != 1
+                        or probe._declared_num_logicals != tracker._declared_num_logicals):
                     return None
                 probe.logical_canonicalization(canonical_logical)
+                if tracker.logical_tracking == "slabs":
+                    # This memory-round compression only handles a stable bare
+                    # code frame. New dressed/history directions need the full
+                    # update path, even if detector bodies happen to match.
+                    if probe._dressed_stabilizer_rows or probe.absorbed_ops.count:
+                        return None
+                    probe_role_states.append((
+                        frozenset(probe._classified_stabilizer_rows),
+                        frozenset(probe._dressed_stabilizer_rows),
+                        None if probe._v2_role_space is None else probe._v2_role_space.copy(),
+                        probe.absorbed_ops.matrix.copy(),
+                    ))
 
                 logical_records = set(probe.logicals.records[0])
                 logical_delta = tuple(sorted(
@@ -743,6 +813,12 @@ class CircuitBuilder:
 
         first_matrix, first_stabilizer_offsets, first_logical_delta = probe_states[0]
         second_matrix, second_stabilizer_offsets, second_logical_delta = probe_states[1]
+        if probe_role_states:
+            first_roles, second_roles = probe_role_states
+            if (first_roles[:2] != second_roles[:2]
+                    or not np.array_equal(first_roles[2], second_roles[2])
+                    or not np.array_equal(first_roles[3], second_roles[3])):
+                return None
         if (
             not np.array_equal(first_matrix, second_matrix)
             or first_logical_delta != second_logical_delta
@@ -810,6 +886,13 @@ class CircuitBuilder:
         tracker.logicals.matrix = canonical_logical[0].reshape(1, -1)
         tracker.logicals.records = [sorted(baseline_logical_records)]
         tracker.total_measurements = final_total_measurements
+        if tracker.logical_tracking == "slabs":
+            tracker._dressed_stabilizer_rows = set(probe._dressed_stabilizer_rows)
+            tracker.stabilizer_with_logical_components = set(probe.stabilizer_with_logical_components)
+            tracker._v2_role_space = (None if probe._v2_role_space is None
+                                      else probe._v2_role_space.copy())
+            tracker.absorbed_ops = copy.deepcopy(probe.absorbed_ops)
+            tracker._v2_sync_budget()
 
         for records in final_stabilizer_records:
             for record in records:
@@ -961,6 +1044,7 @@ class CircuitBuilder:
         num_qubits: int,
         *,
         include_measurement_bases: bool = False,
+        tableau: Optional[stim.Tableau] = None,
     ) -> Union[
         Tuple[np.ndarray, List[int]],
         Tuple[np.ndarray, List[int], List[str]],
@@ -1010,17 +1094,15 @@ class CircuitBuilder:
         # Step 1. Get the back-propagated Pauli string
         # Convert to tableau and get numpy representation (binary array in symplectic representation)
         # We ignore measurement/reset to treat the circuit as a unitary operation for analysis.
-        se_tableau = stim.Tableau.from_circuit(circuit_chunk, ignore_noise=True, ignore_measurement=True, ignore_reset=True)
-        se_tableau_inverse = se_tableau.inverse()
+        se_tableau = tableau if tableau is not None else stim.Tableau.from_circuit(
+            circuit_chunk, ignore_noise=True, ignore_measurement=True, ignore_reset=True)
+        # Only unsigned Pauli support enters this tracker calculation. Stim's
+        # signed inverse also reconstructs phases in cubic time; those phases
+        # were discarded immediately by to_numpy below.
+        se_tableau_inverse = se_tableau.inverse(unsigned=True)
 
         # 6 outputs: x2x, x2z, z2x, z2z, x_signs, z_signs
         x2x, x2z, z2x, z2z, _, _ = se_tableau_inverse.to_numpy()
-
-        # Convert to int
-        x2x_int = x2x.astype(int)
-        x2z_int = x2z.astype(int)
-        z2x_int = z2x.astype(int)
-        z2z_int = z2z.astype(int)
 
         measurement_qubit_indices = []
         measurement_bases = []
@@ -1035,11 +1117,11 @@ class CircuitBuilder:
                 measurement_bases.append(basis)
 
                 if basis == "X":
-                    row_x = x2x_int[qubit].copy()
-                    row_z = x2z_int[qubit].copy()
+                    row_x = x2x[qubit]
+                    row_z = x2z[qubit]
                 else:
-                    row_x = z2x_int[qubit].copy()
-                    row_z = z2z_int[qubit].copy()
+                    row_x = z2x[qubit]
+                    row_z = z2z[qubit]
 
                 back_pauli_x_rows.append(row_x)
                 back_pauli_z_rows.append(row_z)
@@ -1072,23 +1154,23 @@ class CircuitBuilder:
         # sufficient.
         removable_reset_qubits = sorted(reset_by_qubit)
         if removable_reset_qubits:
-
-            for row_idx in range(back_pauli_x.shape[0]):
-                for qubit in removable_reset_qubits:
-                    actual = (
-                        int(back_pauli_x[row_idx, qubit]),
-                        int(back_pauli_z[row_idx, qubit]),
-                    )
-                    if actual == (0, 0):
-                        continue
-                    expected = reset_by_qubit.get(qubit)
-                    if actual != expected:
-                        raise ValueError(
-                            "Back-propagated syndrome factor "
-                            f"{actual} on qubit {qubit} is not stabilized by "
-                            f"its reset basis {expected}. The measurement is "
-                            "not a deterministic syndrome or flag outcome."
-                        )
+            reset_x = back_pauli_x[:, removable_reset_qubits]
+            reset_z = back_pauli_z[:, removable_reset_qubits]
+            expected = np.asarray([reset_by_qubit[q] for q in removable_reset_qubits],
+                                  dtype=np.uint8)
+            invalid = ((reset_x | reset_z).astype(bool)
+                       & ((reset_x != expected[:, 0]) | (reset_z != expected[:, 1])))
+            if invalid.any():
+                # Row-major selection preserves the historical first error.
+                row_idx, reset_idx = np.argwhere(invalid)[0]
+                qubit = removable_reset_qubits[int(reset_idx)]
+                actual = (int(reset_x[row_idx, reset_idx]), int(reset_z[row_idx, reset_idx]))
+                raise ValueError(
+                    "Back-propagated syndrome factor "
+                    f"{actual} on qubit {qubit} is not stabilized by "
+                    f"its reset basis {reset_by_qubit[qubit]}. The measurement is "
+                    "not a deterministic syndrome or flag outcome."
+                )
 
             back_pauli_x[:, removable_reset_qubits] = 0
             back_pauli_z[:, removable_reset_qubits] = 0
@@ -1273,6 +1355,132 @@ class CircuitBuilder:
 
         self.system.active_qubit_indices.difference_update(normalized)
 
+    def _active_role_space(self, *, tracker=None) -> np.ndarray:
+        """Declared stabilizer/gauge role space in the current physical frame."""
+        from ..utils.tableau_utils import stabilizers_to_symplectic
+        tracker = self.tracker if tracker is None else tracker
+        return stabilizers_to_symplectic(
+            self.system,
+            list(self.system.active_stabilizers)
+            + list(getattr(self.system, "active_gauges", ())),
+            tracker.num_qubits,
+        )
+
+    def _classify_subsystem_roles(self, tracker) -> None:
+        if tracker.logical_tracking != "slabs":
+            return
+        role_space = self._active_role_space(tracker=tracker)
+        # The existing subsystem classifier distinguishes established gauge
+        # rows from as-yet unclassified preparation constraints. Those input
+        # constraints are still bare; absence from G does not make them logical.
+        preparation = [i for i in range(tracker.stabilizers.count)
+                       if i not in tracker._classified_stabilizer_rows]
+        if preparation:
+            role_space = np.vstack((role_space, tracker.stabilizers.matrix[preparation]))
+        tracker._v2_classify_stabilizers(role_space)
+
+    def _data_readout_context(self, measured_qubits) -> dict:
+        if self.tracker.logical_tracking != "slabs":
+            return {}
+        from ..utils.linear_algebra import kernel_gf2
+        from ..utils.subsystem_algebra import independent_row_indices
+        from ..utils.pauli_backend import multiply_binary
+        n = self.tracker.num_qubits
+        declared = self._active_role_space()
+        continuing = set(self.system.active_qubit_indices) - set(measured_qubits)
+        retired = sorted(set(range(n)) - continuing)
+        columns = retired + [n + q for q in retired]
+        combinations = kernel_gf2(declared[:, columns].T)
+        active = multiply_binary(combinations, declared)
+        active = active[independent_row_indices(active)]
+        return {"active_stabilizers": active}
+
+    def _append_data_readout_layer(self, final_measurements, *, noiseless=False):
+        """Emit the original one-call XYZ layer and return its physical order."""
+        if len(self.circuit) > 0 and self.circuit[-1].name != "TICK":
+            self.circuit.append("TICK")
+        n = self.tracker.num_qubits
+        sorted_indices = []
+        tag = "noiseless" if noiseless else ""
+        for basis, gate in (("X", "MX"), ("Y", "MY"), ("Z", "M")):
+            indices = [q for q, b in final_measurements.items() if b == basis]
+            if indices:
+                self.circuit.append(gate, indices, tag=tag)
+            sorted_indices.extend(indices)
+        final_paulis = np.zeros((len(sorted_indices), 2*n), dtype=np.uint8)
+        for i, q in enumerate(sorted_indices):
+            basis = final_measurements[q]
+            if basis in ("X", "Y"):
+                final_paulis[i, q] = 1
+            if basis in ("Y", "Z"):
+                final_paulis[i, n+q] = 1
+        return sorted_indices, final_paulis
+
+    def apply_staged_data_readout(
+        self,
+        final_measurements: Dict[int, str],
+        stages: Sequence[DataReadoutStage],
+        *,
+        noiseless: bool = False,
+    ) -> None:
+        """Track explicit protocol stages without splitting the physical layer.
+
+        The full measurement dictionary determines the unchanged physical XYZ
+        order. Stages only partition its qubits for state updates, including
+        declared coupler deactivations. Absolute record indices connect these
+        two orders; no patch/corridor ownership is inferred here.
+        """
+        stages = tuple(stages)
+        staged_qubits = [q for stage in stages for q in stage.qubits]
+        if (len(staged_qubits) != len(set(staged_qubits))
+                or set(staged_qubits) != set(final_measurements)):
+            raise ValueError("Readout stages must partition the measurement qubits exactly once")
+        if any(basis not in ("X", "Y", "Z") for basis in final_measurements.values()):
+            raise ValueError("Readout bases must be X, Y, or Z")
+        for stage in stages:
+            for name in stage.deactivate_couplers:
+                if name not in self.system.coupler_patches:
+                    raise ValueError(f"Unknown readout-stage coupler {name!r}")
+
+        # Explicit historical control keeps its original single-call tracker.
+        # The physical layer is identical to the staged default in both paths.
+        if self.tracker.logical_tracking == "legacy":
+            self.apply_data_readout(final_measurements, noiseless=noiseless)
+            for stage in stages:
+                for name in stage.deactivate_couplers:
+                    self.deactivate_coupler(name)
+            return
+
+        if self.if_detector and getattr(self.system, "active_gauges", ()):
+            self.tracker.classify_subsystem_state(self.system, require_complete=True)
+            self._classify_subsystem_roles(self.tracker)
+        sorted_indices, final_paulis = self._append_data_readout_layer(
+            final_measurements, noiseless=noiseless)
+        positions = {q: i for i, q in enumerate(sorted_indices)}
+        base = self.tracker.total_measurements
+        if self.if_detector:
+            self.tracker.total_measurements += len(sorted_indices)
+            self.tracker.meas_rec_to_idx_map.update(
+                {base+i: q for i, q in enumerate(sorted_indices)})
+        for stage in stages:
+            for name in stage.deactivate_couplers:
+                self.deactivate_coupler(name)
+            selected = sorted(positions[q] for q in stage.qubits)
+            if self.if_detector and selected:
+                self.tracker.process_data_measurement(
+                    circuit=self.circuit,
+                    final_paulis=final_paulis[selected],
+                    idx_to_coord_map=self.system.qubit_coords,
+                    syndrome_qubit_indices=self.system.syndrome_indices,
+                    measurement_record_indices=[base+i for i in selected],
+                    **self._data_readout_context(stage.qubits),
+                )
+            elif self.if_detector and stage.deactivate_couplers:
+                # A zero-data coupler can still declare a code boundary.
+                self.tracker._v2_classify_stabilizers(
+                    self._data_readout_context(())["active_stabilizers"])
+            self.system.active_qubit_indices.difference_update(stage.qubits)
+
     def apply_data_readout(self, final_measurements: Dict[int, str] = None, noiseless: bool = False,
                            z_only: bool = False, resolve_absorbed: bool = True):
         """
@@ -1299,41 +1507,14 @@ class CircuitBuilder:
             if z_only:
                 raise ValueError("z_only readout is not supported for subsystem gauges; use the full detector pipeline.")
             self.tracker.classify_subsystem_state(self.system, require_complete=True)
+            self._classify_subsystem_roles(self.tracker)
 
-        # Final destructive data readout must start in a fresh moment. Some
-        # extraction blocks, such as middle-out color-code circuits, end with
-        # data-qubit gauge measurements instead of a trailing TICK.
-        if len(self.circuit) > 0 and self.circuit[-1].name != "TICK":
-            self.circuit.append("TICK")
-
-        xs = [q for q, b in final_measurements.items() if b == 'X']
-        ys = [q for q, b in final_measurements.items() if b == 'Y']
-        zs = [q for q, b in final_measurements.items() if b == 'Z']
-
-        tag = "noiseless" if noiseless else ""
-
-        # Append gates (No manual noise here)
-        if xs: self.circuit.append("MX", xs, tag=tag)
-        if ys: self.circuit.append("MY", ys, tag=tag)
-        if zs: self.circuit.append("M", zs, tag=tag)
-
-        # Prepare Basis for Tracker (order matches circuit: X then Y then Z)
-        sorted_indices = xs + ys + zs
-        n = self.tracker.num_qubits
-        final_paulis = np.zeros((len(sorted_indices), 2 * n), dtype=np.uint8)
-
-        for i, q in enumerate(sorted_indices):
-            basis = final_measurements[q]
-            if basis == 'X':
-                final_paulis[i, q] = 1
-            elif basis == 'Y':
-                final_paulis[i, q] = 1
-                final_paulis[i, n + q] = 1
-            else:
-                final_paulis[i, n + q] = 1
+        sorted_indices, final_paulis = self._append_data_readout_layer(
+            final_measurements, noiseless=noiseless)
 
         # Call Tracker — or, for z_only, build DETECTORs/OBSERVABLEs manually
         if self.if_detector:
+            readout_context = self._data_readout_context(sorted_indices)
             if z_only:
                 syn_qubit_indices = self._z_only_syn_qubit_indices
                 no_detector_mask  = self._z_only_no_detector_mask
@@ -1361,6 +1542,7 @@ class CircuitBuilder:
                     idx_to_coord_map=self.system.qubit_coords,
                     syndrome_qubit_indices=self.system.syndrome_indices,
                     resolve_absorbed=resolve_absorbed,
+                    **readout_context,
                 )
                 obs_insts = [
                     inst for inst in list(self.circuit)[n_before:]
@@ -1377,6 +1559,7 @@ class CircuitBuilder:
                     idx_to_coord_map=self.system.qubit_coords,
                     syndrome_qubit_indices=self.system.syndrome_indices,
                     resolve_absorbed=resolve_absorbed,
+                    **readout_context,
                 )
 
         # Remove measured qubits from active set (ready for reuse)
@@ -1440,13 +1623,13 @@ class CircuitBuilder:
     # G. Helpers
     # --------------------------------------------------------------------------
     @staticmethod
-    def _get_initialization_tableau(qubit_indices_x: List[int], qubit_indices_z: List[int], qubit_indices_y: List[int], n: int):
+    def _get_initialization_tableau(qubit_indices_x: List[int], qubit_indices_y: List[int], qubit_indices_z: List[int], n: int):
         """
-        Generates the tableau for the given qubit indices in X, Z, Y basis.
+        Generates preparation rows in X, Y, Z order, matching the reset gates.
         Args:
             qubit_indices_x: List[int]
-            qubit_indices_z: List[int]
             qubit_indices_y: List[int]
+            qubit_indices_z: List[int]
             n: int
         Returns:
             initialized_tableau: np.ndarray
@@ -1457,14 +1640,7 @@ class CircuitBuilder:
         if qubit_indices_x:
             t_x[np.arange(len(qubit_indices_x)), qubit_indices_x] = 1
 
-        # 2. Z Basis: (X=0, Z=1)
-        t_z = np.zeros((len(qubit_indices_z), 2 * n), dtype=int)
-        if qubit_indices_z:
-            # Use list comprehension or numpy add to shift index by n
-            cols = [i + n for i in qubit_indices_z]
-            t_z[np.arange(len(qubit_indices_z)), cols] = 1
-
-        # 3. Y Basis: (X=1, Z=1) -> Critical Fix here
+        # 2. Y Basis: (X=1, Z=1)
         t_y = np.zeros((len(qubit_indices_y), 2 * n), dtype=int)
         if qubit_indices_y:
             # Set X part
@@ -1473,9 +1649,15 @@ class CircuitBuilder:
             cols_z = [i + n for i in qubit_indices_y]
             t_y[np.arange(len(qubit_indices_y)), cols_z] = 1
 
+        # 3. Z Basis: (X=0, Z=1)
+        t_z = np.zeros((len(qubit_indices_z), 2 * n), dtype=int)
+        if qubit_indices_z:
+            cols = [i + n for i in qubit_indices_z]
+            t_z[np.arange(len(qubit_indices_z)), cols] = 1
+
         # 4. Stack
         # Since all sub-matrices have 2*n columns, vstack works even if some have 0 rows.
-        return np.vstack([t_x, t_z, t_y])
+        return np.vstack([t_x, t_y, t_z])
 
 
     def to_stim_circuit(self, *, include_logical_history: bool = True) -> stim.Circuit:
