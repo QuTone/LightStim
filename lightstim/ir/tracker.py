@@ -111,6 +111,12 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         if logical_tracking not in ("legacy", "slabs"):
             raise ValueError("logical_tracking must be 'legacy' or 'slabs'")
         self.logical_tracking = logical_tracking
+        self._record_state_type = record_state_class()
+        tableau_type = PauliTableau
+        if self._record_state_type is not None and logical_tracking == "slabs":
+            from .native_tableau import NativePauliTableau
+
+            tableau_type = NativePauliTableau
         # Number of physical qubits (include data, syndrome, and potentially other ancilla qubits)
         self.num_qubits = num_qubits
         # Number of logical qubits (should be the total number of logical qubits in the QEC system)
@@ -134,8 +140,8 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         # Track the current stabilizers and logicals of the system
         # Note 1: Technically, logicals are also stabilizers of the system, define the logical states
         # Note 2: Stabilizer tableau allows linear dependencies between rows (e.g. toric code, BB code), but logicals do not in general..
-        self.stabilizers = PauliTableau(num_qubits)
-        self.logicals = PauliTableau(num_qubits)
+        self.stabilizers = tableau_type(num_qubits)
+        self.logicals = tableau_type(num_qubits)
         # Canonical/measurement-established stabilizer roles survive even when
         # their known record expression is empty. Fresh initialization rows
         # are initially unclassified; empty records alone cannot distinguish
@@ -149,7 +155,7 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         # S_bare and L, with the same record expressions. It is redundant
         # state, never a second source of logical observables. Explicit legacy
         # controls retain their historical operator-only absorbed ledger.
-        self.absorbed_ops = PauliTableau(num_qubits)
+        self.absorbed_ops = tableau_type(num_qubits)
         self.stabilizer_with_logical_components = set()  # Row indices of stabilizers that contain logical components
         self._gauge_logical_vectors = []  # GF(2) vectors over logical indices for rank computation
         self.post_select_detector_coords = post_select_detector_coords or set()
@@ -157,7 +163,6 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
         # Public PauliTableau arrays remain mutable. Reconcile them at native
         # operation boundaries, retaining the engine's inverse frame between
         # calls. Legacy policy continues through its original implementation.
-        self._record_state_type = record_state_class()
         self._record_state = None
 
     def _sync_record_state(self, matrix=None, records=None):
@@ -189,7 +194,7 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             self._record_state.replace_state(matrix, records)
         return self._record_state
 
-    def _read_record_state(self, counts=None):
+    def _read_record_state(self, counts=None, *, preserve_records=False):
         from .native_tableau import NativePauliTableau
 
         start = 0
@@ -198,11 +203,19 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             counts = [getattr(self, name).count for name in names]
         for name, count in zip(names, counts):
             bank = getattr(self, name)
+            # A pure unitary replaces physical rows but leaves the reference
+            # bank's record lists intact. Keep exposed outer and nested aliases
+            # live, without exporting records from an unexposed native bank.
+            records = None
+            if preserve_records:
+                records = bank._records if isinstance(bank, NativePauliTableau) else bank.records
             stop = start + count
             if not isinstance(bank, NativePauliTableau):
                 bank = NativePauliTableau(self.num_qubits)
                 setattr(self, name, bank)
             bank.attach(self._record_state, range(start, stop))
+            if records is not None:
+                bank.records = records
             start = stop
 
     def set_expected_logicals(self, k: int):
@@ -1064,7 +1077,7 @@ class SyndromeTracker(BareDressedRoles, V2ReadoutMixin):
             state.unitary(str(circuit_chunk))
             if fold_measurements is not None:
                 state.fold_measured(*fold_measurements)
-            self._read_record_state()
+            self._read_record_state(preserve_records=fold_measurements is None)
             if self._v2_role_space is not None:
                 self._v2_role_space = propagate_paulis(
                     self._v2_role_space, symplectic_matrix)

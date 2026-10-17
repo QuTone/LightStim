@@ -84,6 +84,77 @@ def test_native_views_are_lazy_mutable_and_deepcopy_independent(native, monkeypa
     np.testing.assert_array_equal(clone._record_state.rows()[0], [0, 0, 0, 1, 1, 0])
 
 
+@pytest.mark.parametrize("mode", ["reference", "persistent"])
+@pytest.mark.parametrize("warmup", [False, True])
+def test_unitaries_preserve_public_bank_and_record_aliases(native, monkeypatch, mode, warmup):
+    monkeypatch.setenv("LIGHTSTIM_TRACKER_BACKEND", mode)
+    monkeypatch.setenv("LIGHTSTIM_PAULI_BACKEND", "native")
+    tracker = SyndromeTracker(3)
+    names = ("stabilizers", "logicals", "absorbed_ops")
+    rows = np.array([[0, 0, 0, 1, 0, 0], [0, 0, 0, 0, 1, 0]], dtype=np.uint8)
+    for index, name in enumerate(names):
+        getattr(tracker, name).add_stabilizers(rows, [[2 * index], [2 * index + 1]])
+    if warmup:
+        tracker.process_unitary_block(stim.Circuit("H 2"))
+    banks = [getattr(tracker, name) for name in names]
+    records = [bank.records for bank in banks]
+    first_rows = [record[0] for record in records]
+    for circuit in (stim.Circuit("H 0"), stim.Circuit("CX 0 1")):
+        tracker.process_unitary_block(circuit)
+        for name, bank, record, first in zip(names, banks, records, first_rows):
+            assert getattr(tracker, name) is bank
+            assert bank.records is record
+            assert bank.records[0] is first
+    # Edits through aliases held before either gate must reach the next native
+    # boundary, including both nested mutation and replacement in the outer list.
+    for index, (record, first) in enumerate(zip(records, first_rows)):
+        first.append(10 + index)
+        record[1] = [20 + index]
+    tracker.process_unitary_block(stim.Circuit("H 1"))
+    expected = [[[2 * index, 10 + index], [20 + index]] for index in range(3)]
+    for name, bank, record, value in zip(names, banks, records, expected):
+        assert getattr(tracker, name) is bank
+        assert bank.records is record
+        assert bank.records == value
+    if mode == "persistent":
+        assert tracker._record_state.records() == [row for bank in expected for row in bank]
+
+
+def test_unitaries_leave_unexposed_native_banks_lazy(native, monkeypatch):
+    monkeypatch.setenv("LIGHTSTIM_TRACKER_BACKEND", "persistent")
+    monkeypatch.setenv("LIGHTSTIM_PAULI_BACKEND", "native")
+    tracker = SyndromeTracker(2)
+    tracker.stabilizers.add_stabilizers(np.array([[0, 0, 1, 0]], dtype=np.uint8), [[2]])
+    state = tracker._sync_record_state()
+    tracker._read_record_state()
+    before = state.stats.get("physical_materializations", 0)
+    tracker.process_unitary_block(stim.Circuit("H 0\nCX 0 1"))
+    for bank in (tracker.stabilizers, tracker.logicals, tracker.absorbed_ops):
+        assert bank._matrix is None
+        assert bank._records is None
+    assert tracker._sync_record_state() is state
+    assert state.stats.get("physical_materializations", 0) == before
+
+
+def test_copied_tracker_retains_its_own_records_alias_across_unitaries(native, monkeypatch):
+    monkeypatch.setenv("LIGHTSTIM_TRACKER_BACKEND", "persistent")
+    monkeypatch.setenv("LIGHTSTIM_PAULI_BACKEND", "native")
+    tracker = SyndromeTracker(1)
+    tracker.stabilizers.add_stabilizers(np.array([[0, 1]], dtype=np.uint8), [[2]])
+    tracker.process_unitary_block(stim.Circuit("H 0"))
+    original_records = tracker.stabilizers.records
+    clone = copy.deepcopy(tracker)
+    clone_records = clone.stabilizers.records
+    clone.process_unitary_block(stim.Circuit("H 0"))
+    clone_records[0].append(7)
+    clone.process_unitary_block(stim.Circuit("H 0"))
+    assert clone.stabilizers.records is clone_records
+    assert clone._record_state.records() == [[2, 7]]
+    assert tracker.stabilizers.records is original_records
+    assert original_records == [[2]]
+    assert tracker._record_state.records() == [[2]]
+
+
 def test_native_trace_and_insert_preserve_records_and_rank(native):
     matrix = np.array([[0, 0, 1, 1], [1, 1, 0, 0], [0, 0, 1, 1]], dtype=np.uint8)
     state = native.PersistentRecordState(matrix, [[-1], [4], [-1]])
