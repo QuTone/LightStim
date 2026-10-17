@@ -946,7 +946,7 @@ optional whole-circuit noise. See the executed
 [shrinking notebook](../../notebooks/LogicalOps/rotated_surface_shrink.ipynb)
 for configuration and the full `detslice-with-ops-svg` diagram.
 
-## 7. Unrotated surface-code resizing
+## 7. Unrotated surface-code deformation
 
 **Module:** `lightstim.qec_code.surface_code.unrotated.operation`
 
@@ -1046,7 +1046,7 @@ their IDs and historical coordinates remain allocated for the existing circuit
 and later regrowth. Validation and the staged transition must succeed before
 the caller's circuit and state are changed.
 
-See the executed [unrotated resize notebook](../../notebooks/LogicalOps/unrotated_surface_resize.ipynb)
+See the executed [unrotated deformation notebook](../../notebooks/LogicalOps/unrotated_surface_deformation.ipynb)
 for a configurable 5→3 shrink or 3→5 enlargement, before/after patch metadata,
 and the full `detslice-with-ops-svg` circuit diagram. Set `ROUNDS = 1` to include
 one ordinary target SE round after shrinking.
