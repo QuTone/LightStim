@@ -946,9 +946,11 @@ optional whole-circuit noise. See the executed
 [shrinking notebook](../../notebooks/LogicalOps/rotated_surface_shrink.ipynb)
 for configuration and the full `detslice-with-ops-svg` diagram.
 
-## 7. Unrotated surface-code enlargement
+## 7. Unrotated surface-code resizing
 
 **Module:** `lightstim.qec_code.surface_code.unrotated.operation`
+
+### Enlargement
 
 The unrotated operation set uses the same executor interface:
 
@@ -964,7 +966,7 @@ executor.register_op_set(
     UnrotatedSurfaceCodeLogicalOpSet(UnrotatedSurfaceCodeExtractionBlock),
 )
 patch = executor.apply_logical_operation(
-    "enlarge", [patch], target_distance=5, direction="+x,+y", rounds=2,
+    "enlarge", [patch], target_distance=5, direction="+x,+y", rounds=1,
 )
 ```
 
@@ -1004,3 +1006,47 @@ These checks establish ideal logical-state preservation and valid detector
 construction. They do not assert that one growth round provides target-distance
 fault tolerance, or remove faults already logical at the smaller input distance.
 Circuit-level performance must be evaluated for the complete noisy protocol.
+
+### Shrinking
+
+The same operation set contracts a prepared patch by measuring its removed data:
+
+```python
+patch = executor.apply_logical_operation(
+    "shrink", [patch], target_distance=3, direction="-x,-y", rounds=0,
+)
+```
+
+The target must be an odd distance at least 3 and smaller than the source.
+The same defect-free square layouts, translations, transpositions, and uniform
+coordinate scaling supported by enlargement are supported by shrinking.
+Both operations retain the minimum-coordinate corner. Only `-x,-y` contraction
+is supported; arbitrary rotations and modified checks are rejected.
+The builder and tracker must be registered with `QECSystem` before shrinking.
+
+Removed data are measured in X where native coordinates relative to the retained
+corner satisfy `y >= x`, and in Z where `y < x`. The basis rule is mapped through
+the coordinate transform, exactly as for initialization during enlargement.
+Retained data are never reset. `rounds=0` adds no target SE; a positive integer
+appends that many native four-CNOT-layer SE cycles on the smaller patch.
+
+The readout introduces a known logical Pauli frame. In the native frame, let
+`pX` be the parity of X outcomes on the removed portion of the left edge and
+`pZ` the parity of Z outcomes on the removed portion of the top edge. The frame
+is `Z_L**pX X_L**pZ`. The tracker keeps these measurement records and includes
+them in subsequent logical observables. There is no physical feed-forward
+correction or postselection; a bare target logical Pauli string alone does not
+include its measurement-dependent sign.
+
+Assign the returned view to `patch` before further operations or readout.
+Its `get_info()` and the registered patch now describe the smaller distances,
+data, checks, and logical operators. The patch name and retained global IDs
+are preserved. Released sites leave the live role and ownership sets, while
+their IDs and historical coordinates remain allocated for the existing circuit
+and later regrowth. Validation and the staged transition must succeed before
+the caller's circuit and state are changed.
+
+See the executed [unrotated resize notebook](../../notebooks/LogicalOps/unrotated_surface_resize.ipynb)
+for a configurable 5→3 shrink or 3→5 enlargement, before/after patch metadata,
+and the full `detslice-with-ops-svg` circuit diagram. Set `ROUNDS = 1` to include
+one ordinary target SE round after shrinking.

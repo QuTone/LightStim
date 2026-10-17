@@ -348,3 +348,23 @@ def test_enlargement_refreshes_legacy_z_only_readout_offsets():
         NoiseConfig(p_2q=.001, p_meas=.001), noise_model="circuit_level",
     )
     assert noisy.detector_error_model(decompose_errors=True).num_errors > 0
+
+
+def test_target_only_growth_invalidates_legacy_z_only_cache_with_spectator():
+    system, source, ref, builder, executor = _setup(reference=True)
+    builder.initialize({q: "Z" for q in source.data_indices | ref.data_indices}, system.num_qubits)
+    builder.apply_syndrome_extraction(
+        UnrotatedSurfaceCodeExtractionBlock(system).circuit, rounds=1, z_only=True,
+    )
+    target = executor.apply_logical_operation("enlarge", [source], target_distance=5)
+    measurements = {q: "Z" for q in target.data_indices | ref.data_indices}
+    before = pickle.dumps((system, builder))
+    with pytest.raises(ValueError, match="current target-code SE"):
+        builder.apply_data_readout(measurements, z_only=True)
+    assert pickle.dumps((system, builder)) == before
+
+    builder.apply_syndrome_extraction(
+        UnrotatedSurfaceCodeExtractionBlock(system).circuit, rounds=1, z_only=True,
+    )
+    builder.apply_data_readout(measurements, z_only=True)
+    _assert_ideal(builder.to_stim_circuit())

@@ -159,7 +159,10 @@ def _prepare_target(builder, patch, target_distance, direction, rounds):
     # A declaration alone is not evidence that the input code was prepared.
     # Check the known state span, including logical-state rows whose current
     # representatives may contain stabilizer factors.
-    tracker = builder.tracker
+    # A native tableau can materialize writable matrix/record views on read.
+    # Keep validation representation changes off the live tracker as well as
+    # keeping circuit/registration mutations inside the staged transition.
+    tracker = copy.deepcopy(builder.tracker)
     full = np.vstack([tracker.stabilizers.matrix, tracker.logicals.matrix])
     records = tracker.stabilizers.records + tracker.logicals.records
     known = [i for i, rec in enumerate(records) if all(r >= 0 for r in rec)]
@@ -234,11 +237,18 @@ def enlarge(builder, patch, *, target_distance, direction="+x,+y", rounds=1):
         extraction_system.patches[owner] = (target, (0, 0))
     extraction = UnrotatedSurfaceCodeExtractionBlock(extraction_system, scheduling="4tick")
     staged.apply_syndrome_extraction(extraction.circuit, rounds=rounds)
-    if staged._z_only_syn_qubit_indices is not None:
+    had_z_only_cache = staged._z_only_syn_qubit_indices is not None
+    staged._z_only_syn_qubit_indices = None
+    staged._z_only_no_detector_mask = None
+    staged._z_only_n_meas_per_round = None
+    if (had_z_only_cache
+            and extraction_system.active_stabilizer_indices == system.active_stabilizer_indices):
         # The optional legacy Z-only final readout stores the last syndrome
         # order and count. Source-distance offsets cannot describe this new
-        # round. Refresh from the actual native M instruction, while retaining
-        # full X/Z detector generation during growth itself.
+        # round. Refresh from the actual native M instruction only if this SE
+        # covered every active check. With spectators, no shared final-round
+        # ordering exists until a subsequent whole-system SE; leave the cache
+        # invalid so legacy readout fails before emitting destructive gates.
         measured = [target.value for target in extraction.circuit[-1].targets_copy()]
         x_syndromes = set(extraction_system.active_syndrome_indices_x)
         staged._z_only_syn_qubit_indices = measured

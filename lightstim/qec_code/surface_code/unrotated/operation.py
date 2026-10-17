@@ -7,6 +7,7 @@ from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.qec_code.surface_code.unrotated.code_patch import UnrotatedSurfaceCode
 from .enlargement import enlarge as _enlarge
+from .shrinking import shrink as _shrink
 
 
 # ------------------------------------------------------------------------------
@@ -128,7 +129,7 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
     Inherits transversal_cnot from CSSLogicalOpSet and adds:
     - fold-transversal H and S gates (y=x diagonal reflection symmetry)
     - state_injection and logical_unencode (corner injection protocol)
-    - permanent corner-anchored enlargement with native four-layer SE
+    - permanent corner-anchored enlargement and shrinking with native four-layer SE
 
     Available via LogicalExecutor:
         executor.apply_logical_operation("fold_transversal_hadamard", [patch])
@@ -137,6 +138,7 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         executor.apply_logical_operation("state_injection", [patch], ...)
         executor.apply_logical_operation("logical_unencode", [patch], ...)
         patch = executor.apply_logical_operation("enlarge", [patch], target_distance=5)
+        patch = executor.apply_logical_operation("shrink", [patch], target_distance=3)
     """
 
     def __init__(self, extraction_block_class: Type = None):
@@ -157,6 +159,20 @@ class UnrotatedSurfaceCodeLogicalOpSet(CSSLogicalOpSet):
         """
         return _enlarge(builder, patch, target_distance=target_distance,
                         direction=direction, rounds=rounds)
+
+    def shrink(
+        self, builder: CircuitBuilder, patch: QECPatch, *,
+        target_distance: int, direction: str = "-x,-y", rounds: int = 0,
+    ) -> QECPatch:
+        """Measure away the outer region, retaining the minimum-coordinate corner.
+
+        The logical measurement frame is tracked without physical correction.
+        ``rounds`` counts optional four-layer SE rounds on the smaller output.
+        Use the returned patch: the previous view has been retired. Translation,
+        transpose, and uniform spacing follow the same contract as enlargement.
+        """
+        return _shrink(builder, patch, target_distance=target_distance,
+                       direction=direction, rounds=rounds)
 
     # ------------------------------------------------------------------
     # Fold-transversal gates
