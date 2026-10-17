@@ -299,7 +299,7 @@ builder.apply_syndrome_extraction(
     circuit_chunk,  # stim.Circuit — exactly ONE round of stabilizer measurement
                     # ending in a contiguous M/MX syndrome readout layer
     rounds=1,       # Round 1: initialization boundary; round 2: steady transition;
-                    # rounds 3+: reuse the round-2 body
+                    # rounds 3+: verified state advancement or explicit updates
     noiseless=False,# Tag all instructions as 'noiseless'
     z_only=False,   # Suppress X-ancilla DETECTOR instructions (for Z-basis memory)
     measurement_blocks=None,
@@ -307,16 +307,16 @@ builder.apply_syndrome_extraction(
                     # concatenation is one Builder-level SE round
 )
 # Emits: an explicit first round, an explicit second round when requested,
-#        then a REPEAT block for rounds 3+
+#        then verified or byte-identical rounds may be packed into REPEAT
 # Tracker:
 #   Back-propagates terminal measurements to construct detectors at the input boundary.
 #   Forward-propagates reset stabilizers to write the output tableau and record parities.
 #   Each physical block performs the same tracker update. After the complete
 #   Builder-level round, Builder explicitly classifies/rebases the state basis.
-#   Analyzes round 2 explicitly; later rounds reuse its relative detector records.
-#   For a single-logical steady state, probes two virtual rounds, canonicalizes the
-#   logical Pauli, and stores its repeated record delta inside the REPEAT body.
-#   Unstable or more complex transitions fall back to explicit tracker evolution.
+#   Analyzes round 2 explicitly. A single-logical steady state is checked using
+#   two probe rounds before advancing the remaining rounds together.
+#   Accumulated logical-record deltas, history, and more complex transitions
+#   require explicit tracker updates; byte-identical output can still use REPEAT.
 ```
 
 **Critical constraint:** The `circuit_chunk` must use global qubit indices.

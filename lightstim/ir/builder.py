@@ -417,6 +417,7 @@ class CircuitBuilder:
                 promotable_stabilizer_rows.append(
                     self.tracker.process_mid_measurement(
                         circuit=stim.Circuit(),
+                        circuit_chunk=analysis.circuit,
                         forward_symplectic_matrix=(
                             analysis.forward_symplectic_matrix
                         ),
@@ -476,6 +477,8 @@ class CircuitBuilder:
         *,
         z_only: bool,
     ) -> _MeasurementBlockAnalysis:
+        tableau = stim.Tableau.from_circuit(
+            circuit, ignore_noise=True, ignore_measurement=True, ignore_reset=True)
         (
             back_propagated_paulis,
             measurement_qubit_indices,
@@ -484,6 +487,7 @@ class CircuitBuilder:
             circuit,
             self.tracker.num_qubits,
             include_measurement_bases=True,
+            tableau=tableau,
         )
         if circuit.num_measurements != len(measurement_qubit_indices):
             raise ValueError(
@@ -500,6 +504,7 @@ class CircuitBuilder:
         forward_symplectic_matrix = self.tracker.get_forward_symplectic_matrix(
             circuit,
             self.tracker.num_qubits,
+            tableau=tableau,
         )
         measurement_coords = [
             self.system.qubit_coords[i]
@@ -642,6 +647,7 @@ class CircuitBuilder:
             promotable_stabilizer_rows.append(
                 tracker.process_mid_measurement(
                     circuit=output_circuit,
+                    circuit_chunk=analysis.circuit,
                     forward_symplectic_matrix=(
                         analysis.forward_symplectic_matrix
                     ),
@@ -1038,6 +1044,7 @@ class CircuitBuilder:
         num_qubits: int,
         *,
         include_measurement_bases: bool = False,
+        tableau: Optional[stim.Tableau] = None,
     ) -> Union[
         Tuple[np.ndarray, List[int]],
         Tuple[np.ndarray, List[int], List[str]],
@@ -1087,17 +1094,15 @@ class CircuitBuilder:
         # Step 1. Get the back-propagated Pauli string
         # Convert to tableau and get numpy representation (binary array in symplectic representation)
         # We ignore measurement/reset to treat the circuit as a unitary operation for analysis.
-        se_tableau = stim.Tableau.from_circuit(circuit_chunk, ignore_noise=True, ignore_measurement=True, ignore_reset=True)
-        se_tableau_inverse = se_tableau.inverse()
+        se_tableau = tableau if tableau is not None else stim.Tableau.from_circuit(
+            circuit_chunk, ignore_noise=True, ignore_measurement=True, ignore_reset=True)
+        # Only unsigned Pauli support enters this tracker calculation. Stim's
+        # signed inverse also reconstructs phases in cubic time; those phases
+        # were discarded immediately by to_numpy below.
+        se_tableau_inverse = se_tableau.inverse(unsigned=True)
 
         # 6 outputs: x2x, x2z, z2x, z2z, x_signs, z_signs
         x2x, x2z, z2x, z2z, _, _ = se_tableau_inverse.to_numpy()
-
-        # Convert to int
-        x2x_int = x2x.astype(int)
-        x2z_int = x2z.astype(int)
-        z2x_int = z2x.astype(int)
-        z2z_int = z2z.astype(int)
 
         measurement_qubit_indices = []
         measurement_bases = []
@@ -1112,11 +1117,11 @@ class CircuitBuilder:
                 measurement_bases.append(basis)
 
                 if basis == "X":
-                    row_x = x2x_int[qubit].copy()
-                    row_z = x2z_int[qubit].copy()
+                    row_x = x2x[qubit]
+                    row_z = x2z[qubit]
                 else:
-                    row_x = z2x_int[qubit].copy()
-                    row_z = z2z_int[qubit].copy()
+                    row_x = z2x[qubit]
+                    row_z = z2z[qubit]
 
                 back_pauli_x_rows.append(row_x)
                 back_pauli_z_rows.append(row_z)
@@ -1149,23 +1154,23 @@ class CircuitBuilder:
         # sufficient.
         removable_reset_qubits = sorted(reset_by_qubit)
         if removable_reset_qubits:
-
-            for row_idx in range(back_pauli_x.shape[0]):
-                for qubit in removable_reset_qubits:
-                    actual = (
-                        int(back_pauli_x[row_idx, qubit]),
-                        int(back_pauli_z[row_idx, qubit]),
-                    )
-                    if actual == (0, 0):
-                        continue
-                    expected = reset_by_qubit.get(qubit)
-                    if actual != expected:
-                        raise ValueError(
-                            "Back-propagated syndrome factor "
-                            f"{actual} on qubit {qubit} is not stabilized by "
-                            f"its reset basis {expected}. The measurement is "
-                            "not a deterministic syndrome or flag outcome."
-                        )
+            reset_x = back_pauli_x[:, removable_reset_qubits]
+            reset_z = back_pauli_z[:, removable_reset_qubits]
+            expected = np.asarray([reset_by_qubit[q] for q in removable_reset_qubits],
+                                  dtype=np.uint8)
+            invalid = ((reset_x | reset_z).astype(bool)
+                       & ((reset_x != expected[:, 0]) | (reset_z != expected[:, 1])))
+            if invalid.any():
+                # Row-major selection preserves the historical first error.
+                row_idx, reset_idx = np.argwhere(invalid)[0]
+                qubit = removable_reset_qubits[int(reset_idx)]
+                actual = (int(reset_x[row_idx, reset_idx]), int(reset_z[row_idx, reset_idx]))
+                raise ValueError(
+                    "Back-propagated syndrome factor "
+                    f"{actual} on qubit {qubit} is not stabilized by "
+                    f"its reset basis {reset_by_qubit[qubit]}. The measurement is "
+                    "not a deterministic syndrome or flag outcome."
+                )
 
             back_pauli_x[:, removable_reset_qubits] = 0
             back_pauli_z[:, removable_reset_qubits] = 0
@@ -1379,13 +1384,14 @@ class CircuitBuilder:
             return {}
         from ..utils.linear_algebra import kernel_gf2
         from ..utils.subsystem_algebra import independent_row_indices
+        from ..utils.pauli_backend import multiply_binary
         n = self.tracker.num_qubits
         declared = self._active_role_space()
         continuing = set(self.system.active_qubit_indices) - set(measured_qubits)
         retired = sorted(set(range(n)) - continuing)
         columns = retired + [n + q for q in retired]
         combinations = kernel_gf2(declared[:, columns].T)
-        active = combinations @ declared % 2
+        active = multiply_binary(combinations, declared)
         active = active[independent_row_indices(active)]
         return {"active_stabilizers": active}
 

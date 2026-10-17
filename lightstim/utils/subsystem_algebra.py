@@ -3,17 +3,22 @@
 import numpy as np
 
 from .linear_algebra import kernel_gf2, row_echelon
+from .pauli_backend import use_packed_algebra, _packed_native, PackedRows
 
 
 def independent_row_indices(matrix):
     """Select original rows, in order, spanning a possibly redundant matrix."""
     if not matrix.size:
         return []
+    if use_packed_algebra():
+        return list(_packed_native.packed_independent_rows(matrix))
     return list(row_echelon(matrix.T)[3])
 
 
 def reduce_modulo(rows, basis):
     """Return row residues modulo a Pauli span, without changing the inputs."""
+    if use_packed_algebra():
+        return _packed_native.packed_reduce_modulo(rows, basis)
     result = np.asarray(rows, dtype=np.uint8).copy()
     if basis.shape[0] and basis.shape[1]:
         reduced, rank, _, pivots = row_echelon(basis, reduced=True)
@@ -34,6 +39,8 @@ def intersect_row_spaces(left, right):
     right = np.asarray(right, dtype=np.uint8)
     if left.ndim != 2 or right.ndim != 2 or left.shape[1] != right.shape[1]:
         raise ValueError("Pauli spaces must be matrices of the same width.")
+    if use_packed_algebra():
+        return _packed_native.packed_intersect(left, right)
     if not left.shape[0] or not right.shape[0] or not left.shape[1]:
         return (np.zeros((0, left.shape[1]), dtype=np.uint8),
                 np.zeros((0, left.shape[0]), dtype=np.uint8))
@@ -46,6 +53,8 @@ def intersect_row_spaces(left, right):
 
 def combine_records(coefficients, records):
     """Apply a GF(2) basis change to absolute measurement-record parities."""
+    if use_packed_algebra():
+        return _packed_native.packed_combine_records(PackedRows(coefficients), records)
     result = []
     for coefficients_row in coefficients:
         parity = set()

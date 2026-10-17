@@ -134,7 +134,9 @@ def _prepare_target(builder, patch, target_distance, direction, rounds):
     # A declaration alone is not evidence that the input code was prepared.
     # Check the known state span, including logical-state rows whose current
     # representatives may contain stabilizer factors.
-    tracker = builder.tracker
+    # A failed preflight must leave lazy native views and their engine intact,
+    # as well as preserving the represented physical state.
+    tracker = copy.deepcopy(builder.tracker)
     full = np.vstack([tracker.stabilizers.matrix, tracker.logicals.matrix])
     records = tracker.stabilizers.records + tracker.logicals.records
     known = [i for i, rec in enumerate(records) if all(r >= 0 for r in rec)]

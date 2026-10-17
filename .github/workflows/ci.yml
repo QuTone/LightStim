@@ -17,10 +17,25 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - pauli-backend: reference
+            tracker-backend: reference
+          - pauli-backend: native
+            tracker-backend: reference
+          - pauli-backend: native
+            tracker-backend: persistent
+    env:
+      LIGHTSTIM_PAULI_BACKEND: ${{ matrix.pauli-backend }}
+      LIGHTSTIM_TRACKER_BACKEND: ${{ matrix.tracker-backend }}
+      LIGHTSTIM_BUILD_JOBS: 2
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          submodules: true
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -43,3 +58,14 @@ jobs:
 
       - name: Run tests
         run: venv/bin/python -m pytest tests/ -m "not slow" --timeout=90 -q
+
+  required-test:
+    # Keep the stable check name required by the main branch ruleset while
+    # requiring every backend configuration in the matrix above to succeed.
+    name: test
+    needs: test
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all backend test configurations
+        run: test "${{ needs.test.result }}" = success

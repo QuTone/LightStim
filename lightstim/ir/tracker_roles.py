@@ -13,6 +13,7 @@ from ..utils.linear_algebra import (
 from ..utils.subsystem_algebra import (
     independent_row_indices, combine_records, reduce_modulo,
 )
+from ..utils.pauli_backend import propagate_paulis
 
 
 class BareDressedRoles:
@@ -28,6 +29,8 @@ class BareDressedRoles:
         if any(i < 0 or i >= self.stabilizers.count for i in selected):
             raise IndexError("Postselected stabilizer row lies outside S")
         selected = [i for i in selected if all(r >= 0 for r in self.stabilizers.records[i])]
+        if not selected:
+            return Rows.empty(2 * self.num_qubits)
         return Rows(self.stabilizers.matrix[selected],
                     [self.stabilizers.records[i] for i in selected])
 
@@ -75,7 +78,7 @@ class BareDressedRoles:
         """
         from .tracker_algebra import Rows
 
-        matrix = selected.matrix @ forward_symplectic_matrix % 2
+        matrix = propagate_paulis(selected.matrix, forward_symplectic_matrix)
         records = selected.records
         if measurement_qubit_indices is not None:
             qubits = list(measurement_qubit_indices)
@@ -184,6 +187,19 @@ class BareDressedRoles:
                    if i < s.count and all(r >= 0 for r in s.records[i])]
         known_bare = [i for i in bare if all(r >= 0 for r in s.records[i])]
         known_live = [i for i, row in enumerate(live.records) if all(r >= 0 for r in row)]
+        state = self._sync_record_state()
+        if state is not None:
+            from ..utils.cpp._pauli_backend_cpp import PackedBasis
+
+            ns, nl = s.count, live.count
+            prefix = known_bare + [ns + i for i in known_live]
+            selected = [dressed[i] for i in state.ordered_complement(prefix, dressed)]
+            kept = list(range(ns + nl)) + selected
+            state.adopt_coordinates(state.coordinate_rows(kept), state.records_selected(kept))
+            self._read_record_state((ns, nl, len(selected)))
+            self.stabilizer_with_logical_components = set(self._dressed_stabilizer_rows)
+            self._gauge_logical_vectors = []
+            return
         basis = np.vstack([s.matrix[known_bare], live.matrix[known_live]])
         if dressed:
             _, _, chosen = solve_linear_decomposition(
@@ -210,6 +226,14 @@ class BareDressedRoles:
                 if all(r >= 0 for r in s.records[i])]
         known_s = [i for i, row in enumerate(s.records) if all(r >= 0 for r in row)]
         known_l = [i for i, row in enumerate(live.records) if all(r >= 0 for r in row)]
+        state = self._sync_record_state()
+        if state is not None:
+            from ..utils.cpp._pauli_backend_cpp import PackedBasis
+
+            full = state.coordinate_rows(known_s + [s.count + i for i in known_l])
+            self.expected_num_logicals = (
+                PackedBasis(full).rank - PackedBasis(state.coordinate_rows(bare)).rank)
+            return
         full = np.vstack([s.matrix[known_s], live.matrix[known_l]])
         self.expected_num_logicals = (
             len(independent_row_indices(full))
@@ -233,10 +257,48 @@ class BareDressedRoles:
             raise ValueError("Active role space must use the tracker register")
         self._v2_role_space = active.copy()
         known = [i for i, row in enumerate(s.records) if all(r >= 0 for r in row)]
-        unknown = [i for i in range(s.count) if i not in set(known)]
+        known_set = set(known)
+        unknown = [i for i in range(s.count) if i not in known_set]
         old_classified = set(self._classified_stabilizer_rows)
         old_ps = set(self.post_select_row_indices)
         old_to_known = {old: new for new, old in enumerate(known)}
+        state = self._sync_record_state()
+        if state is not None:
+            from ..utils.cpp._pauli_backend_cpp import packed_classify_stabilizers
+
+            ns, nl = s.count, self.logicals.count
+            result = packed_classify_stabilizers(
+                state.coordinate_rows(known), state.coordinate_paulis(active),
+                [old_to_known[i] for i in old_ps if i in old_to_known])
+            nb, nu = len(result["bare"]), len(unknown)
+            new_s = (result["bare"].combined(state.coordinate_rows(unknown))
+                     .combined(result["dressed"]))
+            new_s_records = (
+                state.combine_records(result["bare_lineage"], known)
+                + state.records_selected(unknown)
+                + state.combine_records(result["dressed_lineage"], known))
+            logical_indices = list(range(ns, ns + nl))
+            output = new_s.combined(state.coordinate_rows(logical_indices))
+            output_records = new_s_records + state.records_selected(logical_indices)
+            lineage = result["bare_lineage"].combined(result["dressed_lineage"]).numpy()
+            classified = set()
+            for out, coefficients in enumerate(lineage):
+                sources = {known[int(i)] for i in np.flatnonzero(coefficients)}
+                new = out if out < nb else out + nu
+                if sources and sources <= old_classified:
+                    classified.add(new)
+            classified.update(nb + j for j, old in enumerate(unknown) if old in old_classified)
+            selected = {i if i < nb else i + nu
+                        for i in result["safely_postselected_output_rows"]}
+            selected.update(nb + j for j, old in enumerate(unknown) if old in old_ps)
+            state.adopt_coordinates(output, output_records)
+            self._read_record_state((len(new_s), nl, 0))
+            self._classified_stabilizer_rows = classified
+            self.post_select_row_indices = selected
+            self._dressed_stabilizer_rows = set(range(nb + nu, len(new_s)))
+            self._v2_rebuild_absorbed()
+            self._v2_sync_budget()
+            return
         result = classify_stabilizers(
             Rows(s.matrix[known], [s.records[i] for i in known]), active,
             postselected_rows=[old_to_known[i] for i in old_ps if i in old_to_known])
@@ -266,7 +328,8 @@ class BareDressedRoles:
         self._v2_sync_budget()
 
     def _v2_commuting_relation(self, full, num_stabs, num_logs, measurement,
-                               previous_measurements, measurement_base_index, index):
+                               previous_measurements, measurement_base_index, index,
+                               *, context=None, record_state=None):
         """Classify a commuting measurement using bare and earlier measurements.
 
         A fresh measured constraint supplies repeat-check information even if
@@ -276,9 +339,22 @@ class BareDressedRoles:
         participating current L rows for historical API diagnostics; dressed
         directions do not acquire fictitious L indices.
         """
-        bare = [i for i in range(num_stabs)
-                if i not in self._dressed_stabilizer_rows
-                and all(r >= 0 for r in full.records[i])]
+        # The builder's projection loop invalidates this local context after
+        # every row/record mutation. It never survives an atomic operation.
+        if context is None:
+            context = {}
+        if not context:
+            bare = [i for i in range(num_stabs)
+                    if i not in self._dressed_stabilizer_rows
+                    and all(r >= 0 for r in full.records[i])]
+            exact_rows = {}
+            for i in bare:
+                exact_rows.setdefault(np.asarray(full.matrix[i], dtype=np.uint8).tobytes(), i)
+            context.update(
+                bare=bare, exact_rows=exact_rows,
+                known=[i for i in range(num_stabs + num_logs)
+                       if all(r >= 0 for r in full.records[i])])
+        bare = context["bare"]
         prefix = previous_measurements[:index]
         # Preserve an existing check's record representative before choosing
         # another decomposition of a redundant S_bare basis.  The difference
@@ -286,8 +362,7 @@ class BareDressedRoles:
         # by a product of other checks can make elementary faults touch many
         # detectors.  Exact matching is also the common repeated-SE case and
         # needs no new elimination of the unchanged bare space.
-        exact = next((i for i in bare
-                      if np.array_equal(full.matrix[i], measurement)), None)
+        exact = context["exact_rows"].get(np.asarray(measurement, dtype=np.uint8).tobytes())
         if exact is not None:
             parity = set(full.records[exact])
             parity.symmetric_difference_update([measurement_base_index + index])
@@ -305,15 +380,26 @@ class BareDressedRoles:
             parity = set(combine_records(coeff, records)[0])
             parity.symmetric_difference_update([measurement_base_index + index])
             return "detector", sorted(parity), ()
-        known = [i for i in range(num_stabs + num_logs)
-                 if all(r >= 0 for r in full.records[i])]
-        coeff, dependent, _ = solve_linear_decomposition(
-            basis=full.matrix[known], targets=measurement.reshape(1, -1),
-            reduce_weight=False)
+        known = context["known"]
+        if record_state is None:
+            coeff, dependent, _ = solve_linear_decomposition(
+                basis=full.matrix[known], targets=measurement.reshape(1, -1),
+                reduce_weight=False)
+        else:
+            native_coeff, native_dependent, native_parity = record_state.decompose(
+                measurement, known)
+            coeff = np.asarray(native_coeff, dtype=np.uint8)[known][None, :]
+            dependent = [native_dependent]
         if not dependent[0]:
-            candidate, represented, _ = solve_linear_decomposition(
-                basis=full.matrix[:num_stabs + num_logs],
-                targets=measurement.reshape(1, -1), reduce_weight=False)
+            if record_state is None:
+                candidate, represented, _ = solve_linear_decomposition(
+                    basis=full.matrix[:num_stabs + num_logs],
+                    targets=measurement.reshape(1, -1), reduce_weight=False)
+            else:
+                candidate_row, represented_row, _ = record_state.decompose(
+                    measurement, list(range(num_stabs + num_logs)))
+                candidate = np.asarray(candidate_row, dtype=np.uint8)[None, :]
+                represented = [represented_row]
             if represented[0] and any(
                 i >= num_stabs and any(r < 0 for r in full.records[int(i)])
                 for i in np.flatnonzero(candidate[0])
@@ -322,7 +408,8 @@ class BareDressedRoles:
             # An unknown placeholder cannot establish a deterministic parity.
             # The physical refresh below still records the new measurement.
             return "unknown", [], ()
-        parity = set(combine_records(coeff, [full.records[i] for i in known])[0])
+        parity = set(native_parity if record_state is not None else
+                     combine_records(coeff, [full.records[i] for i in known])[0])
         parity.symmetric_difference_update([measurement_base_index + index])
         logical_indices = tuple(known[int(i)] - num_stabs
                                 for i in np.flatnonzero(coeff[0])
@@ -332,6 +419,19 @@ class BareDressedRoles:
     def _v2_validate_roles(self, *, context="tracker state"):
         if any(i < 0 or i >= self.stabilizers.count for i in self._dressed_stabilizer_rows):
             raise RuntimeError(f"After {context}: dressed row index outside S")
+        state = self._sync_record_state()
+        if state is not None:
+            from ..utils.cpp._pauli_backend_cpp import PackedBasis
+
+            physical = self.stabilizers.count + self.logicals.count
+            if self.absorbed_ops.count:
+                basis = PackedBasis(state.coordinate_rows(range(physical)))
+                _, contained, _ = basis.decompose_packed(state.coordinate_rows(
+                    range(physical, physical + self.absorbed_ops.count)))
+                if not np.all(contained):
+                    raise RuntimeError(f"After {context}: absorbed representative outside span(S,L)")
+            self._v2_sync_budget()
+            return
         full = np.vstack([self.stabilizers.matrix, self.logicals.matrix])
         if self.absorbed_ops.count:
             _, contained, _ = solve_linear_decomposition(

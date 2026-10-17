@@ -11,6 +11,7 @@ from typing import Dict, FrozenSet, Optional, Sequence, Tuple
 import numpy as np
 
 from lightstim.utils.linear_algebra import kernel_gf2, solve_linear_decomposition
+from lightstim.utils.pauli_backend import use_packed_algebra, _packed_native, PackedRows
 from lightstim.utils.subsystem_algebra import (
     combine_records,
     independent_row_indices,
@@ -188,6 +189,20 @@ def classify_stabilizers(S, K, *, postselected_rows=(), include_dependencies=Fal
     K = np.asarray(K, dtype=np.uint8) % 2
     _check_width(width, K)
     selected = _indices(postselected_rows, len(S.matrix))
+    if use_packed_algebra():
+        native = _packed_native.packed_classify_stabilizers(
+            PackedRows(S.matrix), PackedRows(K), selected)
+        bare_lineage = native["bare_lineage"].numpy()
+        dressed_lineage = native["dressed_lineage"].numpy()
+        return ClassifiedStabilizers(
+            _annotated(native["bare"].numpy(), bare_lineage, S.records),
+            _annotated(native["dressed"].numpy(), dressed_lineage, S.records),
+            bare_lineage, dressed_lineage, native["exact_postselection_map"],
+            frozenset(native["safely_postselected_output_rows"]),
+            dict(sorted(native["original_row_map"].items(), key=lambda item: item[1])),
+            native["dressed_quotient_rank"],
+            record_dependencies(S) if include_dependencies else None,
+        )
     identity = np.eye(len(S.matrix), dtype=np.uint8)
 
     residues = reduce_modulo(S.matrix, K)
@@ -292,6 +307,26 @@ def readout_closures(S_bare, S_dressed, L, measurements, *, postselected_rows=()
     state = Rows(np.vstack([S_bare.matrix, S_dressed.matrix, L.matrix]),
                  S_bare.records + S_dressed.records + L.records)
     selected = _indices(postselected_rows, len(state.matrix))
+    if use_packed_algebra():
+        native = _packed_native.packed_readout_closures(
+            PackedRows(S_bare.matrix), PackedRows(S_dressed.matrix), PackedRows(L.matrix),
+            PackedRows(measurements.matrix), selected)
+
+        def closed(name):
+            value = native[name]
+            state_lineage = value["state_lineage"].numpy()
+            measurement_lineage = value["measurement_lineage"].numpy()
+            rows = _annotated(value["rows"].numpy(), state_lineage, state.records)
+            measured = _packed_native.packed_combine_records(
+                value["measurement_lineage"], measurements.records)
+            parities = tuple(tuple(sorted(set(old) ^ set(new)))
+                             for old, new in zip(rows.records, measured))
+            return ClosureRows(rows, state_lineage, measurement_lineage, parities)
+
+        return ReadoutClosures(
+            closed("detectors"), closed("observables"), closed("postselection"),
+            record_dependencies(state) if include_dependencies else None,
+        )
     bare_closed, bare_lineage_local = _intersection_preserving_rows(
         S_bare.matrix, measurements.matrix)
     bare_lineage = np.zeros((len(bare_closed), len(state.matrix)), dtype=np.uint8)
