@@ -4,7 +4,7 @@ argon2-cffi==25.1.0
 argon2-cffi-bindings==25.1.0
 arrow==1.4.0
 asttokens==3.0.2
-async-lru==2.3.0
+async-lru==2.4.0
 attrs==25.4.0
 babel==2.18.0
 beautifulsoup4==4.15.0
@@ -31,7 +31,7 @@ ipykernel==7.3.0
 ipython==8.39.0
 ipywidgets==8.1.9
 isoduration==20.11.0
-jedi==0.20.0
+jedi==0.20.1
 Jinja2==3.1.6
 json5==0.17.3
 jsonpointer==3.2.1
@@ -56,7 +56,7 @@ matplotlib==3.10.9
 matplotlib-inline==0.2.2
 mistune==3.3.4
 nbclient==0.11.0
-nbconvert==7.17.1
+nbconvert==7.17.2
 nbformat==5.11.1
 nest-asyncio==1.6.0
 notebook==7.6.3
