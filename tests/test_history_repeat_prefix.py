@@ -38,7 +38,7 @@ def _check_current_state(builder):
             ), (str(pauli), records)
 
 
-def _build(rounds, batched):
+def _build(rounds, batched, *, segments=1):
     system = QECSystem()
     system.add_patch(_ThreeQubitPatch(), name="test")
     builder = CircuitBuilder(SyndromeTracker(3, 1), system)
@@ -46,7 +46,7 @@ def _build(rounds, batched):
     builder.tracker.rebase_stabilizers_onto_code_basis(system)
     blocks = (stim.Circuit("RX 0\nMX 0"), stim.Circuit("CX 0 1\nM 0"))
     body = blocks[0] + blocks[1]
-    for _ in range(1 if batched else rounds):
+    for _ in range(segments if batched else rounds * segments):
         builder.apply_syndrome_extraction(
             body, rounds=rounds if batched else 1, measurement_blocks=blocks,
         )
@@ -85,10 +85,26 @@ def _rank(rows):
     return len(pivots)
 
 
-@pytest.mark.parametrize("rounds", [3, 5])
-def test_later_history_includes_the_entire_repeated_logical_frame(rounds):
+def test_two_repeated_blocks_preserve_accumulated_logical_history():
+    explicit = _build(5, False, segments=2)
+    batched = _build(5, True, segments=2)
+    assert sum(isinstance(instruction, stim.CircuitRepeatBlock)
+               for instruction in batched.circuit) == 2
+    assert batched.tracker.logical_history == explicit.tracker.logical_history
+    assert _rows(batched.circuit) == _rows(explicit.circuit)
+
+
+@pytest.mark.parametrize("rounds", [3, 5, 17])
+@pytest.mark.parametrize("mode", ["reference", "persistent"])
+def test_later_history_includes_the_entire_repeated_logical_frame(rounds, mode, monkeypatch):
+    if mode == "persistent":
+        pytest.importorskip("lightstim.utils.cpp._pauli_backend_cpp")
+    monkeypatch.setenv("LIGHTSTIM_TRACKER_BACKEND", mode)
+    monkeypatch.setenv("LIGHTSTIM_PAULI_BACKEND", "native" if mode == "persistent" else "reference")
     explicit = _build(rounds, False)
     batched = _build(rounds, True)
+    assert any(isinstance(instruction, stim.CircuitRepeatBlock)
+               for instruction in batched.circuit)
     expected_relation = tuple(range(1, 2 * rounds, 2)) + (2 * rounds,)
     assert batched.tracker.logical_history[0].records == expected_relation
     assert batched.tracker.logical_history == explicit.tracker.logical_history
@@ -104,4 +120,5 @@ def test_later_history_includes_the_entire_repeated_logical_frame(rounds):
         )
         assert not det.any() and not obs.any()
     a, b = _rows(explicit.circuit), _rows(batched.circuit)
+    assert a == b  # Preserve individual detector and observable parities.
     assert _rank(a) == _rank(b) == _rank(a + b)
