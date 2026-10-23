@@ -327,6 +327,128 @@ class BareDressedRoles:
         self._v2_rebuild_absorbed()
         self._v2_sync_budget()
 
+    def _v2_reclassify_after_readout(self, active_stabilizers):
+        """Classify the known S/L intersection with the continuing code.
+
+        Readout has already extracted relations using the input roles. Keep
+        existing bare S representatives first: a redundant logical expression
+        can differ from one of them by a previously extracted observable, and
+        must not become a second bare representative. Add only missing bare
+        directions, then retain S and L complements in that order.
+        """
+        self._v2_classify_stabilizers(active_stabilizers)
+        active_stabilizers = self._v2_role_space
+        s, logicals = self.stabilizers, self.logicals
+        ns, nl = s.count, logicals.count
+        if not nl:
+            return
+
+        known_s = [i for i, records in enumerate(s.records) if all(r >= 0 for r in records)]
+        known_l = [ns + i for i, records in enumerate(logicals.records)
+                   if all(r >= 0 for r in records)]
+        if not known_l:
+            return
+        known_s_set, known_l_set = set(known_s), set(known_l)
+        unknown_s = [i for i in range(ns) if i not in known_s_set]
+        unknown_l = [i for i in range(ns, ns + nl) if i not in known_l_set]
+        bare = [i for i in known_s if i not in self._dressed_stabilizer_rows]
+        dressed = [i for i in known_s if i in self._dressed_stabilizer_rows]
+        selected_dressed = [i for i in dressed if i in self.post_select_row_indices]
+        other_dressed = [i for i in dressed if i not in self.post_select_row_indices]
+        sources = known_s + known_l
+        state = self._sync_record_state()
+
+        if state is not None:
+            from ..utils.cpp._pauli_backend_cpp import PackedBasis, packed_classify_stabilizers
+
+            def rows(indices):
+                return state.coordinate_rows(indices)
+
+            def concatenate(left, right):
+                return left.combined(right)
+
+            def independent(matrix):
+                return list(PackedBasis(matrix).selected)
+
+            def select(matrix, indices):
+                return matrix.select(indices)
+
+            get_records = state.records_selected
+            intersection = packed_classify_stabilizers(
+                rows(sources), state.coordinate_paulis(active_stabilizers), [])
+            all_bare = intersection["bare"]
+            all_lineage = intersection["bare_lineage"]
+        else:
+            from .tracker_algebra import Rows, classify_stabilizers
+
+            physical = np.vstack([s.matrix, logicals.matrix])
+            records = [list(r) for r in s.records] + [list(r) for r in logicals.records]
+
+            def rows(indices):
+                return physical[indices]
+
+            def concatenate(left, right):
+                return np.vstack([left, right])
+
+            def independent(matrix):
+                return list(independent_row_indices(matrix))
+
+            def select(matrix, indices):
+                return matrix[indices]
+
+            def get_records(indices):
+                return [records[i] for i in indices]
+
+            intersection = classify_stabilizers(
+                Rows(rows(sources), get_records(sources)), active_stabilizers)
+            all_bare, all_lineage = intersection.bare.matrix, intersection.bare_lineage
+
+        old_bare = rows(bare)
+        extra = [i - len(bare) for i in independent(concatenate(old_bare, all_bare))
+                 if i >= len(bare)]
+        new_bare = concatenate(old_bare, select(all_bare, extra))
+        extra_lineage = select(all_lineage, extra)
+        extra_records = (state.combine_records(extra_lineage, sources) if state is not None
+                         else combine_records(extra_lineage, get_records(sources)))
+
+        # Exact postselected S representatives survive even when redundant.
+        prefix = concatenate(new_bare, rows(selected_dressed))
+        chosen_dressed = [other_dressed[i - len(prefix)]
+                          for i in independent(concatenate(prefix, rows(other_dressed)))
+                          if i >= len(prefix)]
+        kept_dressed = selected_dressed + chosen_dressed
+        prefix = concatenate(new_bare, rows(kept_dressed))
+        kept_l = [known_l[i - len(prefix)]
+                  for i in independent(concatenate(prefix, rows(known_l)))
+                  if i >= len(prefix)]
+        kept_l = sorted(kept_l + unknown_l)
+
+        # Unknown placeholders never supply eigenvalues to the intersection.
+        new_s = concatenate(concatenate(new_bare, rows(unknown_s)), rows(kept_dressed))
+        output = concatenate(new_s, rows(kept_l))
+        output_records = (get_records(bare) + extra_records + get_records(unknown_s)
+                          + get_records(kept_dressed) + get_records(kept_l))
+        old_to_new = {old: i for i, old in enumerate(bare)}
+        old_to_new.update({old: len(new_bare) + i for i, old in enumerate(unknown_s)})
+        dressed_start = len(new_bare) + len(unknown_s)
+        old_to_new.update({old: dressed_start + i for i, old in enumerate(kept_dressed)})
+        selected = {old_to_new[i] for i in self.post_select_row_indices if i in old_to_new}
+        classified = {old_to_new[i] for i in self._classified_stabilizer_rows if i in old_to_new}
+        classified.update(range(len(bare), len(new_bare)))
+        if state is not None:
+            state.adopt_coordinates(output, output_records)
+            self._read_record_state((len(new_s), len(kept_l), 0))
+        else:
+            self.stabilizers.matrix = new_s
+            self.stabilizers.records = output_records[:len(new_s)]
+            self.logicals.matrix = output[len(new_s):]
+            self.logicals.records = output_records[len(new_s):]
+        self.post_select_row_indices = selected
+        self._classified_stabilizer_rows = classified
+        self._dressed_stabilizer_rows = set(range(dressed_start, len(new_s)))
+        self._v2_rebuild_absorbed()
+        self._v2_sync_budget()
+
     def _v2_commuting_relation(self, full, num_stabs, num_logs, measurement,
                                previous_measurements, measurement_base_index, index,
                                *, context=None, record_state=None):
