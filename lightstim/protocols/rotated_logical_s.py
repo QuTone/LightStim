@@ -137,7 +137,7 @@ def build_rotated_s_two_way_circuit(
     )
 
     if noise_params is None:
-        return builder.circuit
+        return builder.to_stim_circuit()
     return builder.build_noisy_circuit(noise_params, noise_model)
 
 
@@ -203,7 +203,7 @@ def build_rotated_s_y_injection_circuit(
     )
 
     if noise_params is None:
-        return builder.circuit
+        return builder.to_stim_circuit()
     return builder.build_noisy_circuit(noise_params, noise_model)
 
 

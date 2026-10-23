@@ -23,13 +23,18 @@ from lightstim.qec_code.surface_code.unrotated import (
 )
 from lightstim.qec_code.surface_code.unrotated.operation import _get_fold_yx_pairs
 from lightstim.ir.qec_system import QECSystem
-from lightstim.ir.builder import CircuitBuilder
+from lightstim.ir.builder import CircuitBuilder, DataReadoutStage
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.simulation.decoder_backend.pipeline import SimulationPipeline
 from lightstim.simulation.decoder_backend.config import DecoderConfig
 from lightstim.noise.config import NoiseConfig
 from lightstim.noise.injector import NoiseInjector
 from lightstim.noise.rules import FlipAfterResetFiltered
+from lightstim.simulation.observable_analysis import (
+    build_obs_patch_matrix,
+    identify_distillation_observables,
+    logical_history_observable_indices,
+)
 
 # Magic patch names: the four input |Y⟩ patches
 LS_MAGIC_NAMES = {"W1", "W2", "W3", "W5"}
@@ -161,8 +166,10 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
         for q in system.data_indices:
             if system.index_to_owner_map.get(q) == 'W5':
                 measure_mid[q] = 'X'
-        builder.apply_data_readout(final_measurements=measure_mid)
-        builder.deactivate_coupler(coupler_name)
+        builder.apply_staged_data_readout(measure_mid, stages=(
+            DataReadoutStage(tuple(cd), (coupler_name,)),
+            DataReadoutStage(tuple(q for q in measure_mid if q not in cd)),
+        ))
 
         if i < len(subsets) - 1:
             prepare_y('W5')
@@ -174,7 +181,7 @@ def build_distillation_circuit(d, rounds, y_prep="fold_transversal_s"):
     }
     builder.apply_data_readout(final_measurements=measure_final)
 
-    circuit = builder.circuit
+    circuit = builder.to_stim_circuit()
     dem = circuit.detector_error_model(decompose_errors=True)
     circuit_info = {
         'num_qubits': circuit.num_qubits,
@@ -262,7 +269,7 @@ def estimate_p_in(d, rounds, p_injected, p_background=0.0,
     op_set.fold_transversal_s_dag(builder, sys1.patches['cal'][0], noiseless=True)
     builder.apply_data_readout(final_measurements={q: 'X' for q in sys1.data_indices})
 
-    circuit = builder.circuit
+    circuit = builder.to_stim_circuit()
     all_qubits = list(range(circuit.num_qubits))
 
     if p_background > 0:
@@ -290,6 +297,21 @@ def estimate_p_in(d, rounds, p_injected, p_background=0.0,
         print_progress=False,
     )
     return pipeline.run(noisy).logical_error_rate
+
+
+def analyze_observables(circuit, system):
+    """Keep the W4 output and three native outer-code acceptance checks.
+
+    Additional history relations stay exported in the circuit but are not
+    silently promoted to acceptance checks or distilled-output targets.
+    Returns the same five items as the TG analysis helper.
+    """
+    matrix, names = build_obs_patch_matrix(circuit, system)
+    history = logical_history_observable_indices(circuit)
+    transform, target, postselect = identify_distillation_observables(
+        matrix, names, ["W4"], excluded_observable_indices=history,
+    )
+    return transform, target, postselect, matrix, names
 
 
 def run_simulation(circuit, magic_qubits, p, p_injected, mode,

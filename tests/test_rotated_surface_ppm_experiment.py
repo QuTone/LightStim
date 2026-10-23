@@ -15,9 +15,15 @@ import contextlib
 import io
 
 import pytest
+import stim
+
+from tests.tracker_test_utils import (
+    _annotations, _basis, _bits, _full_record_parities,
+)
 
 from lightstim.noise.config import NoiseConfig
 from lightstim.ir.qec_system import QECSystem
+from lightstim.ir.logical_history import logical_history_observable_indices
 from lightstim.qec_code.surface_code.rotated.ppm import (
     RotatedSurfacePatchPlacement,
     RotatedSurfacePPMLayoutError,
@@ -73,6 +79,17 @@ def _lower(px, target, states, *, route=(), **kw):
     return exp, plan
 
 
+def _assert_complete_protected_relations(circuit, expected):
+    physical, detectors, observables = _annotations(circuit)
+    relations = detectors + observables
+    assert len(_basis(relations)) == len(_basis(_full_record_parities(physical)))
+    assert len(_basis(relations)) - len(_basis(detectors)) == expected
+    assert physical.has_all_flows(
+        [stim.Flow(measurements=list(_bits(row))) for row in relations],
+        unsigned=False,
+    )
+
+
 def _verify(exp, c, row=None):
     if row is not None:
         assert exp._rules[0].row == row
@@ -80,6 +97,8 @@ def _verify(exp, c, row=None):
         512, separate_observables=True)
     assert not det.any(), "detector fired at p=0"
     assert not obs.any(), "observable not deterministic at p=0"
+    for relation in exp.tracker.logical_history:
+        assert c.has_flow(stim.Flow(measurements=relation.records), unsigned=True)
     noisy = exp.builder.build_noisy_circuit(noise_params=NP,
                                             noise_model='circuit_level')
     noisy.detector_error_model(decompose_errors=True)
@@ -120,33 +139,35 @@ def test_explicit_corridor_zz_full_distance():
                    _spec("B", 2, 0, "X_horizontal")],
                   [("A", "Z"), ("B", "Z")], {"A": "Z", "B": "Z"},
                   route=[(1, 0)])
-    assert c.num_observables == 1
+    assert c.num_observables == 3  # Two final logicals plus the joint history.
+    assert logical_history_observable_indices(c) == (2,)
+    _assert_complete_protected_relations(c, 3)
     _verify(exp, c)
 
 
-def test_joint_closure_detector_emitted():
-    # A measurement-promoted joint has a legitimate long-range terminal
-    # closure detector; support weight alone must not suppress it.
+def test_split_joint_consistency_is_logical():
     exp, c = _run([_spec("A", 0, 0, "X_horizontal"),
                    _spec("B", 2, 0, "X_horizontal")],
                   [("A", "Z"), ("B", "Z")], {"A": "Z", "B": "Z"},
                   route=[(1, 0)])
-    longrange = [inst for inst in c.flattened() if inst.name == "DETECTOR"
-                 and len(inst.targets_copy()) > 2 * D + 2]
-    assert longrange, "joint-closure long-range detector was not emitted"
+    assert c.num_observables == 3
+    assert logical_history_observable_indices(c) == (2,)
+    _assert_complete_protected_relations(c, 3)
     _verify(exp, c)
 
 
 def test_three_target_one_step_t_corridor():
-    # one step measures 3 patches through a 3-cell T corridor: two
-    # independent pairwise products (obs=2), full distance
+    # one step measures 3 patches through a 3-cell T corridor: three
+    # independent final logicals plus one history target, full distance
     exp, c = _run([_spec("q1", 0, 0, "X_horizontal"),
                    _spec("q2", 4, 0, "X_horizontal"),
                    _spec("q3", 2, 1, "X_vertical")],
                   [("q1", "Z"), ("q2", "Z"), ("q3", "Z")],
                   {"q1": "Z", "q2": "Z", "q3": "Z"},
                   route=[(1, 0), (2, 0), (3, 0)])
-    assert c.num_observables == 2
+    assert c.num_observables == 4
+    assert logical_history_observable_indices(c) == (3,)
+    _assert_complete_protected_relations(c, 4)
     _verify(exp, c)
 
 
