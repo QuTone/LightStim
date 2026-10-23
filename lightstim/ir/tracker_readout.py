@@ -440,6 +440,6 @@ class V2ReadoutMixin:
         self._gauge_logical_vectors = []
         active = (np.zeros((0, width), dtype=np.uint8) if active_stabilizers is None
                   else np.asarray(active_stabilizers, dtype=np.uint8))
-        # Classification also rebuilds the current absorbed quotient and
-        # synchronizes the rank exposed through the compatibility count API.
-        self._v2_classify_stabilizers(reduce_modulo(active, measured))
+        # Reclassify the full surviving S/L span after extracting relations
+        # with their pre-readout roles. A folded logical row can now be bare.
+        self._v2_reclassify_after_readout(reduce_modulo(active, measured))
