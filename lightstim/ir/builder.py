@@ -716,6 +716,8 @@ class CircuitBuilder:
         Two additional rounds are evaluated on a tracker copy. If stabilizer
         records remain fixed to an old measurement, adjacent-round detector
         products remove that anchor before the verified body is repeated.
+        A naturally stable logical Pauli may accumulate a fixed parity of
+        each round's records; these increments stay in the final live tracker.
         """
         tracker = self.tracker
         if (
@@ -753,6 +755,7 @@ class CircuitBuilder:
         probe_states = []
         probe_round_bodies = []
         probe_role_states = []
+        probe_logical_paulis_stable = []
         previous_logical_records = baseline_logical_records
 
         try:
@@ -775,6 +778,9 @@ class CircuitBuilder:
                         or probe.expected_num_logicals != 1
                         or probe._declared_num_logicals != tracker._declared_num_logicals):
                     return None
+                probe_logical_paulis_stable.append(np.array_equal(
+                    probe.logicals.matrix[0], canonical_logical[0]
+                ))
                 probe.logical_canonicalization(canonical_logical)
                 if tracker.logical_tracking == "slabs":
                     # This memory-round compression only handles a stable bare
@@ -831,10 +837,19 @@ class CircuitBuilder:
         ):
             return None
 
-        if (
+        stable_round_body = (
             first_stabilizer_offsets == second_stabilizer_offsets
             and probe_round_bodies[0] == probe_round_bodies[1]
+        )
+        if first_logical_delta and (
+            not stable_round_body or not all(probe_logical_paulis_stable)
         ):
+            # Expanding support to nonzero record increments must preserve the
+            # explicit path's exact detector/observable parities. An anchored
+            # detector rewrite or a different logical representative can
+            # instead change these parities by combinations of detectors.
+            return None
+        if stable_round_body:
             repeated_round_body = probe_round_bodies[0].copy()
         else:
             anchored_stabilizers = all(
@@ -873,18 +888,31 @@ class CircuitBuilder:
         ):
             return None
 
-        if first_logical_delta:
-            # A future measurement may need the complete logical record
-            # expression. Offloading part of it to OBS0 makes the live tracker
-            # incomplete for that consumer. Use the ordinary update path for
-            # these rounds until repeat-aware record expressions are supported.
+        if any(offset < -measurements_per_round for offset in first_logical_delta):
+            # Only translate increments from the current round. A transition
+            # that also removes older logical records needs a more general
+            # record recurrence than this shortcut supports.
             return None
+
+        # A stable logical Pauli can acquire the same record parity each round.
+        # Keep every translated increment in the live tracker: moving it into
+        # an observable here would hide it from a later measurement or readout.
+        final_logical_records = set(baseline_logical_records)
+        if first_logical_delta:
+            for round_index in range(1, repetitions + 1):
+                round_end = (
+                    initial_total_measurements
+                    + round_index * measurements_per_round
+                )
+                final_logical_records.symmetric_difference_update(
+                    round_end + offset for offset in first_logical_delta
+                )
 
         tracker.stabilizers.matrix = first_matrix
         tracker._classified_stabilizer_rows = set(probe._classified_stabilizer_rows)
         tracker.stabilizers.records = final_stabilizer_records
         tracker.logicals.matrix = canonical_logical[0].reshape(1, -1)
-        tracker.logicals.records = [sorted(baseline_logical_records)]
+        tracker.logicals.records = [sorted(final_logical_records)]
         tracker.total_measurements = final_total_measurements
         if tracker.logical_tracking == "slabs":
             tracker._dressed_stabilizer_rows = set(probe._dressed_stabilizer_rows)
@@ -899,6 +927,10 @@ class CircuitBuilder:
                 position = (
                     record - final_total_measurements
                 ) % measurements_per_round
+                tracker.meas_rec_to_idx_map[record] = round_syn_qubits[position]
+        for record in final_logical_records:
+            if record >= initial_total_measurements:
+                position = (record - initial_total_measurements) % measurements_per_round
                 tracker.meas_rec_to_idx_map[record] = round_syn_qubits[position]
 
         _log.debug(
