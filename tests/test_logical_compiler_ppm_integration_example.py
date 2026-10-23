@@ -178,4 +178,7 @@ def test_checkerboard_3x3_program_compiles_three_distant_ppms():
     )
     predictions = matcher.decode_batch(detectors, enable_correlations=True)
     assert predictions.shape == observables.shape
-    assert len(dem.shortest_graphlike_error()) == 3
+    # Each split joint consistency is logical information, so one noisy SE
+    # round leaves the joint readout unprotected.
+    assert result.circuit.num_observables == 12
+    assert len(dem.shortest_graphlike_error()) == 1

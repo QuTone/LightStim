@@ -88,6 +88,67 @@ patch._get_bounds()                # → (min_x, max_x, min_y, max_y)
 patch.get_info()                   # → dict of code metadata
 ```
 
+### Interactive visualization
+
+```python
+from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
+
+patch = RotatedSurfaceCode(distance=3)
+view = patch.visualize()
+view  # Last expression in a notebook cell displays the interactive HTML.
+```
+
+`visualize(*, title=None, overlays=None)` returns a `PatchVisualization` HTML
+snapshot for a self-contained patch. It displays coordinates,
+data/syndrome roles, stabilizer generators, logical operators, and declared gauges.
+X support is red, Z blue, and Y green. Operator names are optional; unnamed records
+receive generated labels. No code-specific JSON or protocol metadata is required.
+
+The viewer accepts at most **500 registered qubits**, counting data and auxiliary
+qubits together. Exactly 500 is allowed; larger patches raise `ValueError` before
+generating or saving HTML. This keeps the interactive view small enough to inspect.
+
+Operator support must use integer IDs with coordinates stored in the patch (or
+a signed `stim.PauliString` over those IDs). `LogicalCouplerPatch` is currently
+unsupported and raises a descriptive `ValueError`: its coordinate-based or
+external-qubit references require geometry from the surrounding `QECSystem`.
+A system-level viewer is outside this patch-only API's scope. Subclasses inherit
+the method, but their data must satisfy these requirements.
+
+```python
+view.save_html("patch.html")  # Save one standalone file for viewing or sharing.
+html = view.html             # Full document as a Python string; also str(view).
+```
+
+In a notebook, either leave `view` as the final expression or call
+`display(view)`. Each output uses an isolated iframe so several views can coexist
+without conflicting HTML IDs, scripts or styles. The notebook frontend must
+allow trusted HTML/JavaScript output. The saved HTML opens directly in a browser;
+no server, extension, or Python process is needed to view it. IPython is not a
+required dependency for constructing or saving a view.
+
+Optional `overlays` are explicit caller annotations: a sequence of dictionaries
+with a display `name`, a collection of existing `qubits`, and an optional
+six-digit hex `color`. They are empty by default and do not change the code.
+Creating a view does not mutate the patch; regenerate it after changing geometry
+or operators. This API displays code structure; circuit operations and detector
+slices remain available through Stim's circuit diagrams.
+
+See the executed [patch visualization notebook](../../notebooks/System/qec_patch_visualization.ipynb).
+
+The Python regression tests run with
+`python -m pytest tests/frontend/test_patch_html.py tests/frontend/test_patch_visualize.py`.
+Optional browser regressions check filtering and independent notebook frames:
+
+```bash
+python -m pip install playwright
+python -m playwright install chromium
+python -m pytest tests/frontend/test_patch_html_browser.py
+```
+
+Browser tests skip when Playwright or its Chromium binary is not installed;
+neither is a runtime dependency of the viewer.
+
 ---
 
 ## 2. `QECSystem` — Global Canvas
@@ -238,7 +299,7 @@ builder.apply_syndrome_extraction(
     circuit_chunk,  # stim.Circuit — exactly ONE round of stabilizer measurement
                     # ending in a contiguous M/MX syndrome readout layer
     rounds=1,       # Round 1: initialization boundary; round 2: steady transition;
-                    # rounds 3+: reuse the round-2 body
+                    # rounds 3+: verified state advancement or explicit updates
     noiseless=False,# Tag all instructions as 'noiseless'
     z_only=False,   # Suppress X-ancilla DETECTOR instructions (for Z-basis memory)
     measurement_blocks=None,
@@ -246,16 +307,16 @@ builder.apply_syndrome_extraction(
                     # concatenation is one Builder-level SE round
 )
 # Emits: an explicit first round, an explicit second round when requested,
-#        then a REPEAT block for rounds 3+
+#        then verified or byte-identical rounds may be packed into REPEAT
 # Tracker:
 #   Back-propagates terminal measurements to construct detectors at the input boundary.
 #   Forward-propagates reset stabilizers to write the output tableau and record parities.
 #   Each physical block performs the same tracker update. After the complete
 #   Builder-level round, Builder explicitly classifies/rebases the state basis.
-#   Analyzes round 2 explicitly; later rounds reuse its relative detector records.
-#   For a single-logical steady state, probes two virtual rounds, canonicalizes the
-#   logical Pauli, and stores its repeated record delta inside the REPEAT body.
-#   Unstable or more complex transitions fall back to explicit tracker evolution.
+#   Analyzes round 2 explicitly. A single-logical steady state is checked using
+#   two probe rounds before advancing the remaining rounds together.
+#   Accumulated logical-record deltas, history, and more complex transitions
+#   require explicit tracker updates; byte-identical output can still use REPEAT.
 ```
 
 **Critical constraint:** The `circuit_chunk` must use global qubit indices.
@@ -341,6 +402,36 @@ noisy_circuit = builder.build_noisy_circuit(
 # Does NOT modify builder.circuit in place.
 ```
 
+### I. Patch combination
+
+```python
+combined = builder.combine_patches(
+    patch_names=["source", "extension"],
+    output_patch=output_template,
+    name="source",
+)
+```
+
+`output_patch` is a locally indexed `QECPatch` template whose coordinates
+are already in the global frame. The operation adopts existing qubit IDs
+and returns a fresh global patch view. It emits no gates or measurements;
+the component checks must already match the output checks, including
+syndrome locations, and be known by the tracker.
+
+The initial scope is one ordinary source patch plus one or more active
+zero-logical couplers, with the protected logical count unchanged.
+Subsystem or disabled geometry, pending absorbed logicals, and external
+overlapping couplers are unsupported. Validation completes before changes
+are committed. The output registration replaces the component registrations
+and their coupler restoration histories; use the returned view instead of
+old patch handles.
+
+The output logical operators are checked for commutation and canonical X/Z
+pairing. This adoption API does not infer a logical map between the old and
+new code: the physical protocol must establish that correspondence. The
+rotated enlargement operation supplies a fixed target and is tested as a
+logical identity channel using an entangled reference patch.
+
 ### Full call sequence
 
 ```
@@ -371,10 +462,48 @@ from lightstim.ir.tracker import SyndromeTracker
 
 tracker = SyndromeTracker(
     num_qubits,               # Initial system size
-    expected_num_logicals=0,  # k — the tracker validates against this at every SE round
+    expected_num_logicals=0,  # Initial encoded-state declaration
     post_select_detector_coords=None,  # Set[Tuple[float,...]] — coords where detectors get post-select tag
+    logical_tracking="slabs",  # Default; "legacy" is an explicit regression control
 )
 ```
+
+The default `slabs` mode uses three tableaus: `stabilizers` (S), `logicals`
+(L), and `absorbed_logicals` (L_absorbed, an alias of `absorbed_ops`). Each row
+carries its Pauli operator and measurement-record parity. S is partitioned into
+`S_bare`, the known constraints in the current code/gauge role space, and
+`S_dressed`, its remaining directions carrying protected information.
+
+Projection updates all three tableaus, choosing a bare S pivot before a
+dressed S pivot or an L pivot. Mid-measurement refresh canonicalizes L and
+selects its surviving complement once. After propagation into the output
+frame, S is classified against the declared code space. L_absorbed is rebuilt
+from the current dressed directions independent modulo S_bare and L; it is
+redundant state information, not a separate source of observables. Previously
+closed logical relations remain in `logical_history`.
+
+Destructive readout projects each declared measurement stage jointly and
+computes the full intersections of the surviving bare and total state spaces
+with the measured span. This also closes products whose individual rows are
+not readable. Observable emission uses S_dressed and L, while preserving
+already established record-only relations and exact postselection constraints.
+Initialization, emission, and postselection remain integrated with the existing
+builder paths.
+`TwoPatchLSExperiment`, `CNOTLSExperiment`, and `RotatedSurfacePPMExperiment`
+also use this default. `logical_tracking="legacy"` is retained only for explicit
+regression comparisons, not as a protocol-dependent choice.
+
+`CircuitBuilder` supplies continuing active checks from the existing
+`QECSystem.active_stabilizers` and active-qubit set. Direct tracker callers can
+pass `active_stabilizers=` to `process_data_measurement`; these rows declare
+the continuing code, not known eigenvalues. Omission means no continuing-code
+declaration. An active check's record expression is reconstructed from S.
+
+Protocols that combine a split with final data readout declare their tracking
+boundaries through `DataReadoutStage` and `apply_staged_data_readout`. These
+stages preserve the original physical measurement layer, record order, TICKs,
+and noise placement. The tracker does not infer corridor or patch ownership.
+See the [algorithm and API contract](slabs_tracker.md).
 
 ### Key state
 
@@ -382,8 +511,9 @@ tracker = SyndromeTracker(
 |---|---|---|
 | `tracker.stabilizers` | `PauliTableau` | Rows = current stabilizer generators (GF(2) symplectic) |
 | `tracker.logicals` | `PauliTableau` | Rows = current logical operators |
+| `tracker.absorbed_logicals` | `PauliTableau` | Current dressed representatives modulo S_bare and L; redundant with S/L |
 | `tracker.total_measurements` | `int` | Running count of all measurements so far |
-| `tracker.expected_num_logicals` | `int` | Decremented when a logical is consumed by a gate |
+| `tracker.expected_num_logicals` | `int` | Current known protected rank, `rank(S,L) - rank(S_bare)`, in default mode |
 | `tracker.num_qubits` | `int` | System size (expanded by `expand()`) |
 
 ### Methods called by `CircuitBuilder` (you usually don't call these directly)
@@ -452,6 +582,102 @@ expected counts. Common causes:
 | Too many logical constraints | Coupler data qubits accidentally initialized (see gotchas 1-A) |
 | Missing logical constraints | Wrong SE circuit (ancilla indices don't match system) |
 | `commutes with all rows but is linearly independent` | Data qubit not initialized before SE |
+
+### Historical logical relations and default observable export
+
+The live logical-DOF census is different from the number of historical
+measurement parities available for evaluation. A joint logical measurement
+can expose an additional deterministic record relation even when it does
+not increase the number of encoded qubits.
+
+When a mid-measurement dependency uses logical-tableau rows, the tracker
+stores its complete record XOR in `tracker.logical_history` **before**
+writeback changes the live representatives. These immutable
+`LogicalHistoryRelation` entries have absolute zero-based `records`, a
+`measurement_index`, and capture-time `logical_indices`. Those logical
+indices are provenance, not stable logical-qubit identifiers. The archive
+is separate from `absorbed_ops`, which remains an operator-only DOF ledger.
+Random measurements do not create deterministic historical relations.
+
+Finished protocol circuits export all captured historical relations by
+default. The export step preserves existing observable IDs and record
+supports; new IDs are appended after them. For a custom builder workflow, finalize after the
+last physical operation and native readout:
+
+```python
+circuit = builder.to_stim_circuit()
+# Noise injection through the builder also finalizes before making a noisy copy.
+```
+
+`builder.circuit` is the mutable construction buffer, not a finalization
+call. `to_stim_circuit(include_logical_history=False)` is an explicit legacy
+selection option when used before any export; it does not remove targets
+already exported. Avoid finalizing a protocol in the middle of construction.
+
+The default does **not** prune a relation because it is linearly dependent
+on other observables or detectors. Such relations can represent distinct
+evaluation targets. Exact duplicate history supports are emitted once, and
+repeated finalization on the same circuit is idempotent. New annotations
+carry the Stim tag `logical-history`; use
+`lightstim.ir.logical_history.logical_history_observable_indices(circuit)`
+to identify them. The live logical-DOF census is unchanged.
+
+Finalizing a saved complete copy with the same native annotations reuses the
+history IDs assigned to the original, including when the original was exported
+first and the copy is later passed to `build_noisy_circuit(circuit=...)`.
+Native reservations are preserved. If a custom copy adds a native observable
+at a previously assigned history ID, that copy receives a fresh history ID
+instead of overwriting or XORing into the native target.
+
+For an explicit basis-extension audit, use the following on a completed
+construction buffer **before** its default export:
+
+```python
+new_ids = builder.append_logical_history_observables(independent_only=True)
+audit_circuit = builder.to_stim_circuit(include_logical_history=False)
+```
+
+This optional policy adds only directions independent modulo the joint span
+of existing detectors and observables. Its elimination uses sparse record
+supports rather than integers whose size grows with the absolute record index.
+Before either export policy, Stim verifies that the
+archived parities are deterministic in the supplied physical circuit. The
+unsigned tracker does not assert that their ideal XOR is zero: Stim's
+reference sample supplies the fixed offset, including an ideal value of one.
+Unknown record sentinels are rejected rather than interpreted as zero.
+
+For unrotated distance-3 two-patch Z/Z preparation, one-round ZZ surgery,
+and Z/Z readout, native DET+OBS rank is 50; exporting the history adds one
+observable, reaching the full fixed-input parity rank of 51. With Z/X
+preparation and X/Z readout, the teleportation circuit already has full rank
+49 and keeps its one observable. Tests compare row spaces against Stim's
+record-only flow generators, not merely observable counts.
+
+Canonical basis changes preserve known record expressions, including empty
+expressions for known preparation constraints. Unknown eigenvalues remain
+explicitly unknown. The tracker keeps stabilizer-role metadata separately
+from record emptiness, so a known code check is not mistaken for a fresh
+logical preparation. The optimized repeated-round tracker advance declines
+blocks whose logical records accumulate across rounds; those blocks use
+explicit updates so later history capture can still access their complete
+record expressions. A physical Stim `REPEAT` can still be retained.
+
+Preserving known canonical constraints can also restore previously omitted
+closure detectors. This is separate from appending historical observables:
+CrossLS, for example, can acquire additional checks, a different native
+observable representative modulo those checks, and a stronger hybrid
+postselection condition. Its previous acceptance/LER data must not be reused
+as results for the updated annotations without reevaluation.
+
+The archive covers the logical-dependent mid-measurement path; it is not
+a claim of complete history generation for arbitrary circuits or unsupported
+protocols. Protocol intent still determines which available observables to
+score. Exporting new IDs changes that evaluation task: regenerate DEMs and
+decoder artifacts, and rescore/redecode (or rerun) affected experiments.
+Distillation is one example of an explicit task policy: its analysis helpers
+retain the native distilled output and outer-code postselection checks.
+Additional history targets remain in the circuit but are not automatically
+made into acceptance checks. This choice is separate from circuit export.
 
 ### Subsystem state classification
 
@@ -571,3 +797,256 @@ builder.deactivate_coupler("c12")
 # 5. (Optional) Remove for reuse
 system.remove_coupler("c12")
 ```
+
+---
+
+## 6. Rotated surface-code logical operations
+
+**Module:** `lightstim.qec_code.surface_code.rotated.operation`
+
+### Enlargement
+
+```python
+from lightstim.ir.logical_executor import LogicalExecutor
+from lightstim.qec_code.surface_code.rotated import (
+    RotatedSurfaceCode,
+    RotatedSurfaceCodeExtractionBlock,
+    RotatedSurfaceCodeLogicalOpSet,
+)
+
+executor = LogicalExecutor(builder)
+executor.register_op_set(
+    RotatedSurfaceCode,
+    RotatedSurfaceCodeLogicalOpSet(RotatedSurfaceCodeExtractionBlock),
+)
+patch = executor.apply_logical_operation(
+    "enlarge",
+    [patch],
+    target_distance=5,
+    direction="+x,+y",
+    rounds=1,
+)
+```
+
+`patch` must be the current global view of an initialized, encoded square
+rotated patch with odd distance at least 3. `target_distance` is an odd
+integer larger than its current distance. The first implementation supports
+canonical, defect-free patches, arbitrary translation, and growth toward
+`+x,+y`; rotated or transposed geometry and other directions are rejected.
+
+Source checks must already be established in the tracked state. Coherent
+encoders are supported without an input SE round: when needed, known rows
+are classified as code stabilizers and logical-state rows before growth.
+This classification adds no physical gates or measurements.
+
+Dynamic registration must be enabled with `system.register_tracker(tracker)`
+and `system.register_builder(builder)`, or through `QECExperiment` setup,
+before enlargement so that added qubits expand the tracker and receive
+circuit coordinates.
+
+The retained minimum-coordinate corner stays fixed. Only added data qubits
+are initialized: relative to that corner, `y >= x` receives `RX` and
+`y < x` receives `R`. This reuses the corner-injection basis pattern while
+preserving the old encoded data. No injection gate or postselection tags
+are added.
+
+`rounds` is a positive integer counting all enlarged-code SE rounds.
+The first round includes the new-data initialization and one native
+four-CNOT-layer SE cycle; the remaining `rounds - 1` rounds repeat SE.
+There is no additional implicit stabilization round.
+SE gates address the enlarged patch only; other initialized active patches
+can remain in the system. Noise is applied separately through the builder's
+selected noise model.
+
+The result has the same registered patch name and retains existing global
+qubit IDs. Assign the returned view back to `patch`: the old handle is
+stale. Subsequent readout or logical operations use the enlarged view.
+Transversal CNOT pairs the returned patches by local data position, preserving
+the correspondence even when global qubit allocation order differs.
+
+The legacy single-patch `z_only=True` final-readout path is supported after
+enlargement; its measurement-offset cache is refreshed to the target SE round.
+This does not make that legacy readout helper a general multi-patch interface.
+
+See the executed [minimal enlargement notebook](../../notebooks/LogicalOps/rotated_surface_enlarge.ipynb)
+for preparation, source SE, enlargement, final readout, and the full
+`detslice-with-ops-svg` circuit diagram.
+
+For a packaged experiment, use
+`lightstim.protocols.RotatedSurfaceEnlargeExperiment(distance=3,
+target_distance=5, basis="X", source_rounds=1, rounds=1)` and call `.build()`.
+It supports X/Z preparation and final readout, with optional `noise_params`
+and `noise_model` applied to the whole circuit. The
+[enlargement benchmark](../../benchmarks/logical_ops/README_rotated_enlarge.md)
+runs this experiment through `SimulationPipeline` with configurable decoding
+and records raw Monte Carlo counts. Its LER includes source preparation,
+growth, and readout; it is not an isolated enlargement-gate error rate.
+
+### Rotated surface-code shrinking
+
+The same operation set exposes measurement-only contraction:
+
+```python
+patch = executor.apply_logical_operation(
+    "shrink", [patch], target_distance=3, direction="-x,-y", rounds=0,
+)
+```
+
+The first implementation supports a prepared, canonical, defect-free square
+rotated code at odd distance, shrinking to an odd distance at least 3 and
+strictly smaller than its source. Translations are supported. The
+minimum-coordinate corner stays fixed: `-x,-y` moves the right and bottom
+boundaries inward, reversing the supported enlargement direction.
+
+No coupler is needed. Removed data are measured in X on/below the diagonal
+through that corner, and in Z above it. `rounds=0` is the default: there is no
+additional SE cycle. A positive value appends that many native four-CNOT-layer
+SE cycles on the retained patch only. The tracker generates detectors from
+the old syndrome history and the destructive data readout. If target SE is
+requested, a shortened boundary check closes as
+
+```text
+new target syndrome XOR previous source syndrome XOR removed-support outcomes.
+```
+
+The output generally carries a known logical Pauli frame. For canonical edge
+representatives, let `pX` be the parity of X readout on the removed part of the
+leftmost column, and `pZ` the parity of Z readout on the removed part of the
+topmost row. The output frame is `Z_L**pX X_L**pZ`. These parities are retained
+in the tracker and included in subsequent logical observables; shrinking does
+not apply physical feed-forward corrections or add postselection. Subsequent
+Clifford operations propagate the tracked logical rows and their records.
+Raw expectation values of the output patch's Pauli strings must likewise
+account for the frame; the patch definition alone does not encode its sign.
+
+After success, the returned global view and registered local patch have the
+target geometry, stabilizers, logical operators, and distances. Retained data
+are never reset. Released data and syndrome sites leave the live role and
+ownership sets; their physical IDs and historical coordinates remain allocated
+so past circuit instructions stay valid and later enlargement can reuse them.
+Use the returned patch for subsequent operations. Failed validation or a failed
+staged transition leaves the caller's circuit and state unchanged.
+
+Historical data IDs remain eligible for noise injection on the earlier circuit
+prefix; lifetime filtering prevents tagged idle noise after their measurement.
+This supports contraction and same-role regrowth. Reusing a former data site
+as a syndrome site requires time-dependent role handling beyond this operation's
+noise-history support.
+
+The legacy `z_only=True` final-readout shortcut requires a current target SE
+measurement ordering. Measurement-only shrink invalidates that shortcut's old
+cache. Use the default tracker readout, or perform whole-system SE with
+`z_only=True` before using the shortcut. `shrink(rounds>0)` refreshes an existing
+Z-only cache only when its target SE covers the whole active code; with spectator
+patches, that cache stays invalid rather than omitting their syndrome history.
+
+`lightstim.protocols.RotatedSurfaceShrinkExperiment` provides the complete
+X/Z preparation, source SE, contraction, and final readout experiment, with
+optional whole-circuit noise. See the executed
+[shrinking notebook](../../notebooks/LogicalOps/rotated_surface_shrink.ipynb)
+for configuration and the full `detslice-with-ops-svg` diagram.
+
+## 7. Unrotated surface-code deformation
+
+**Module:** `lightstim.qec_code.surface_code.unrotated.operation`
+
+### Enlargement
+
+The unrotated operation set uses the same executor interface:
+
+```python
+from lightstim.qec_code.surface_code.unrotated import (
+    UnrotatedSurfaceCode,
+    UnrotatedSurfaceCodeExtractionBlock,
+    UnrotatedSurfaceCodeLogicalOpSet,
+)
+
+executor.register_op_set(
+    UnrotatedSurfaceCode,
+    UnrotatedSurfaceCodeLogicalOpSet(UnrotatedSurfaceCodeExtractionBlock),
+)
+patch = executor.apply_logical_operation(
+    "enlarge", [patch], target_distance=5, direction="+x,+y", rounds=1,
+)
+```
+
+The source must be an initialized, encoded, defect-free square patch with
+odd distance at least 3. The target is a larger odd distance; only `+x,+y`
+growth is supported. Native layouts, translations, coordinate transposition,
+and subclasses implementing uniform coordinate scaling are supported.
+Other rotations and modified check geometry are rejected. Register the builder
+and tracker with `QECSystem` before growth, as for rotated enlargement.
+
+Only new data are initialized. In the **native unrotated frame** relative to
+the retained corner, `y >= x` receives `RX` and `y < x` receives `R`.
+The rule is mapped through the patch's coordinate transform, so a transposed
+display reverses the apparent sides without exchanging Pauli labels. It is
+not a universal rule for arbitrary surface-code orientations. For native
+distance 3 to 5 growth, 28 data sites are added: 16 in X and 12 in Z.
+
+This preserves both canonical logical operators: logical X lies on the left
+edge, whose added sites have X=+1; logical Z lies on the top edge, whose added
+sites have Z=+1. All target stabilizers commute with these extended logicals.
+Measuring them preserves the logical state while determining target check
+signs; newly introduced checks need not have outcome +1. Their actual records
+are retained by the tracker, without postselection. Tests verify exact signed
+Stim flows for both logical generators and every target check, including
+translated, transposed, and scaled distance 3→5, 3→7, and 5→7 growth. Encoded
+Bell-state tests additionally exercise an untouched entangled reference.
+
+`rounds` counts all native target SE cycles, including the growth projection;
+each uses four CNOT layers. Added-data initialization occurs once. No old data
+are reset, spectator patches are not operated on, and no noise or rejection
+policy is introduced by enlargement itself. The returned current patch view
+has the new distances, geometry, stabilizers, and logical operators; its
+registered name and retained physical IDs stay unchanged. The old handle
+retires. Failed validation or extraction leaves the original state unchanged.
+
+These checks establish ideal logical-state preservation and valid detector
+construction. They do not assert that one growth round provides target-distance
+fault tolerance, or remove faults already logical at the smaller input distance.
+Circuit-level performance must be evaluated for the complete noisy protocol.
+
+### Shrinking
+
+The same operation set contracts a prepared patch by measuring its removed data:
+
+```python
+patch = executor.apply_logical_operation(
+    "shrink", [patch], target_distance=3, direction="-x,-y", rounds=0,
+)
+```
+
+The target must be an odd distance at least 3 and smaller than the source.
+The same defect-free square layouts, translations, transpositions, and uniform
+coordinate scaling supported by enlargement are supported by shrinking.
+Both operations retain the minimum-coordinate corner. Only `-x,-y` contraction
+is supported; arbitrary rotations and modified checks are rejected.
+The builder and tracker must be registered with `QECSystem` before shrinking.
+
+Removed data are measured in X where native coordinates relative to the retained
+corner satisfy `y >= x`, and in Z where `y < x`. The basis rule is mapped through
+the coordinate transform, exactly as for initialization during enlargement.
+Retained data are never reset. `rounds=0` adds no target SE; a positive integer
+appends that many native four-CNOT-layer SE cycles on the smaller patch.
+
+The readout introduces a known logical Pauli frame. In the native frame, let
+`pX` be the parity of X outcomes on the removed portion of the left edge and
+`pZ` the parity of Z outcomes on the removed portion of the top edge. The frame
+is `Z_L**pX X_L**pZ`. The tracker keeps these measurement records and includes
+them in subsequent logical observables. There is no physical feed-forward
+correction or postselection; a bare target logical Pauli string alone does not
+include its measurement-dependent sign.
+
+Assign the returned view to `patch` before further operations or readout.
+Its `get_info()` and the registered patch now describe the smaller distances,
+data, checks, and logical operators. The patch name and retained global IDs
+are preserved. Released sites leave the live role and ownership sets, while
+their IDs and historical coordinates remain allocated for the existing circuit
+and later regrowth. Validation and the staged transition must succeed before
+the caller's circuit and state are changed.
+
+See the executed [unrotated deformation notebook](../../notebooks/LogicalOps/unrotated_surface_deformation.ipynb)
+for a configurable 5→3 shrink or 3→5 enlargement, before/after patch metadata,
+and the full `detslice-with-ops-svg` circuit diagram. Set `ROUNDS = 1` to include
+one ordinary target SE round after shrinking.

@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, List, Set, Optional, Any, Literal
+from typing import Tuple, Dict, List, Set, Optional, Any, Literal, Mapping, Sequence, TYPE_CHECKING
 import stim
 import numpy as np
 import math
 from ..utils.linear_algebra import check_commutativity, row_echelon
+
+if TYPE_CHECKING:
+    from ..frontend.patch_html import PatchVisualization
 
 
 class QECPatch(ABC):
@@ -363,6 +366,29 @@ class QECPatch(ABC):
             'is_transposed': self.is_transposed,
             'rotation_angle': self.rotation_angle,
         }
+
+    def visualize(
+        self, *, title: Optional[str] = None,
+        overlays: Optional[Sequence[Mapping[str, Any]]] = None,
+    ) -> "PatchVisualization":
+        """Return an interactive HTML view of this patch's geometry and operators.
+
+        Display the result as the last expression in a notebook cell, or with
+        ``display(view)``. Use ``view.save_html("patch.html")`` to save a
+        standalone file, or ``view.html`` to obtain the document as a string.
+        The view is a snapshot; call this method again after changing the patch.
+
+        Supports self-contained patches with at most 500 registered qubits
+        (data and auxiliary combined). Larger patches and coupler patches
+        needing surrounding QECSystem geometry raise ``ValueError``.
+
+        Optional overlays are caller-supplied annotations with ``name``,
+        ``qubits`` and optional ``color`` fields. No code-specific metadata
+        is required or inferred. Notebook display requires trusted HTML output.
+        """
+        from ..frontend.patch_html import PatchVisualization, patch_html
+
+        return PatchVisualization(patch_html(self, title=title, overlays=overlays))
     
     # --- Stim Helper Methods for Pauli Strings ---
     # The input are coordinates, which are converted to indices

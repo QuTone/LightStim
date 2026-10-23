@@ -202,10 +202,13 @@ def test_kernel_api_composes_with_measurement_block_engine():
 
     builder.apply_data_readout(
         final_measurements={q: 'Z' for q in system.data_indices})
-    c = builder.circuit
-    # same as the driver's ZZ flow: two logical DOFs, one consumed by the
-    # joint (its value is the protocol output), one standing observable
-    assert c.num_observables == 1
+    # The raw builder contains both final logical relations; exporting the
+    # retained joint-measurement history adds the third independent relation.
+    assert builder.circuit.num_observables == 2
+    c = builder.to_stim_circuit()
+    assert c.num_observables == 3
+    from tests.test_rotated_surface_ppm_experiment import _assert_complete_protected_relations
+    _assert_complete_protected_relations(c, 3)
     det, obs = c.compile_detector_sampler(seed=0).sample(
         1024, separate_observables=True)
     assert not det.any() and not obs.any()

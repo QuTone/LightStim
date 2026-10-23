@@ -7,9 +7,12 @@ data at (-1, 3), (-1, 5), ..., (-1, 2*(d_surf, y_range-1)-1).
 
 from typing import List, Tuple, Set, Optional
 import math
+import numpy as np
 
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.ir.coupler import LogicalCouplerProtocol
+from lightstim.utils.linear_algebra import solve_linear_decomposition
+from lightstim.utils.subsystem_algebra import independent_row_indices
 
 from lightstim.qec_code.PQRM.pqrm_patch import PQRMPatch, LOG_PQRM_LEN_DICT, PQRM_SUPPORTED_PARAMS
 
@@ -73,6 +76,12 @@ class SurfacePQRMCoupler(LogicalCouplerProtocol):
 
         # --- Boundary X stabilizers: weight-3 -> weight-4 (add coupler data) ---
         self._build_boundary_x_stabilizers(coupler_patch, surface)
+
+        # PQRM X checks have no syndrome ancillas, but they remain code checks
+        # during the merge. Extend their boundary support onto the bridge so
+        # that the declared merged code, like its physical state, commutes with
+        # the measured middle-column Z checks.
+        self._build_merged_pqrm_x_checks(coupler_patch, pqrm)
 
         # --- Conflicting stabilizer coords: Surface Z and X stabs at right boundary ---
         coupler_patch.conflicting_stabilizer_coords = set()
@@ -146,6 +155,34 @@ class SurfacePQRMCoupler(LogicalCouplerProtocol):
                     targets[extra_snapped] = "X"
             if targets:
                 coupler_patch.stabilizers.append({"pauli": targets, "type": "X", "syn_coord": syn_coord})
+
+    def _build_merged_pqrm_x_checks(self, coupler_patch: QECPatch, pqrm: QECPatch):
+        bridge = sorted(self._snap(coupler_patch.qubit_coords[q])
+                        for q in coupler_patch.data_indices)
+        z_checks = [set(check["pauli"]) for check in coupler_patch.stabilizers
+                    if check.get("type") == "Z"]
+        bridge_commutators = np.asarray([
+            [int(q in check) for check in z_checks] for q in bridge
+        ], dtype=np.uint8).reshape(len(bridge), len(z_checks))
+        if len(independent_row_indices(bridge_commutators)) != len(bridge):
+            raise ValueError("Merged PQRM X checks require a unique bridge extension")
+        for check in pqrm.stabilizers:
+            if check.get("type") != "X":
+                continue
+            support = {self._snap(pqrm.qubit_coords[q] if isinstance(q, int) else q)
+                       for q in check["pauli"]}
+            commutators = np.asarray([[len(support & z) % 2 for z in z_checks]],
+                                    dtype=np.uint8)
+            coefficients, found, _ = solve_linear_decomposition(
+                basis=bridge_commutators, targets=commutators, reduce_weight=False)
+            if not found.all():
+                raise ValueError("A PQRM X check has no commuting bridge extension")
+            extension = {q for q, bit in zip(bridge, coefficients[0]) if bit}
+            if extension:
+                coupler_patch.stabilizers.append({
+                    "pauli": {q: "X" for q in sorted(support | extension)},
+                    "type": "X", "syn_idx": None, "syn_coord": None,
+                })
 
     @staticmethod
     def _snap(c: Tuple[float, float]) -> Tuple[float, float]:

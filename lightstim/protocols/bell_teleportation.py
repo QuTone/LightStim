@@ -12,7 +12,7 @@ BellTeleportXXLS  — Two sequential XX lattice-surgery measurements (horizontal
 import stim
 from typing import Literal, Optional
 
-from lightstim.ir.builder import CircuitBuilder
+from lightstim.ir.builder import CircuitBuilder, DataReadoutStage
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.logical_executor import LogicalExecutor
@@ -109,7 +109,7 @@ class BellTeleportTG:
             return builder.build_noisy_circuit(
                 noise_params=self.noise_params, noise_model=self.noise_model
             )
-        return builder.circuit
+        return builder.to_stim_circuit()
 
 
 class BellTeleportZZLS:
@@ -209,13 +209,16 @@ class BellTeleportZZLS:
             if system.index_to_owner_map[q] in MEAS
         }
         meas_dict.update({q: "X" for q in cp12})
-        builder.apply_data_readout(final_measurements=meas_dict)
+        builder.apply_staged_data_readout(meas_dict, stages=(
+            DataReadoutStage(tuple(cp12), ("coupler_12",)),
+            DataReadoutStage(tuple(q for q in meas_dict if q not in cp12)),
+        ))
 
         if self.noise_params is not None:
             return builder.build_noisy_circuit(
                 noise_params=self.noise_params, noise_model=self.noise_model
             )
-        return builder.circuit
+        return builder.to_stim_circuit()
 
 
 class BellTeleportXXLS:
@@ -312,10 +315,13 @@ class BellTeleportXXLS:
             if system.index_to_owner_map[q] in MEAS
         }
         meas_dict.update({q: "Z" for q in cp12})
-        builder.apply_data_readout(final_measurements=meas_dict)
+        builder.apply_staged_data_readout(meas_dict, stages=(
+            DataReadoutStage(tuple(cp12), ("coupler_12",)),
+            DataReadoutStage(tuple(q for q in meas_dict if q not in cp12)),
+        ))
 
         if self.noise_params is not None:
             return builder.build_noisy_circuit(
                 noise_params=self.noise_params, noise_model=self.noise_model
             )
-        return builder.circuit
+        return builder.to_stim_circuit()

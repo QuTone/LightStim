@@ -90,10 +90,11 @@ class QECExperiment(ABC):
             print("Injecting noise...")
             return self.builder.build_noisy_circuit(
                 noise_params=self.noise_params,
-                noise_model=self.noise_model
+                noise_model=self.noise_model,
+                circuit=circuit,
             )
         else:
-            return circuit
+            return self.builder._finalize_logical_history(circuit)
     
     @abstractmethod
     def build(self) -> stim.Circuit:

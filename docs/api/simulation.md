@@ -42,6 +42,14 @@ pipeline = SimulationPipeline(
 stats: SimulationStats = pipeline.run(circuit)
 ```
 
+### Sampling source
+
+All worker counts sample the supplied noisy circuit using
+`circuit.compile_detector_sampler()`. The detector error model (DEM) is used to
+configure the decoder, not to generate the evaluation samples. Changing the
+worker count preserves the sampling model, not the exact random draws. A failed
+worker raises `RuntimeError` rather than returning incomplete statistics.
+
 ### Post-selection modes
 
 | Parameter | What it filters | Typical use |
@@ -56,7 +64,14 @@ tagged with `post-select` are discovered by `pipeline._resolve_post_select_indic
 ### `allow_gauge_detectors`
 
 Set `True` only for circuits where some detectors are intentionally non-deterministic
-(e.g. mixed-boundary measurements). Otherwise the pipeline warns about gauge detectors.
+(e.g. intentionally retained gauge measurements). The default `False` rejects
+non-deterministic detectors during DEM construction.
+
+For compatibility, `True` also enables DEM decomposition with
+`ignore_decomposition_failures=True`. Stim retains any undecomposed hyperedges;
+the chosen decoder must support them. These settings apply to both single- and
+multi-worker execution and do not change the circuit used for sampling. The
+pipeline emits a warning when this option is enabled.
 
 ---
 

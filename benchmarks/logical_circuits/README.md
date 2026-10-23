@@ -138,6 +138,28 @@ shots, post_selected_shots, post_selection_rate,
 errors, logical_error_rate, seconds
 ```
 
+Distillation keeps one specified output and three native outer-code acceptance
+checks. Use each protocol's `analyze_observables(circuit, system)` helper for
+this selection. Additional `OBSERVABLE_INCLUDE[logical-history]` relations stay
+in the exported circuit, but are not automatically made into acceptance checks
+or output-error targets. The CLI and notebooks use this explicit policy.
+
+In injection-only mode, the TG benchmark injects seven independent physical
+corner errors, so its injection probability is the logical input infidelity.
+The LS benchmark instead injects errors on each magic-patch data reset and
+calibrates the resulting logical input infidelity `p_in`; its physical
+`p_injected` is not interchangeable with `p_in`. The ideal seven-input outer
+protocol has
+
+```text
+P_accept = (1-p_in)^7 + 7*p_in^3*(1-p_in)^4 + 7*p_in^4*(1-p_in)^3 + p_in^7
+p_out = [7*p_in^3*(1-p_in)^4 + p_in^7] / P_accept = 7*p_in^3 + O(p_in^4).
+```
+
+The denominator counts accepted shots. Tests enumerate all 128 combinations
+of the seven preparation faults, separately from physical-noise decoder smoke
+tests; a small Monte Carlo run alone cannot establish cubic scaling.
+
 ## How to plot
 
 ```bash

@@ -61,6 +61,20 @@ pip install -e ".[dev]"            # development / notebook environment
 pip install -e ".[gpu]"            # optional NVIDIA GPU decoder (requires CUDA)
 ```
 
+Optional native Tracker acceleration uses a pinned Stim source submodule:
+
+```bash
+git submodule update --init third_party/stim
+pip install -e .
+```
+
+A C++20 compiler builds the inverse-tableau and packed Pauli kernels; ordinary
+installation still works without them. The default `LIGHTSTIM_PAULI_BACKEND=auto`
+uses available kernels while preserving the current bare/dressed Tracker.
+Use `reference` to compare against the original algebra or `native` to require
+the extension. See [native Tracker algebra](docs/api/native_tracker.md) for
+scope, validation, and credit to Hou Yuewen's [PR #110](https://github.com/QuTone/LightStim/pull/110).
+
 > **GPU decoder** (`nv-qldpc-decoder`) requires NVIDIA GPU + CUDA 12.x. Install it only with
 > `pip install -e ".[gpu]"` on compatible systems.
 >

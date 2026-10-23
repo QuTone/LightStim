@@ -266,6 +266,13 @@ class QECSystem:
             patch: The QECPatch object (contains local coords and stabilizers).
             offset: (x_shift, y_shift) to place the patch on the canvas.
             is_active: If True, immediately unmasks the patch's stabilizers.
+
+        Returns:
+            An independent patch view whose geometry maps, qubit categories,
+            and operator records use global indices. The shifted copy in
+            ``self.patches`` keeps local indices for extraction and couplers.
+            Subclass-specific structural metadata (e.g. HGP product sectors)
+            retains its local indices.
         """
         if name in self.patches:
             raise ValueError(f"Patch '{name}' already exists in the system.")
@@ -372,8 +379,20 @@ class QECSystem:
             self.active_gauge_indices.update(gauge_indices)
 
         # 7. Create and return global patch view (with global indices)
-        # This is a deep copy of the patch with all indices converted to global
+        # Translate the base geometry along with the operator supports below.
+        # Keep the stored patch locally indexed for extraction and couplers.
         global_patch = copy.deepcopy(patch)
+        global_patch.qubit_coords = {
+            local_to_global_map[local_idx]: coord
+            for local_idx, coord in patch.qubit_coords.items()
+        }
+        global_patch.index_map = {
+            coord: global_idx for global_idx, coord in global_patch.qubit_coords.items()
+        }
+        global_patch._rebuild_grid_map()
+        # Subclass metadata can still contain local IDs (e.g. HGP vv_qubits).
+        # Preserve the exact registration map, including dormant-qubit reuse.
+        global_patch._local_to_global_map = dict(local_to_global_map)
         global_patch.gauges = copy.deepcopy(translated_gauges)
         
         # Convert data_indices from local to global
@@ -438,7 +457,12 @@ class QECSystem:
             # reduced budget back up to the stale static total. For registration before
             # any consumption this equals the old `expected := num_logicals` (they match
             # then); a coupler adds 0 logicals, so it leaves the budget untouched.
-            self._tracker.expected_num_logicals += self.num_logicals - n_log_old
+            added_logicals = self.num_logicals - n_log_old
+            self._tracker.expected_num_logicals += added_logicals
+            if self._tracker.logical_tracking == "slabs":
+                # Preparation requirements are separate from the live rank,
+                # but both grow when a new encoded patch is registered.
+                self._tracker._declared_num_logicals += added_logicals
         if self._builder is not None and n_old < self.num_qubits:
             self._builder.append_coordinates_for_new_qubits(n_old)
 
