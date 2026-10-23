@@ -74,7 +74,7 @@ prompt_toolkit==3.0.53
 psutil==7.2.2
 ptyprocess==0.7.0
 pure_eval==0.2.4
-pycparser==2.23
+pycparser==3.11
 Pygments==2.21.0
 pyparsing==3.3.3
 python-dateutil==2.9.0.post0
