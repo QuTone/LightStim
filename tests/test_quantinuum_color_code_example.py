@@ -117,8 +117,7 @@ def test_tesseract_pipeline_smoke():
     assert result["errors"] == 0
 
 
-def test_plot_requires_all_six_states():
-    pytest.importorskip("matplotlib")
-    from examples.quantinuum_color_code_memory.plot import summarize
+def test_summary_requires_all_six_states():
+    from examples.quantinuum_color_code_memory.run import summarize
     with pytest.raises(ValueError, match="six-state average"):
         summarize([])
