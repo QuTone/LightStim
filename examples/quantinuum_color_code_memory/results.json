@@ -1,0 +1,173 @@
+{
+  "paper": "https://arxiv.org/abs/2610.24077v1",
+  "distance": 3,
+  "rounds": 20,
+  "versions": {
+    "stim": "1.15.0",
+    "numpy": "2.2.6",
+    "tesseract-decoder": "0.1.1.dev20260802231159"
+  },
+  "source_sha256": {
+    "circuit.py": "735643e42261c0ba2de88371ae113f8ab94822e4537b25d0c1f3603551451163",
+    "run.py": "284a26b4ac1dd6ab213c5393ade48837dd3c98d59616c28e18e1d9685836993e"
+  },
+  "cases": [
+    {
+      "basis": "X",
+      "sign": 1,
+      "rounds": 20,
+      "noise_model": "circuit_level",
+      "shots": 50000,
+      "errors": 170,
+      "accepted": 50000,
+      "circuit_sha256": "c6961f7fa684951fae640e29ff4ed4a3539412e99f2e9e57da7a2976238fe768"
+    },
+    {
+      "basis": "X",
+      "sign": -1,
+      "rounds": 20,
+      "noise_model": "circuit_level",
+      "shots": 50000,
+      "errors": 198,
+      "accepted": 50000,
+      "circuit_sha256": "98a57b46c451003a7d1dd796343249a37678d0000fe8a2fa1db3f55e18fb6f61"
+    },
+    {
+      "basis": "Y",
+      "sign": 1,
+      "rounds": 20,
+      "noise_model": "circuit_level",
+      "shots": 50000,
+      "errors": 315,
+      "accepted": 50000,
+      "circuit_sha256": "02d285330156173f72f7feb7e058e7ab8d930b0df84fbbf2706daf51d434e45a"
+    },
+    {
+      "basis": "Y",
+      "sign": -1,
+      "rounds": 20,
+      "noise_model": "circuit_level",
+      "shots": 50000,
+      "errors": 323,
+      "accepted": 50000,
+      "circuit_sha256": "949252b06fba0e73fbf952f56073daff525b4f16f7557422bcd9b6ce732a6426"
+    },
+    {
+      "basis": "Z",
+      "sign": 1,
+      "rounds": 20,
+      "noise_model": "circuit_level",
+      "shots": 50000,
+      "errors": 182,
+      "accepted": 50000,
+      "circuit_sha256": "39d679366a36185424dabb6b9bc27335e775bcbe0490e60b48f7cfb688388ad0"
+    },
+    {
+      "basis": "Z",
+      "sign": -1,
+      "rounds": 20,
+      "noise_model": "circuit_level",
+      "shots": 50000,
+      "errors": 187,
+      "accepted": 50000,
+      "circuit_sha256": "14318a2a774c0195c437b6e57e870bd24755484136423423d8476c0b75beabe6"
+    },
+    {
+      "basis": "X",
+      "sign": 1,
+      "rounds": 20,
+      "noise_model": "circuit_level_with_idling",
+      "shots": 50000,
+      "errors": 1298,
+      "accepted": 50000,
+      "circuit_sha256": "b5b5fe99a314a84902ada41848d9ef78c6438b2a4128c76e037bf8c523010d6b"
+    },
+    {
+      "basis": "X",
+      "sign": -1,
+      "rounds": 20,
+      "noise_model": "circuit_level_with_idling",
+      "shots": 50000,
+      "errors": 1276,
+      "accepted": 50000,
+      "circuit_sha256": "eec7eb73b146ae547c82c2e58d6d426e64f27886bb0019a226c53f27e4b15d56"
+    },
+    {
+      "basis": "Y",
+      "sign": 1,
+      "rounds": 20,
+      "noise_model": "circuit_level_with_idling",
+      "shots": 50000,
+      "errors": 1726,
+      "accepted": 50000,
+      "circuit_sha256": "69ba6842bca706fe1c81b6bba1f001ac919a716e9e0e272982f455ce9985081a"
+    },
+    {
+      "basis": "Y",
+      "sign": -1,
+      "rounds": 20,
+      "noise_model": "circuit_level_with_idling",
+      "shots": 50000,
+      "errors": 1739,
+      "accepted": 50000,
+      "circuit_sha256": "c6f6232a083ae17795afb975d29f78909cdb2d257f1ef9e42cf97e03529b2404"
+    },
+    {
+      "basis": "Z",
+      "sign": 1,
+      "rounds": 20,
+      "noise_model": "circuit_level_with_idling",
+      "shots": 50000,
+      "errors": 1173,
+      "accepted": 50000,
+      "circuit_sha256": "2fb5ac0af77ba892aa1bf6a596ddec4466a6f7c0af52c73fdd641bbc902bdef1"
+    },
+    {
+      "basis": "Z",
+      "sign": -1,
+      "rounds": 20,
+      "noise_model": "circuit_level_with_idling",
+      "shots": 50000,
+      "errors": 1234,
+      "accepted": 50000,
+      "circuit_sha256": "0d3d78563474b41e807eff3af7a4908e342224ce4157e7b3d34d021f8e60a1be"
+    }
+  ],
+  "noise": {
+    "circuit_level": {
+      "p_1q": 0.001,
+      "p_2q": 0.001,
+      "p_meas": 0.001,
+      "p_reset": 0.001,
+      "p_idle": 0,
+      "custom_params": {}
+    },
+    "circuit_level_with_idling": {
+      "p_1q": 0.001,
+      "p_2q": 0.001,
+      "p_meas": 0.001,
+      "p_reset": 0.001,
+      "p_idle": 0.001,
+      "custom_params": {}
+    }
+  },
+  "decoder": {
+    "name": "tesseract",
+    "params": {
+      "det_beam": 20,
+      "beam_climbing": true,
+      "no_revisit_dets": true,
+      "merge_errors": true,
+      "pqlimit": 1000000,
+      "num_det_orders": 21,
+      "seed": 2384753
+    }
+  },
+  "sampling": {
+    "workers": 8,
+    "batch_size": 1000,
+    "source": "physical circuit",
+    "seed": "process-dependent"
+  },
+  "source_snapshot": "fb3dfd7a3ef34c3d77f1ede38ccb5e215a4fced5"
+}
