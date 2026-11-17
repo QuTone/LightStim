@@ -10,7 +10,8 @@ from lightstim.ir.logical_executor import LogicalExecutor
 from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.qec_code.H_code import (
-    HCode, HCodeExtractionBlock, HCodeLogicalOpSet, HSixCode, HSixLogicalOpSet,
+    FlagAncillaPatch, HCode, HCodeExtractionBlock, HCodeLogicalOpSet,
+    HSixCode, HSixLogicalOpSet,
 )
 from lightstim.qec_code.color_code import ColorCode
 
@@ -149,6 +150,76 @@ def test_h6_encoded_memory_uses_tracker_for_all_basis_pairs(bases):
     assert circuit.num_observables == 2
     assert circuit.num_detectors == (10 if bases[0] == bases[1] else 8)
     assert not dets.any() and not obs.any()
+
+
+def _flagged_encode_builder():
+    system = QECSystem()
+    patch = system.add_patch(HSixCode(), name="h")
+    flag_patch = system.add_patch(FlagAncillaPatch(), name="flags", offset=(20, 20))
+    builder = CircuitBuilder(SyndromeTracker(system.num_qubits, system.num_logicals), system)
+    return system, patch, flag_patch, builder
+
+
+def test_h6_flagged_encoder_rejects_invalid_requests():
+    system, patch, flag_patch, builder = _flagged_encode_builder()
+    flags = sorted(flag_patch.syndrome_indices)
+    ops = HSixLogicalOpSet()
+    with pytest.raises(ValueError, match="only prepares"):
+        ops.encode(builder, patch, ("X", "X"), flagged=True, flag_qubits=flags)
+    with pytest.raises(ValueError, match="exactly 2 global qubit indices"):
+        ops.encode(builder, patch, ("Z", "Z"), flagged=True, flag_qubits=flags[:1])
+    with pytest.raises(ValueError, match="exactly 2 global qubit indices"):
+        ops.encode(builder, patch, ("Z", "Z"), flagged=True, flag_qubits=None)
+
+
+def test_h6_flagged_encoder_produces_tagged_flag_detectors_at_distinct_coords():
+    system, patch, flag_patch, builder = _flagged_encode_builder()
+    flags = sorted(flag_patch.syndrome_indices)
+    HSixLogicalOpSet().encode(builder, patch, ("Z", "Z"), flagged=True, flag_qubits=flags)
+    builder.stabilizer_canonicalization()
+    builder.apply_data_readout({q: "Z" for q in patch.data_indices})
+    circuit = builder.circuit
+    flag_detectors = [
+        inst for inst in circuit.flattened()
+        if isinstance(inst, stim.CircuitInstruction) and inst.name == "DETECTOR"
+        and inst.tag == "post-select"
+    ]
+    assert len(flag_detectors) == 2
+    coords = [tuple(inst.gate_args_copy()) for inst in flag_detectors]
+    assert coords[0] != coords[1]  # each flag gets its own coordinate
+    dets, obs = circuit.compile_detector_sampler().sample(2000, separate_observables=True)
+    assert not dets.any() and not obs.any()
+
+
+def test_h6_flagged_encoder_reaches_fault_distance_two_with_one_se_round():
+    """The whole point of Fig. 5: a single SE round after the flagged encoder
+    is already enough to reach fault distance 2, unlike the unflagged Fig.
+    1(d) encoder (see lightstim/protocols/h6_distillation.py, which needs an
+    extra Bell-pair check on top of Fig. 1(d) to close this same gap)."""
+    from lightstim.noise.config import NoiseConfig
+    from lightstim.noise.injector import NoiseInjector
+
+    system, patch, flag_patch, builder = _flagged_encode_builder()
+    flags = sorted(flag_patch.syndrome_indices)
+    HSixLogicalOpSet().encode(builder, patch, ("Z", "Z"), flagged=True, flag_qubits=flags)
+    builder.stabilizer_canonicalization()
+    ps_coords = set()
+    for stab in patch.stabilizers:
+        syn_idx = stab.get("syn_idx")
+        if syn_idx is None:
+            continue
+        xy = tuple(system.qubit_coords[syn_idx])
+        ps_coords.add(xy + (0.0,))
+        ps_coords.add(xy + (1.0,))
+    builder.tracker.post_select_detector_coords |= ps_coords
+    builder.apply_syndrome_extraction(HCodeExtractionBlock(system).circuit, rounds=1)
+    builder.apply_data_readout({q: "Z" for q in patch.data_indices})
+    circuit = builder.circuit
+    noisy = NoiseInjector.from_circuit_level(
+        NoiseConfig(p_1q=1e-3, p_2q=1e-3, p_meas=1e-3, p_reset=1e-3),
+        list(range(circuit.num_qubits)),
+    ).inject_noise(circuit)
+    assert len(noisy.shortest_graphlike_error()) == 2
 
 
 @pytest.mark.parametrize("basis", "XYZ")
