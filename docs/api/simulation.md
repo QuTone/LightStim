@@ -2,8 +2,9 @@
 
 **Module:** `lightstim.simulation.decoder_backend`
 
-The simulation layer takes a built `stim.Circuit` and runs it through a
-sample → post-select → decode → stats pipeline.
+`SimulationPipeline` takes a built `stim.Circuit` and runs it through a
+sample → post-select → decode → stats pipeline. The optional `ClifftSampler`
+below also accepts Clifford+T circuit text for standalone sampling.
 
 ---
 
@@ -72,6 +73,54 @@ For compatibility, `True` also enables DEM decomposition with
 the chosen decoder must support them. These settings apply to both single- and
 multi-worker execution and do not change the circuit used for sampling. The
 pipeline emits a warning when this option is enabled.
+
+---
+
+## `ClifftSampler`
+
+`lightstim.simulation.clifft_backend.ClifftSampler` samples physical Clifford+T
+circuit text in batches. Install the tested Clifft version in a Python 3.12+
+environment, then select that interpreter by passing `python_executable` or
+setting `CLIFFT_PYTHON`. If both are omitted, the sampler uses the current
+interpreter. LightStim itself can run in a separate Python 3.10+ environment.
+
+```bash
+python3.12 -m venv /path/to/clifft-venv
+/path/to/clifft-venv/bin/python -m pip install clifft==0.7.0
+```
+
+```python
+from lightstim.simulation.clifft_backend import ClifftSampler
+
+circuit = "RX 0\nT 0\nEXP_VAL X0\nEXP_VAL Y0\nMX 0\n"
+with ClifftSampler(circuit, python_executable="/path/to/clifft-venv/bin/python", seed=42) as sampler:
+    batch = sampler.sample_batch(1024)
+
+print(batch.expectations.mean(axis=0))  # [1/sqrt(2), 1/sqrt(2)]
+```
+
+The sampler compiles once per instance. Each `ClifftBatch` array has one row per
+attempted shot and zero columns if that output is absent from the circuit.
+
+| Field | Meaning |
+| --- | --- |
+| `measurements` | Classical measurement records in circuit order |
+| `detectors` | Raw XOR parities of the declared detector records |
+| `observables` | Raw XOR parities at the declared observable indices |
+| `expectations` | Values of the explicitly supplied `EXP_VAL` probes, in circuit order |
+
+Raw parities can be nonzero on ideal circuits. An ideal true-T circuit can also
+have intrinsically random logical readout. Interpret results using the
+experiment's reference, acceptance policy, and metric. This low-level sampler
+leaves that interpretation to the caller, independently of the Stim LER pipeline.
+Instruction tags are stripped from the transport text; gates, noise, and record
+targets are preserved.
+
+The `threads` option defaults to one worker thread. `max_peak_rank` limits the
+peak rank reported by Clifft (default `24`), and `timeout` limits each compile or
+sample request in seconds (default `300`). On a failed request the sampler
+closes its worker. Use the same seed, batch sizes, thread count, and runtime to
+replay a run.
 
 ---
 
