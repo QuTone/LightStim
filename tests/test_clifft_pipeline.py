@@ -24,10 +24,9 @@ from .test_clifft_backend import clifft_python
 pytestmark = pytest.mark.smoke
 
 
-def _pipeline(clifft_python, num_workers=1):
+def _pipeline(num_workers=1):
     return SimulationPipeline(
         sampler_backend="clifft",
-        clifft_python=clifft_python,
         max_shots=32,
         max_errors=33,
         batch_size=8,
@@ -39,7 +38,8 @@ def _pipeline(clifft_python, num_workers=1):
 
 @pytest.mark.parametrize("num_workers", [1, 2])
 @pytest.mark.parametrize("fault_probability", [0, 1])
-def test_postselection_matches_stim_reference(clifft_python, num_workers, fault_probability):
+@pytest.mark.usefixtures("clifft_python")
+def test_postselection_matches_stim_reference(num_workers, fault_probability):
     circuit = stim.Circuit(f"""
         R 0 1
         X 0 1
@@ -49,14 +49,15 @@ def test_postselection_matches_stim_reference(clifft_python, num_workers, fault_
         OBSERVABLE_INCLUDE(0) rec[-1]
     """)
 
-    stats = _pipeline(clifft_python, num_workers).run(circuit)
+    stats = _pipeline(num_workers).run(circuit)
 
     assert stats.shots == 32
     assert stats.post_selected_shots == (32 if fault_probability == 0 else 0)
     assert stats.errors == 0
 
 
-def test_deterministic_logical_fault_counts_as_error(clifft_python):
+@pytest.mark.usefixtures("clifft_python")
+def test_deterministic_logical_fault_counts_as_error():
     circuit = stim.Circuit("""
         R 0 1
         X 0
@@ -66,7 +67,7 @@ def test_deterministic_logical_fault_counts_as_error(clifft_python):
         OBSERVABLE_INCLUDE(0) rec[-2]
     """)
 
-    stats = _pipeline(clifft_python).run(circuit)
+    stats = _pipeline().run(circuit)
 
     assert stats.shots == stats.post_selected_shots == stats.errors == 32
 
@@ -92,21 +93,23 @@ def _transversal_cnot_experiment():
 
 
 @pytest.mark.parametrize("experiment", [_memory_experiment, _transversal_cnot_experiment])
-def test_noiseless_protocols_use_clifft(clifft_python, experiment):
+@pytest.mark.usefixtures("clifft_python")
+def test_noiseless_protocols_use_clifft(experiment):
     with redirect_stdout(StringIO()):
         circuit = experiment().build()
 
-    stats = _pipeline(clifft_python).run(circuit)
+    stats = _pipeline().run(circuit)
 
     assert stats.shots == stats.post_selected_shots == 32
     assert stats.errors == 0
 
 
-def test_unavailable_clifft_does_not_fall_back_to_stim(tmp_path):
+def test_unavailable_clifft_does_not_fall_back_to_stim(monkeypatch, tmp_path):
     circuit = stim.Circuit("R 0\nM 0\nDETECTOR rec[-1]\nOBSERVABLE_INCLUDE(0) rec[-1]")
+    monkeypatch.setenv("CLIFFT_PYTHON", str(tmp_path / "missing-clifft-python"))
 
     with pytest.raises(RuntimeError, match="Clifft"):
-        _pipeline(str(tmp_path / "missing-clifft-python")).run(circuit)
+        _pipeline().run(circuit)
 
 
 def test_repeated_pauli_target_observable_is_rejected():
@@ -121,4 +124,4 @@ def test_repeated_pauli_target_observable_is_rejected():
     """)
 
     with pytest.raises(ValueError, match="Pauli targets in OBSERVABLE_INCLUDE"):
-        _pipeline(None).run(circuit)
+        _pipeline().run(circuit)

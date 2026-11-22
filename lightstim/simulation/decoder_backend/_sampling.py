@@ -2,7 +2,6 @@
 
 from contextlib import contextmanager
 from functools import partial
-from pathlib import Path
 
 import numpy as np
 import stim
@@ -26,7 +25,6 @@ def _compile_sampler(
     *,
     backend: str,
     seed: int,
-    clifft_python: str | Path | None,
 ):
     if backend == "stim":
         sampler = circuit.compile_detector_sampler(seed=seed)
@@ -39,7 +37,7 @@ def _compile_sampler(
     # Hidden Pauli-frame contributions cannot be reconstructed from records.
     _validate_record_observables(circuit)
     converter = circuit.compile_m2d_converter()
-    with ClifftSampler(str(circuit), python_executable=clifft_python, seed=seed) as sampler:
+    with ClifftSampler(str(circuit), seed=seed) as sampler:
         def sample(shots: int) -> tuple[np.ndarray, np.ndarray]:
             batch = sampler.sample_batch(shots)
             # Clifft returns unpacked uint8 records. Stim interprets uint8 as bit packed.

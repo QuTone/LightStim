@@ -51,7 +51,9 @@ default), each worker uses `circuit.compile_detector_sampler()`.
 
 For Clifford circuits whose instructions Clifft supports, choose
 `sampler_backend="clifft"` to draw the measurement records with Clifft.
-`clifft_python` selects its Python environment or you can set `CLIFFT_PYTHON`.
+Install Clifft in the Python 3.12+ environment running LightStim. The sampler
+uses that environment by default. The [installation instructions](#clifftsampler)
+also cover running Clifft in a separate environment.
 The pipeline converts those records to detector events and observable flips
 relative to Stim's noiseless reference. Both backends then use the same
 post-selection, decoder, and error accounting.
@@ -59,15 +61,14 @@ post-selection, decoder, and error accounting.
 ```python
 pipeline = SimulationPipeline(
     sampler_backend="clifft",
-    clifft_python="/path/to/clifft-venv/bin/python",
     decoder_config=DecoderConfig("pymatching"),
     num_workers=2,
 )
 stats = pipeline.run(clifford_circuit)
 ```
 
-Changing the worker count preserves the sampling model with independent random
-draws. A failed worker raises `RuntimeError`. The Clifft pipeline requires
+Samples follow the same model across worker counts. Work scheduling can change
+the exact draws. A failed worker raises `RuntimeError`. The Clifft pipeline requires
 measurement record targets in `OBSERVABLE_INCLUDE`. Clifft 0.7.0 reports
 unsupported instructions such as heralded channels at compilation. For extended
 Clifford+T circuit text and `EXP_VAL`, use the standalone sampler below.
@@ -100,25 +101,28 @@ pipeline emits a warning when this option is enabled.
 ## `ClifftSampler`
 
 `lightstim.simulation.clifft_backend.ClifftSampler` samples physical Clifford+T
-circuit text in batches. Install the tested Clifft version in a Python 3.12+
-environment, then select that interpreter by passing `python_executable` or
-setting `CLIFFT_PYTHON`. If both are omitted, the sampler uses the current
-interpreter. LightStim itself can run in a separate Python 3.10+ environment.
+circuit text in batches. Install the tested Clifft version in the Python 3.12+
+environment running LightStim.
 
 ```bash
-python3.12 -m venv /path/to/clifft-venv
-/path/to/clifft-venv/bin/python -m pip install clifft==0.7.0
+python -m pip install clifft==0.7.0
 ```
 
 ```python
 from lightstim.simulation.clifft_backend import ClifftSampler
 
 circuit = "RX 0\nT 0\nEXP_VAL X0\nEXP_VAL Y0\nMX 0\n"
-with ClifftSampler(circuit, python_executable="/path/to/clifft-venv/bin/python", seed=42) as sampler:
+with ClifftSampler(circuit, seed=42) as sampler:
     batch = sampler.sample_batch(1024)
 
 print(batch.expectations.mean(axis=0))  # [1/sqrt(2), 1/sqrt(2)]
 ```
+
+If LightStim runs on Python 3.10 or 3.11, install Clifft in a separate Python
+3.12+ environment and set `CLIFFT_PYTHON` to that environment's Python executable
+before running LightStim. This setting applies to both the sampler and the
+pipeline. Standalone sampler callers can also specify `python_executable`
+directly if they need a per-instance override.
 
 The sampler compiles once per instance. Each `ClifftBatch` array has one row per
 attempted shot and zero columns if that output is absent from the circuit.

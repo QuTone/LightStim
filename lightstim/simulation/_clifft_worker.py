@@ -10,8 +10,8 @@ def main(config_path: Path) -> None:
         import clifft
     except ImportError as error:
         raise RuntimeError(
-            "Clifft could not be imported. Install clifft==0.7.0 in a Python 3.12+ "
-            "environment and select it with python_executable or CLIFFT_PYTHON."
+            "Clifft could not be imported. Install clifft==0.7.0 in your Python 3.12+ "
+            "environment. To use a separate environment, set CLIFFT_PYTHON to its Python executable."
         ) from error
     import numpy as np
 

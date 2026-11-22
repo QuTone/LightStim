@@ -2,7 +2,6 @@
 
 import os
 from multiprocessing import Manager
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
@@ -32,7 +31,6 @@ def _decode_worker_cpu(
     allow_gauge_detectors: bool = False,
     *,
     sampler_backend: str = "stim",
-    clifft_python: str | Path | None = None,
 ) -> None:
     """
     Single worker process: reserve shots -> sample -> post-select -> decode.
@@ -65,9 +63,7 @@ def _decode_worker_cpu(
         max_batches = (max_shots + batch_size - 1) // batch_size
         seed = worker_id * max_batches
 
-    with _compile_sampler(
-        circuit, backend=sampler_backend, seed=seed, clifft_python=clifft_python,
-    ) as sample:
+    with _compile_sampler(circuit, backend=sampler_backend, seed=seed) as sample:
         while True:
             with lock:
                 if shots_counter.value >= max_shots or errors_counter.value >= max_errors:

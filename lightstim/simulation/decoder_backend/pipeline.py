@@ -64,7 +64,6 @@ class SimulationPipeline:
         progress_file_backup_count: int = 5,
         *,
         sampler_backend: Literal["stim", "clifft"] = "stim",
-        clifft_python: str | Path | None = None,
     ):
         # A list/tuple of configs means multi-level decoding: each stage
         # re-decodes the shots the previous stage failed on (Chen-style
@@ -97,7 +96,6 @@ class SimulationPipeline:
             progress_file_backup_count=progress_file_backup_count,
             print_progress=print_progress,
             sampler_backend=sampler_backend,
-            clifft_python=clifft_python,
         )
         self._status_logger = None
         if self.config.progress_output in ("logging", "both"):
@@ -211,7 +209,6 @@ class SimulationPipeline:
                 kwargs={
                     "allow_gauge_detectors": self.config.allow_gauge_detectors,
                     "sampler_backend": self.config.sampler_backend,
-                    "clifft_python": self.config.clifft_python,
                 },
             )
             p.start()
@@ -288,7 +285,6 @@ class SimulationPipeline:
             circuit,
             backend=self.config.sampler_backend,
             seed=0,
-            clifft_python=self.config.clifft_python,
         ) as sample:
             while total_shots < self.config.max_shots and errors < self.config.max_errors:
                 det_data, obs_data = sample(min(batch_size, self.config.max_shots - total_shots))

@@ -1,7 +1,6 @@
 """Configuration dataclasses for the decoder backend pipeline."""
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 
@@ -83,7 +82,6 @@ class PipelineConfig:
     progress_file_backup_count: int = 5
     print_progress: bool = True
     sampler_backend: Literal["stim", "clifft"] = "stim"
-    clifft_python: str | Path | None = None
 
     def __post_init__(self):
         if self.sampler_backend not in ("stim", "clifft"):
