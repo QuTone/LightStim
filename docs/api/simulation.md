@@ -45,11 +45,32 @@ stats: SimulationStats = pipeline.run(circuit)
 
 ### Sampling source
 
-All worker counts sample the supplied noisy circuit using
-`circuit.compile_detector_sampler()`. The detector error model (DEM) is used to
-configure the decoder, not to generate the evaluation samples. Changing the
-worker count preserves the sampling model, not the exact random draws. A failed
-worker raises `RuntimeError` rather than returning incomplete statistics.
+The sampler draws from the supplied noisy circuit. The detector error model
+(DEM) configures the decoder separately. With `sampler_backend="stim"` (the
+default), each worker uses `circuit.compile_detector_sampler()`.
+
+For Clifford circuits whose instructions Clifft supports, choose
+`sampler_backend="clifft"` to draw the measurement records with Clifft.
+`clifft_python` selects its Python environment or you can set `CLIFFT_PYTHON`.
+The pipeline converts those records to detector events and observable flips
+relative to Stim's noiseless reference. Both backends then use the same
+post-selection, decoder, and error accounting.
+
+```python
+pipeline = SimulationPipeline(
+    sampler_backend="clifft",
+    clifft_python="/path/to/clifft-venv/bin/python",
+    decoder_config=DecoderConfig("pymatching"),
+    num_workers=2,
+)
+stats = pipeline.run(clifford_circuit)
+```
+
+Changing the worker count preserves the sampling model with independent random
+draws. A failed worker raises `RuntimeError`. The Clifft pipeline requires
+measurement record targets in `OBSERVABLE_INCLUDE`. Clifft 0.7.0 reports
+unsupported instructions such as heralded channels at compilation. For extended
+Clifford+T circuit text and `EXP_VAL`, use the standalone sampler below.
 
 ### Post-selection modes
 

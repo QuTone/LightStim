@@ -5,13 +5,14 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
 import stim
 
 from ._accounting import count_batch
+from ._sampling import _compile_sampler
 from .config import DecoderConfig, PipelineConfig, SimulationStats
 from .post_select import apply_post_selection, get_post_select_detector_indices
 from .progress import ProgressReporter, ProgressSnapshot, get_progress_logger
@@ -61,6 +62,9 @@ class SimulationPipeline:
         progress_file_path: Optional[str] = None,
         progress_file_max_bytes: int = 10_000_000,
         progress_file_backup_count: int = 5,
+        *,
+        sampler_backend: Literal["stim", "clifft"] = "stim",
+        clifft_python: str | Path | None = None,
     ):
         # A list/tuple of configs means multi-level decoding: each stage
         # re-decodes the shots the previous stage failed on (Chen-style
@@ -92,6 +96,8 @@ class SimulationPipeline:
             progress_file_max_bytes=progress_file_max_bytes,
             progress_file_backup_count=progress_file_backup_count,
             print_progress=print_progress,
+            sampler_backend=sampler_backend,
+            clifft_python=clifft_python,
         )
         self._status_logger = None
         if self.config.progress_output in ("logging", "both"):
@@ -202,7 +208,11 @@ class SimulationPipeline:
                     self.config.decoder.on_decode_failure,
                     completed_counter,
                 ),
-                kwargs={"allow_gauge_detectors": self.config.allow_gauge_detectors},
+                kwargs={
+                    "allow_gauge_detectors": self.config.allow_gauge_detectors,
+                    "sampler_backend": self.config.sampler_backend,
+                    "clifft_python": self.config.clifft_python,
+                },
             )
             p.start()
             procs.append(p)
@@ -268,27 +278,57 @@ class SimulationPipeline:
             ignore_decomposition_failures=self.config.allow_gauge_detectors,
         )
         compiled = decoder_instance.compile_decoder_for_dem(dem=dem)
-        sampler = circuit.compile_detector_sampler(seed=0)
 
         total_shots = 0
         post_selected_shots = 0
         errors = 0
         batch_size = self.config.batch_size
 
-        while total_shots < self.config.max_shots and errors < self.config.max_errors:
-            det_data, obs_data = sampler.sample(
-                shots=min(batch_size, self.config.max_shots - total_shots),
-                bit_packed=False,
-                separate_observables=True,
-            )
-            total_shots += det_data.shape[0]
+        with _compile_sampler(
+            circuit,
+            backend=self.config.sampler_backend,
+            seed=0,
+            clifft_python=self.config.clifft_python,
+        ) as sample:
+            while total_shots < self.config.max_shots and errors < self.config.max_errors:
+                det_data, obs_data = sample(min(batch_size, self.config.max_shots - total_shots))
+                total_shots += det_data.shape[0]
 
-            det_filtered, obs_filtered = apply_post_selection(
-                det_data, obs_data, post_select_indices,
-                post_select_observable_indices=self.config.post_select_observable_indices,
-            )
-            kept = det_filtered.shape[0]
-            if kept == 0:
+                det_filtered, obs_filtered = apply_post_selection(
+                    det_data, obs_data, post_select_indices,
+                    post_select_observable_indices=self.config.post_select_observable_indices,
+                )
+                kept = det_filtered.shape[0]
+                if kept == 0:
+                    reporter.emit(
+                        self._build_snapshot(
+                            shots=total_shots,
+                            kept=post_selected_shots,
+                            errors=errors,
+                            start=start,
+                            has_post_selection=has_post_selection,
+                        )
+                    )
+                    continue
+
+                # sinter.Decoder expects little-endian bit packing.
+                det_packed = np.packbits(det_filtered, axis=1, bitorder="little")
+                pred_packed = compiled.decode_shots_bit_packed(
+                    bit_packed_detection_event_data=det_packed,
+                )
+
+                batch_kept, batch_errors = count_batch(
+                    obs_filtered=obs_filtered,
+                    pred_packed=pred_packed,
+                    post_select_corrected_observable_indices=(
+                        self.config.post_select_corrected_observable_indices
+                    ),
+                    target_observable_indices=self.config.target_observable_indices,
+                    flags=getattr(compiled, "last_flags", None),
+                    on_decode_failure=self.config.decoder.on_decode_failure,
+                )
+                post_selected_shots += batch_kept
+                errors += batch_errors
                 reporter.emit(
                     self._build_snapshot(
                         shots=total_shots,
@@ -298,35 +338,6 @@ class SimulationPipeline:
                         has_post_selection=has_post_selection,
                     )
                 )
-                continue
-
-            # sinter.Decoder expects little-endian bit packing.
-            det_packed = np.packbits(det_filtered, axis=1, bitorder="little")
-            pred_packed = compiled.decode_shots_bit_packed(
-                bit_packed_detection_event_data=det_packed,
-            )
-
-            batch_kept, batch_errors = count_batch(
-                obs_filtered=obs_filtered,
-                pred_packed=pred_packed,
-                post_select_corrected_observable_indices=(
-                    self.config.post_select_corrected_observable_indices
-                ),
-                target_observable_indices=self.config.target_observable_indices,
-                flags=getattr(compiled, "last_flags", None),
-                on_decode_failure=self.config.decoder.on_decode_failure,
-            )
-            post_selected_shots += batch_kept
-            errors += batch_errors
-            reporter.emit(
-                self._build_snapshot(
-                    shots=total_shots,
-                    kept=post_selected_shots,
-                    errors=errors,
-                    start=start,
-                    has_post_selection=has_post_selection,
-                )
-            )
 
         elapsed = time.perf_counter() - start
         reporter.emit(
