@@ -81,8 +81,11 @@ class PipelineConfig:
     progress_file_max_bytes: int = 10_000_000
     progress_file_backup_count: int = 5
     print_progress: bool = True
+    sampler_backend: Literal["stim", "clifft"] = "stim"
 
     def __post_init__(self):
+        if self.sampler_backend not in ("stim", "clifft"):
+            raise ValueError(f"sampler_backend must be 'stim' or 'clifft', got {self.sampler_backend!r}")
         if self.decoder is None:
             self.decoder = DecoderConfig("pymatching", backend="cpu")
         if self.output_filename is None and self.output_dir is not None:

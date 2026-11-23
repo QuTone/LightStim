@@ -70,8 +70,8 @@ jobs:
           python-version: "3.12"
       - name: Test with the optional Clifft runtime
         run: |
-          python -m pip install clifft==0.7.0 stim==1.15.0 pytest pytest-timeout
-          CLIFFT_PYTHON="$(command -v python)" python -m pytest tests/test_clifft_backend.py --timeout=90 -q
+          python -m pip install clifft==0.7.0 stim==1.15.0 sinter==1.15.0 pandas PyMatching typing-extensions pytest pytest-timeout
+          python -m pytest tests/test_clifft_backend.py tests/test_clifft_pipeline.py --timeout=90 -q
 
   required-test:
     # Keep the stable check name required by the main branch ruleset while

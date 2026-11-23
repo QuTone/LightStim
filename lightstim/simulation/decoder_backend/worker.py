@@ -29,6 +29,8 @@ def _decode_worker_cpu(
     on_decode_failure: str = "error",
     completed_counter=None,
     allow_gauge_detectors: bool = False,
+    *,
+    sampler_backend: str = "stim",
 ) -> None:
     """
     Single worker process: reserve shots -> sample -> post-select -> decode.
@@ -41,6 +43,7 @@ def _decode_worker_cpu(
     reserved — work. At termination the two are equal.
     """
     from ._accounting import count_batch
+    from ._sampling import _compile_sampler
     from .registry import get_decoder
     from .post_select import apply_post_selection
 
@@ -54,52 +57,52 @@ def _decode_worker_cpu(
         ignore_decomposition_failures=allow_gauge_detectors,
     )
     compiled = decoder.compile_decoder_for_dem(dem=dem)
-    # The circuit defines the sampled noise; the DEM only configures the decoder.
-    sampler = circuit.compile_detector_sampler(seed=os.getpid() + worker_id * 10000)
+    seed = os.getpid() + worker_id * 10000
+    if sampler_backend == "clifft":
+        # ClifftSampler increments its seed per batch. Reserve disjoint ranges.
+        max_batches = (max_shots + batch_size - 1) // batch_size
+        seed = worker_id * max_batches
 
-    while True:
-        with lock:
-            if shots_counter.value >= max_shots or errors_counter.value >= max_errors:
-                break
-            remaining = max_shots - shots_counter.value
-            shots_to_take = min(batch_size, remaining)
-            shots_counter.value += shots_to_take
+    with _compile_sampler(circuit, backend=sampler_backend, seed=seed) as sample:
+        while True:
+            with lock:
+                if shots_counter.value >= max_shots or errors_counter.value >= max_errors:
+                    break
+                remaining = max_shots - shots_counter.value
+                shots_to_take = min(batch_size, remaining)
+                shots_counter.value += shots_to_take
 
-        det_data, obs_data = sampler.sample(
-            shots=shots_to_take,
-            bit_packed=False,
-            separate_observables=True,
-        )
+            det_data, obs_data = sample(shots_to_take)
 
-        det_filtered, obs_filtered = apply_post_selection(
-            det_data, obs_data, post_select_indices,
-            post_select_observable_indices=post_select_observable_indices,
-        )
-        kept = det_filtered.shape[0]
-        if kept == 0:
-            # These shots were still sampled/processed — count them as completed
-            # (they just contribute nothing after post-selection).
-            if completed_counter is not None:
-                with lock:
+            det_filtered, obs_filtered = apply_post_selection(
+                det_data, obs_data, post_select_indices,
+                post_select_observable_indices=post_select_observable_indices,
+            )
+            kept = det_filtered.shape[0]
+            if kept == 0:
+                # These shots were still sampled/processed — count them as completed
+                # (they just contribute nothing after post-selection).
+                if completed_counter is not None:
+                    with lock:
+                        completed_counter.value += shots_to_take
+                continue
+
+            # sinter.Decoder expects little-endian bit packing.
+            det_packed = np.packbits(det_filtered, axis=1, bitorder="little")
+            pred_packed = compiled.decode_shots_bit_packed(
+                bit_packed_detection_event_data=det_packed,
+            )
+
+            batch_kept, batch_errors = count_batch(
+                obs_filtered=obs_filtered,
+                pred_packed=pred_packed,
+                post_select_corrected_observable_indices=post_select_corrected_observable_indices,
+                target_observable_indices=target_observable_indices,
+                flags=getattr(compiled, "last_flags", None),
+                on_decode_failure=on_decode_failure,
+            )
+            with lock:
+                post_counter.value += batch_kept
+                errors_counter.value += batch_errors
+                if completed_counter is not None:
                     completed_counter.value += shots_to_take
-            continue
-
-        # sinter.Decoder expects little-endian bit packing.
-        det_packed = np.packbits(det_filtered, axis=1, bitorder="little")
-        pred_packed = compiled.decode_shots_bit_packed(
-            bit_packed_detection_event_data=det_packed,
-        )
-
-        batch_kept, batch_errors = count_batch(
-            obs_filtered=obs_filtered,
-            pred_packed=pred_packed,
-            post_select_corrected_observable_indices=post_select_corrected_observable_indices,
-            target_observable_indices=target_observable_indices,
-            flags=getattr(compiled, "last_flags", None),
-            on_decode_failure=on_decode_failure,
-        )
-        with lock:
-            post_counter.value += batch_kept
-            errors_counter.value += batch_errors
-            if completed_counter is not None:
-                completed_counter.value += shots_to_take
