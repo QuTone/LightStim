@@ -65,8 +65,9 @@ channel is one location with 15 mutually exclusive alternatives. Measurement
 faults flip the reported result, including its use in feedback, while preserving
 the quantum state after measurement. The catalogue supports independent
 `X/Y/Z_ERROR`, `DEPOLARIZE1/2`, `PAULI_CHANNEL_1/2` and noisy single-qubit,
-paired, and Pauli-product readouts. Correlated-error chains, heralded noise,
-and noisy `MPAD` raise an error.
+paired, and Pauli-product readouts. Each `MXX`, `MYY` or `MZZ` pair must
+address two distinct qubits, including when a target is inverted. Correlated-error
+chains, heralded noise, and noisy `MPAD` raise an error.
 
 Clifford inputs use Stim's deterministic detector and observable flip signatures,
 relative to the noiseless reference. Physical T/T† text or an `EXP_VAL` probe
@@ -96,8 +97,9 @@ assert math.isclose(report.conditional_loss, 0.01)
 
 With a decoder, pass `decoder_model=...` for extended physical text containing
 detectors or observable frame bits. The caller is responsible for matching
-detector order, logical labels and references to that model. The decoder sees
-only the observed syndrome. The optional `loss(corrected_target_bits,
+detector order, logical labels and references to that model. The enumerator
+caches each observed syndrome's prediction and success flag, so the decoder
+must return the same decision and flag for repeated inputs. The optional `loss(corrected_target_bits,
 expectations)` receives corrected bits in target-index order and returns
 a loss in [0, 1]. The default is one if any targeted observable is flipped.
 An `EXP_VAL` probe requires an explicit loss so that the target is defined.

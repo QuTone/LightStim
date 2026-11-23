@@ -167,7 +167,14 @@ def parse_quantum_circuit(
                 operations += op.repeat_count * max(1, body_ops)
                 targets += op.repeat_count * body_targets
             else:
-                target_count = len(op.targets_copy())
+                operands = op.targets_copy()
+                target_count = len(operands)
+                if op.name in {"MXX", "MYY", "MZZ"}:
+                    # Stim 1.15 accepts opposite inversion flags on the same
+                    # qubit, but its paired instrument can disturb that qubit.
+                    for i in range(0, target_count, 2):
+                        if operands[i].value == operands[i + 1].value:
+                            raise ValueError(f"{op.name} requires distinct physical qubits within each pair")
                 if op.tag in _PHYSICAL_NAMES and target_count == 0:
                     raise ValueError(f"{_PHYSICAL_NAMES[op.tag]} requires at least one target")
                 operations += 1

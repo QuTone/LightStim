@@ -2,22 +2,25 @@
 
 import stim
 
-from ._catalogue import FaultLocation
+from ._catalogue import PAULI_NOISE_GATES, READOUT_GATES, FaultLocation
 
 
 def _signature_probe(flat: stim.Circuit) -> stim.Circuit:
-    # Stim 1.15's explainer can omit the wrong Paulis when some probabilities
-    # in PAULI_CHANNEL_2 are zero. Request every alternative, then retain the
-    # physical catalogue's positive-rate outcomes. Unique tags preserve input
-    # instruction offsets when channel probabilities become equal.
-    if not any(op.name == "PAULI_CHANNEL_2" for op in flat):
-        return flat
+    # A forced fault's signature depends only on its location and outcome.
+    # Stim 1.15's explainer can drop depolarizing outcomes at small rates,
+    # and mislabel sparse PAULI_CHANNEL_2 outcomes. Probe at ordinary rates
+    # and keep the original physical catalogue for counts and weights.
     probe = stim.Circuit()
     for index, op in enumerate(flat):
-        if op.name == "PAULI_CHANNEL_2":
-            probe.append(op.name, op.targets_copy(), [1 / 64] * 15, tag=str(index))
-        else:
-            probe.append(op)
+        if op.name in PAULI_NOISE_GATES or op.name in READOUT_GATES:
+            args = op.gate_args_copy()
+            if any(args):
+                probe_args = ([1 / 64] * 15 if op.name == "PAULI_CHANNEL_2"
+                              else [1 / 64 if p else 0 for p in args])
+                # Keep instruction offsets when adjacent channels acquire equal rates.
+                probe.append(op.name, op.targets_copy(), probe_args, tag=str(index))
+                continue
+        probe.append(op)
     return probe
 
 
@@ -35,6 +38,8 @@ def clifford_signatures(
         flat.without_noise().detector_error_model(allow_gauge_detectors=False)
     except ValueError as exc:
         raise ValueError("Clifford enumeration requires deterministic detectors and observables") from exc
+    if not locations:
+        return ()
 
     indices = {
         (location.instruction_index, location.target_start, alternative.paulis): (i, j)

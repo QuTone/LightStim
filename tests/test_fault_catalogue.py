@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import stim
 
+from lightstim.analysis.faults import FaultEnumerator
 from lightstim.analysis.faults._catalogue import catalogue
 from lightstim.analysis.faults._clifford import clifford_signatures
 
@@ -102,6 +103,41 @@ def test_pauli_channel_sparse_probabilities_and_location_order():
         ((3, "X"), (1, "Y")), ((3, "X"), (1, "Z")), ((3, "Z"), (1, "Z")),
     ]
     assert clifford_signatures(flat, (location,)) == ((3, 2, 0),)
+
+
+@pytest.mark.parametrize("noise, expected_fraction", [
+    ("DEPOLARIZE1(1e-90) 0", 2 / 3),
+    ("DEPOLARIZE2(1e-90) 0 1", 8 / 15),
+    ("PAULI_CHANNEL_1(0,1e-90,0) 0", 1),
+    ("PAULI_CHANNEL_2(0,0,0,1e-90,0,0,0,0,0,0,0,0,0,0,0) 0 1", 1),
+    ("X_ERROR(1e-90) 0", 1),
+])
+def test_tiny_positive_probabilities_retain_physical_signatures(noise, expected_fraction):
+    audit = FaultEnumerator(f"{noise}\nM 0\nOBSERVABLE_INCLUDE(0) rec[-1]")
+    for i, alternative in enumerate(audit.locations[0].alternatives):
+        flips_readout = dict(alternative.paulis).get(0) in ("X", "Y")
+        assert audit.evaluate(((0, i),)).accepted_loss == int(flips_readout)
+    assert math.isclose(audit.enumerate(max_order=1).loss_mass, expected_fraction * 1e-90)
+
+
+def test_signature_probe_preserves_distinct_offsets_and_readout_rates():
+    c = stim.Circuit("""
+        DEPOLARIZE1(.1) 0
+        DEPOLARIZE1(.2) 1 2
+        DEPOLARIZE1(0) 0
+        M(.3) 0
+        M(1e-90) 1 2
+        OBSERVABLE_INCLUDE(0) rec[-3]
+        OBSERVABLE_INCLUDE(1) rec[-2]
+        OBSERVABLE_INCLUDE(2) rec[-1]
+    """)
+    locations = catalogue(c)
+    assert clifford_signatures(c, locations) == (
+        (1, 1, 0), (2, 2, 0), (4, 4, 0), (1,), (2,), (4,),
+    )
+    assert [(loc.instruction_index, loc.target_start) for loc in locations] == [
+        (0, 0), (1, 0), (1, 1), (3, 0), (4, 0), (4, 1),
+    ]
 
 
 @pytest.mark.parametrize("declaration", ["DETECTOR", "OBSERVABLE_INCLUDE(0)"])

@@ -4,6 +4,7 @@ import math
 import pytest
 import stim
 
+from lightstim.analysis.faults import FaultEnumerator
 from lightstim.analysis.faults._catalogue import catalogue
 from lightstim.analysis.faults._nonclifford import BornEvaluator
 from lightstim.analysis.faults._phase import (
@@ -116,3 +117,35 @@ def test_born_rejects_silent_loss_of_output_or_noise():
         evaluator("T 0\nOBSERVABLE_INCLUDE(0) Z0")
     with pytest.raises(ValueError, match="stochastic"):
         evaluate_fixed_circuit("X_ERROR(.1) 0")
+
+
+@pytest.mark.parametrize("name", ["MXX", "MYY", "MZZ"])
+def test_paired_readouts_require_distinct_qubits_even_with_inversion(name):
+    # Opposite inversion flags on the same physical qubit bypass Stim 1.15's
+    # usual identical-target validation. Catch this before any propagation.
+    for targets in ("0 !0", "!0 0", "0 1 2 !2"):
+        physical = f"{name} {targets}"
+        with pytest.raises(ValueError, match="distinct physical qubits"):
+            evaluate_fixed_circuit(physical)
+        noisy = stim.Circuit(f"REPEAT 2 {{\n{name}(.1) {targets}\n}}")
+        for backend in ("born", "clifford"):
+            with pytest.raises(ValueError, match="distinct physical qubits"):
+                FaultEnumerator(noisy, backend=backend)
+
+
+@pytest.mark.parametrize("name,prepare", [("MXX", "RX"), ("MYY", "RY"), ("MZZ", "R")])
+def test_distinct_pairs_can_share_a_qubit_and_feed_back_a_flipped_record(name, prepare):
+    # The first pair has positive parity. The second overlaps on qubit 1
+    # and has negative reported parity. The selected readout fault flips that
+    # bit before it controls qubit 3, without disturbing either pair.
+    prefix = f"{prepare} 0 1 2\n{name}(.2) 0 1 1 !2\nCX rec[-1] 3\nM 3"
+    measurements = f"\n{name} 0 1 1 2"
+    text = prefix + measurements + "\nOBSERVABLE_INCLUDE(0) rec[-3]"
+    clifford = FaultEnumerator(text)
+    born = FaultEnumerator(text, backend="born")
+    for chosen, expected in [((), 0.), (((1, 0),), 1.)]:
+        assert born.evaluate(chosen).accepted_loss == pytest.approx(expected)
+        assert clifford.evaluate(chosen).accepted_loss == expected
+    forced = stim.Circuit(prefix.replace(f"{name}(.2) 0 1 1 !2", f"{name} 0 1 1 2") + measurements)
+    assert not forced.compile_sampler(seed=19).sample(8).any()
+    assert all(not any(branch.records) for branch in evaluate_fixed_circuit(forced))
