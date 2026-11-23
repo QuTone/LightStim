@@ -43,6 +43,97 @@ pipeline = SimulationPipeline(
 stats: SimulationStats = pipeline.run(circuit)
 ```
 
+### Enumerate physical faults
+
+Use the same pipeline to enumerate faults through a fixed number of independent
+physical locations. The pipeline applies its detector, observable, target and
+decoder settings. Each section of the report contains the probability of
+exactly that fault order, including the probability that all other locations
+were quiet.
+
+```python
+report = pipeline.enumerate_faults(circuit, max_order=2)
+for row in report.per_order:
+    print(row.order, row.configurations, row.accepted_mass, row.loss_mass)
+print(report.conditional_loss, report.omitted_probability, report.full_loss_bounds)
+```
+
+`conditional_loss` conditions on **both** acceptance and the enumerated
+orders. The bounds include the remaining probability mass. A conditional
+quantity with zero possible acceptance is `None`. Each two-qubit depolarizing
+channel is one location with 15 mutually exclusive alternatives. Measurement
+faults flip the reported result, including its use in feedback, while preserving
+the quantum state after measurement. The catalogue supports independent
+`X/Y/Z_ERROR`, `DEPOLARIZE1/2`, `PAULI_CHANNEL_1/2` and noisy single-qubit,
+paired, and Pauli-product readouts. Each `MXX`, `MYY` or `MZZ` pair must
+address two distinct qubits, including when a target is inverted. Correlated-error
+chains, heralded noise, and noisy `MPAD` raise an error.
+
+Clifford inputs use Stim's deterministic detector and observable flip signatures,
+relative to the noiseless reference. Physical T/T† text or an `EXP_VAL` probe
+selects exhaustive Born-branch propagation. The Born evaluator applies gates
+to sparse complex amplitudes and integrates the supported measurement, reset,
+and feedback branches for each **joint** fault set. Arithmetic is floating
+point. Ordinary Clifford input can also request `backend="born"` to use this
+calculation with Stim's reference parities. Extended inputs use raw record
+parities with zero reference by default. Supply `detector_reference` and
+`observable_reference` when the expected parities differ.
+
+```python
+import math
+from lightstim.simulation.decoder_backend import SimulationPipeline
+
+# A single T prepares (|0> + exp(i*pi/4)|1>)/sqrt(2) from |+>.
+# EXP_VAL returns the conditional Pauli expectations in declaration order.
+physical = "H 0\nX_ERROR(0.02) 0\nT 0\nX_ERROR(0.02) 0\nEXP_VAL X0 Y0"
+
+def magic_state_infidelity(corrected_target_bits, expectations):
+    x, y = expectations
+    return (1 - (x + y) / math.sqrt(2)) / 2
+
+report = SimulationPipeline().enumerate_faults(physical, max_order=2, loss=magic_state_infidelity)
+assert math.isclose(report.conditional_loss, 0.01)
+```
+
+With a decoder, pass `decoder_model=...` for extended physical text containing
+detectors or observable frame bits. The caller is responsible for matching
+detector order, logical labels and references to that model. The enumerator
+caches each observed syndrome's prediction and success flag, so the decoder
+must return the same decision and flag for repeated inputs. The optional `loss(corrected_target_bits,
+expectations)` receives corrected bits in target-index order and returns
+a loss in [0, 1]. The default is one if any targeted observable is flipped.
+An `EXP_VAL` probe requires an explicit loss so that the target is defined.
+For a deterministic Clifford circuit the pipeline builds its usual decoder
+model automatically. An explicit model also works for channels whose exact
+physical enumeration is supported but whose DEM Stim cannot directly produce
+for the configured decoder.
+
+For identity recovery, or to replay individual witnesses, use the standalone
+analyzer. Pass the same decoder configuration, detector selection and reference
+bits to reproduce a decoded pipeline experiment.
+
+```python
+from lightstim.analysis.faults import FaultEnumerator
+
+audit = FaultEnumerator(circuit)
+report = audit.enumerate(max_order=2)
+for witness in report.witnesses:
+    for site, alternative in witness.faults:
+        location = report.locations[site]
+        print(location.instruction_index, location.target_start, location.alternatives[alternative])
+    assert audit.evaluate(witness.faults) == witness.response
+```
+
+Witness indices refer to this flattened circuit's positive-rate physical
+catalogue. Witnesses include up to `witness_limit` harmful configurations per
+order. Born witnesses must have conditional loss above
+`QuantumLimits.roundoff_tolerance`. The report retains the computed numeric losses.
+`max_configurations` bounds the number of physical configurations through
+`max_order`. `QuantumLimits` bounds circuit expansion, live state sizes,
+branches and work for each fixed-fault propagation. The generic Born backend is
+intended for small circuits and bounded witnesses. An exceeded limit raises
+an exception. Enumeration works with the core LightStim dependencies.
+
 ### Sampling source
 
 The sampler draws from the supplied noisy circuit. The detector error model

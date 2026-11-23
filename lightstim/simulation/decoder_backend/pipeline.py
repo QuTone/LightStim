@@ -5,7 +5,7 @@ import time
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -18,6 +18,11 @@ from .post_select import apply_post_selection, get_post_select_detector_indices
 from .progress import ProgressReporter, ProgressSnapshot, get_progress_logger
 from .registry import get_decoder
 from .worker import _decode_worker_cpu
+
+
+if TYPE_CHECKING:
+    from lightstim.analysis.faults import FaultReport, QuantumLimits
+    from lightstim.analysis.faults._scoring import BranchLoss
 
 
 class ExperimentTask:
@@ -131,6 +136,42 @@ class SimulationPipeline:
         meta = json_metadata or {}
         post_indices = self._resolve_post_select_indices(circuit)
         return self._run_custom(circuit, meta, post_indices)
+
+    def enumerate_faults(
+        self,
+        circuit: Union[stim.Circuit, str],
+        *,
+        max_order: int = 2,
+        max_configurations: int = 5_000_000,
+        witness_limit: int = 8,
+        backend: Literal["auto", "clifford", "born"] = "auto",
+        decoder_model: Optional[stim.DetectorErrorModel] = None,
+        detector_reference: Optional[Sequence[bool]] = None,
+        observable_reference: Optional[Sequence[bool]] = None,
+        loss: Optional["BranchLoss"] = None,
+        limits: Optional["QuantumLimits"] = None,
+    ) -> "FaultReport":
+        """Enumerate physical faults with this pipeline's selection and recovery.
+
+        Clifford circuits use deterministic Stim-relative signatures. Physical
+        Clifford+T text uses exact Born branches and an explicit decoder model
+        when detectors or logical frame bits are present. Shot limits do not apply.
+        """
+        from lightstim.analysis.faults import FaultEnumerator
+
+        experiment = FaultEnumerator(
+            circuit, backend=backend, decoder_config=self.config.decoder, decoder_model=decoder_model,
+            allow_gauge_detectors=self.config.allow_gauge_detectors,
+            post_select_detector_indices=self.config.post_select_detector_indices,
+            post_select_observable_indices=self.config.post_select_observable_indices,
+            post_select_corrected_observable_indices=self.config.post_select_corrected_observable_indices,
+            target_observable_indices=self.config.target_observable_indices,
+            detector_reference=detector_reference, observable_reference=observable_reference,
+            loss=loss, limits=limits,
+        )
+        return experiment.enumerate(
+            max_order=max_order, max_configurations=max_configurations, witness_limit=witness_limit,
+        )
 
     def _warn_dem_flags(self, circuit: stim.Circuit, decoder_name: str) -> None:
         """Warn about DEM/decoder combinations that can silently affect LER."""
