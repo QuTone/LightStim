@@ -78,13 +78,14 @@ def test_native_patches_keep_every_pauli_factor_and_coordinate(factory):
 
 def test_standalone_embedded_payload_round_trips_and_cannot_end_script(tmp_path):
     patch = SparsePatch()
-    title = '</script><img src=x onerror="alert(1)">'
+    title = 'literal __PAYLOAD__ __VIEWER_JS__ </script><img src=x onerror="alert(1)">'
     patch.stabilizers[0]["name"] = title
     path = export_patch_html(patch, tmp_path / "nested" / "code.html", title=title)
     document = path.read_text()
     data = _embedded(document)
     assert data["title"] == data["operators"][0]["name"] == title
     assert title not in document
+    assert 'literal __PAYLOAD__ __VIEWER_JS__ &lt;/script&gt;' in document
     assert "fetch(" not in document
     assert '<script src=' not in document
     assert '<link ' not in document

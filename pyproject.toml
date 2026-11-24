@@ -71,6 +71,7 @@ include = ["lightstim*"]
 
 [tool.setuptools.package-data]
 "lightstim.config" = ["schema.json"]
+"lightstim.frontend" = ["_patch_viewer.html", "_patch_viewer.js"]
 
 [tool.pytest.ini_options]
 markers = [
