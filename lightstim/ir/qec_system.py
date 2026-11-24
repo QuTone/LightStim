@@ -1,9 +1,12 @@
 import stim
-from typing import Dict, List, Tuple, Set, Any, Optional, Iterable
+from typing import Dict, List, Tuple, Set, Any, Optional, Iterable, Mapping, Sequence, TYPE_CHECKING
 from dataclasses import dataclass
 from lightstim.ir.qec_patch import QECPatch
 import copy
 from lightstim.ir.coupler import LogicalCouplerProtocol
+
+if TYPE_CHECKING:
+    from ..frontend.patch_html import PatchVisualization
 
 class QECSystem:
     """
@@ -471,6 +474,20 @@ class QECSystem:
     # ======================================================================
     # Helper Methods
     # ======================================================================
+
+    def visualize(
+        self, *, title: Optional[str] = None,
+        overlays: Optional[Sequence[Mapping[str, Any]]] = None,
+    ) -> "PatchVisualization":
+        """Return a notebook-displayable HTML snapshot of this system.
+
+        Includes registered patches and couplers, their shared sites and the
+        current state of their checks. Overlay qubit IDs are global system IDs.
+        Use ``view.save_html("system.html")`` to export a standalone document.
+        """
+        from ..frontend.patch_html import PatchVisualization, patch_html
+
+        return PatchVisualization(patch_html(self, title=title, overlays=overlays))
 
     def get_info(self) -> Dict[str, Any]:
         """
