@@ -22,6 +22,7 @@ def count_batch(
     target_observable_indices: Optional[List[int]],
     flags: Optional[np.ndarray] = None,
     on_decode_failure: str = "error",
+    observable_failure_mode: str = "any",
 ) -> tuple[int, int]:
     """Return ``(kept, errors)`` for one decoded batch.
 
@@ -41,6 +42,8 @@ def count_batch(
         on_decode_failure: policy for flagged-failed shots — ``"error"`` counts
             them as logical errors, ``"discard"`` drops them from the
             denominator, ``"ignore"`` leaves the prediction untouched.
+        observable_failure_mode: Count any target flip or the parity of all
+            target flips, after recovery.
 
     Returns:
         ``(kept, errors)`` deltas to add to the running denominator and error
@@ -52,22 +55,15 @@ def count_batch(
     ps_corr = post_select_corrected_observable_indices
     target = target_observable_indices
 
-    if ps_corr:
-        # Post-decode PS: corrected[i] = obs[i] XOR pred[i] is the residual.
-        corrected = obs_filtered ^ pred_unpacked
-        keep_mask = np.all(corrected[:, ps_corr] == 0, axis=1)
-        if target is not None:
-            error_mask = np.any(corrected[:, target] != 0, axis=1)
-        else:
-            error_mask = np.any(corrected != 0, axis=1)
-    elif target is not None:
-        keep_mask = np.ones(n_shots, dtype=bool)
-        error_mask = np.any(
-            pred_unpacked[:, target] != obs_filtered[:, target], axis=1
-        )
+    corrected = obs_filtered ^ pred_unpacked
+    keep_mask = np.all(corrected[:, ps_corr] == 0, axis=1) if ps_corr else np.ones(n_shots, dtype=bool)
+    selected = corrected[:, target] if target is not None else corrected
+    if observable_failure_mode == "any":
+        error_mask = np.any(selected, axis=1)
+    elif observable_failure_mode == "parity":
+        error_mask = np.logical_xor.reduce(selected, axis=1)
     else:
-        keep_mask = np.ones(n_shots, dtype=bool)
-        error_mask = np.any(pred_unpacked != obs_filtered, axis=1)
+        raise ValueError(f"Unknown observable_failure_mode {observable_failure_mode!r}")
 
     if flags is not None and on_decode_failure != "ignore":
         failed = ~np.asarray(flags, dtype=bool)

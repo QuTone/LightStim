@@ -5,6 +5,14 @@ Results are saved to CSV with automatic checkpointing (safe to interrupt and res
 
 ## Quick Start
 
+From the repository root, run the JSON memory example through the [shared experiment-config CLI](../../README.md#run-an-experiment-from-json).
+
+```bash
+python benchmarks/memory/run_memory.py --config examples/config/rotated-surface-memory.json --quick --output memory-quick.csv
+```
+
+For the full memory benchmark, select codes and sweep values directly.
+
 ```bash
 # Surface code, 3 distances, 5 p-values — finishes in ~5 min on 8 CPU cores
 venv/bin/python benchmarks/memory/run_memory.py \
@@ -87,9 +95,9 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 | `--rounds` | Code distance, hence `2` for H-code |
 | `--mode` | `decode`; select `full_postselection` explicitly for this benchmark |
 | `--p-idle` | Each swept p; set `0` to reproduce the no-idle baseline |
-| `--noise-model` | `circuit_level`; also `phenomenological`, `code_capacity` |
-| `--max-errors`, `--max-shots` | `200`, `1000000`; stop at the first limit, checked per batch |
-| `--batch-size` | `1000`; full postselection samples in one process with seed 0 |
+| `--noise-model` | `circuit_level`, with `circuit_level_with_idling`, `phenomenological`, `code_capacity`, and `XZ_biased` also available |
+| `--max-errors`, `--max-shots` | `100`, `1000000` (stopping conditions checked after a batch) |
+| `--batch-size`, `--num-workers`, `--seed` | `10000`, `4`, `0` |
 | `--output` | `results/h_code_full_postselection.csv` by default in this mode |
 
 Each completed task is appended immediately to CSV and skipped on resumption.
@@ -138,14 +146,14 @@ shows a small circuit and CPU-MWPM decoding example.
 |-------------|---------|---------|
 | `pymatching` (default) | CPU | Surface / toric / Bacon–Shor memory |
 | `mwpf` | CPU | General QLDPC |
-| `cpu_bposd` | CPU | QLDPC codes, no GPU |
-| `gpu_bposd` | GPU (CUDA) | BB/HGP codes at scale |
+| `bposd` | `--backend cpu` | QLDPC codes, no GPU |
+| `bposd` | `--backend gpu` (CUDA) | BB/HGP codes at scale |
 | `relay-bp` | CPU | Full-DEM Relay-BP decoding |
 | `ldpc-bp` | CPU | Plain BP baseline |
 | `tesseract` | CPU | Optional beam-search decoding |
 | `mle-ilp` | CPU | Exact reference decoding on small instances |
 
-SHYPS selects `cpu_bposd` by default. Install optional CPU decoders with
+SHYPS selects `bposd` on CPU by default. Install optional CPU decoders with
 `pip install -e '.[decoders]'` and GPU BP+OSD with `pip install -e '.[gpu]'`.
 
 `mle-ilp` has an unlimited per-shot budget by default. For practical large-DEM
@@ -189,7 +197,7 @@ venv/bin/python benchmarks/memory/run_memory.py \
     --output benchmarks/memory/results/color_all_mwpf.csv
 ```
 
-Use `--decoder gpu_bposd --num-workers 1` for the GPU backend. The runner
+Use `--decoder bposd --backend gpu --num-workers 1` for the GPU backend. The runner
 always uses exactly one worker for GPU decoding.
 
 ## Common Use Cases
@@ -218,7 +226,7 @@ This uses native circuit-level CNOT/reset/measurement noise, including noisy
 final data readout. The command takes 1M shots per distance (seed 0 in the
 single-worker pipeline). Its output is the usual
 `results/bacon_shor_pymatching.csv`; no per-code benchmark directory is needed.
-For a full-syndrome comparison, choose `--decoder cpu_bposd`.
+For a full-syndrome comparison, choose `--decoder bposd --backend cpu`.
 
 The [memory notebook](../../notebooks/Memory/memory_bacon_shor.ipynb) contains
 the memory circuit diagram and live MWPM decoding.
@@ -243,7 +251,7 @@ Tracker construction cost. Use r=3 for an interactive review.
 ```bash
 python benchmarks/memory/run_memory.py \
     --codes shyps_49_9_4 --basis Z X --p-values 0.001 \
-    --decoder cpu_bposd --num-workers 1 \
+    --decoder bposd --backend cpu --num-workers 1 \
     --max-shots 64 --max-errors 65 --batch-size 64
 
 python benchmarks/memory/run_memory.py \
@@ -254,11 +262,11 @@ python benchmarks/memory/run_memory.py \
 
 CUDA_VISIBLE_DEVICES=0 python benchmarks/memory/run_memory.py \
     --codes shyps_49_9_4 --basis Z X --p-values 0.001 \
-    --decoder gpu_bposd --num-workers 1 \
+    --decoder bposd --backend gpu --num-workers 1 \
     --max-shots 64 --max-errors 65 --batch-size 64
 ```
 
-SHYPS defaults to `cpu_bposd` if no decoder is selected. `mwpf`, `ldpc-bp`,
+SHYPS defaults to `bposd` on CPU if no decoder is selected. `mwpf`, `ldpc-bp`,
 `mle-ilp` and the optional `tesseract` interface are also exposed by the shared
 runner. Install the selected optional backend first. GPU BP+OSD uses one worker;
 `CUDA_VISIBLE_DEVICES` selects the device. The standard noisy SHYPS DEM cannot
@@ -282,7 +290,10 @@ are small interface checks, not enough shots for a performance comparison.
 This target runs `d` pre-defect rounds, measures and disables the center data
 qubit, then runs `d` rounds alternating the affected Z and X gauge checks.
 Unaffected checks remain active throughout. Both Z- and X-memory experiments
-are supported.
+are supported. `--rounds` sets the pre-defect stage length. The CSV reports
+the block failure probability for the complete experiment and leaves the
+per-round rate and its standard error empty because the extraction schedule
+changes at the defect.
 
 ```bash
 venv/bin/python benchmarks/memory/run_memory.py \
@@ -306,7 +317,7 @@ venv/bin/python benchmarks/memory/run_memory.py \
 venv/bin/python benchmarks/memory/run_memory.py \
     --codes bb_72_12_6 bb_144_12_12 \
     --p-values 1e-3 3e-3 5e-3 1e-2 \
-    --decoder cpu_bposd --num-workers 4
+    --decoder bposd --backend cpu --num-workers 4
 ```
 
 ### BB codes (GPU)
@@ -314,7 +325,7 @@ venv/bin/python benchmarks/memory/run_memory.py \
 venv/bin/python benchmarks/memory/run_memory.py \
     --codes bb_72_12_6 bb_108_8_10 bb_144_12_12 \
     --p-values 1e-3 2e-3 5e-3 1e-2 \
-    --decoder gpu_bposd
+    --decoder bposd --backend gpu
 ```
 
 ### HGP product-coloration memory (GPU)
@@ -324,7 +335,7 @@ venv/bin/python benchmarks/memory/run_memory.py \
     --codes hgp_13_1_3 hgp_18_2_3 hgp_225_9_4 \
     --p-values 1e-3 2e-3 3e-3 \
     --basis Z X \
-    --decoder gpu_bposd
+    --decoder bposd --backend gpu
 ```
 
 With `--rounds` omitted, the three instances use their declared distances
@@ -392,7 +403,7 @@ venv/bin/python benchmarks/memory/plot_memory.py \
 # Merge multiple CSVs (e.g. compare codes)
 venv/bin/python benchmarks/memory/plot_memory.py \
     benchmarks/memory/results/rotated_sc_pymatching.csv \
-    benchmarks/memory/results/bb_72_12_6_cpu_bposd.csv \
+    benchmarks/memory/results/bb_72_12_6_bposd.csv \
     --output results/comparison.png
 
 # Filter and title
@@ -404,12 +415,12 @@ venv/bin/python benchmarks/memory/plot_memory.py results/*.csv \
 
 ## Output Format
 
-Results are saved as CSV with one row per complete benchmark configuration:
+Results are saved as CSV with one row per completed configuration. Selected columns include
 
 ```
 code, distance, h_n, p, basis, rounds, se_circuit, mode, p_idle, p_1q,
 p_idle_mode, p_1q_mode, detector_basis,
-noise_model, decoder_name,
+noise_model, decoder_name, backend, decoder_params, sweep_coordinates,
 decoder_time_limit, on_decode_failure, layout, block_class,
 shots, errors, accepted, rejected, acceptance, logical_error_rate, seconds,
 n_data, n_total, k
@@ -420,6 +431,14 @@ decoding, or `<codes>_full_postselection.csv` in the same directory for full
 postselection. `h_n` is the H-code size (zero for other codes); `mode`
 distinguishes the evaluation rules. In decode mode, `rejected` also counts
 shots discarded by the configured decoder failure policy.
+
+For repeated memory cycles, `block_failure_probability` is the measured
+fraction of accepted shots that failed. With block failure probability
+`P` over `R` cycles, `logical_failure_rate_per_round` reports
+`1 - (1 - P) ** (1 / R)`. This gives the constant per-cycle failure
+probability whose survival probability over `R` cycles equals `1 - P`.
+It is a normalization of the block measurement. Inferring a per-cycle
+logical bit-flip probability would require a model for cancellation of flips.
 
 The `results/` directory is git-ignored. Benchmark data stays local unless it
 is deliberately published elsewhere.

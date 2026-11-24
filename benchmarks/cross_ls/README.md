@@ -6,7 +6,7 @@ teleports a non-Clifford logical state from the PQRM block into the surface code
 a joint ZZ measurement, without ever applying the non-Clifford gate to the surface
 code directly.
 
-Protocol implementation: `lightstim/protocols/cross_ls.py`
+Protocol implementation: `lightstim/protocols/cross_ls/cross_ls_experiment.py`
 Notebook walkthrough: `notebooks/CrossLS/cross_ls.ipynb`
 
 ## Background
@@ -37,9 +37,9 @@ Two experiments, selectable via `--experiment`:
 | Experiment | What it sweeps | Output columns |
 |---|---|---|
 | `sweep` | PQRM params × d_surf × state (Z/X/Y) × p | `pqrm, d_surf, state, p, ler, ps_rate, ...` |
-| `rounds` | rounds per LS cycle, fixed PQRM=(1,2,4), p=1e-3, Z state | `rounds, d_surf, ler, ...` |
+| `rounds` | rounds per LS cycle for the selected PQRM, distance, state, and p values | `rounds, d_surf, ler, ...` |
 
-All results use per-task checkpointing — safe to interrupt and resume.
+The runner checkpoints completed tasks in CSV. Use `--experiment` for CrossLS sweeps. Passing `--config FILE` runs the experiment declared in the file through the [shared experiment-config CLI](../../README.md#run-an-experiment-from-json).
 
 Output: `benchmarks/cross_ls/results/cross_ls_results.csv`
 
@@ -74,34 +74,37 @@ PYTHONPATH=. venv/bin/python benchmarks/cross_ls/run_cross_ls.py \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--experiment` | `sweep` | `sweep` or `rounds` |
+| `--experiment` | `all` | `sweep`, `rounds`, or both |
 | `--pqrm` | `1,2,4` | PQRM params: `1,2,4` `1,3,5` `1,4,6` (space-separated) |
 | `--distances` | `3 5 7` | Surface code distances |
 | `--p-values` | `5e-4 1e-3 2e-3` | Physical error rates |
-| `--rounds-values` | `3 5 7` | SE rounds (rounds experiment only) |
-| `--states` | `Z X Y` | Logical input states |
-| `--decoder` | `mwpf` | `mwpf`, `bposd` |
+| `--rounds`, `--rounds-values` | distance for `sweep`, `3 5 7` for `rounds` | SE rounds |
+| `--basis`, `--states` | `Z X Y` for `sweep`, `Z` for `rounds` | Logical input states |
+| `--mode` | `hybrid` | `decode`, `full_postselection`, or `hybrid` |
+| `--postselection-region`, `--ps-mode` | `hybrid` | Region for hybrid mode (`hybrid` or `pqrm_only`) |
+| `--noise-model` | `circuit_level` | The circuit-level baseline uses `p_1q=1e-6` and `p_idle=0` |
+| `--decoder` | `mwpf` | Hypergraph decoder, e.g. `mwpf` or `bposd` |
 | `--backend` | `cpu` | `cpu` or `gpu` |
-| `--num-workers` | `8` | Parallel workers (use 1 for GPU) |
-| `--max-shots` | `500000` | Max shots per task |
+| `--seed` | `0` | Sampling seed |
+| `--batch-size` | `10000` | Sampling batch size |
+| `--num-workers` | `4` | Parallel workers (use 1 for GPU) |
+| `--max-shots` | `1000000` | Max shots per task |
 | `--max-errors` | `100` | Stop after N logical errors |
 | `--quick` | off | Smoke test mode |
 
 > **Decoder note**: CrossLS circuits contain hyperedges (PQRM X-stab correlations).
-> Always use `mwpf` or `bposd` — never `pymatching`.
+> The default `mwpf` and the optional `bposd` decoders support these correlations.
 
 ## How to plot
 
-```bash
-# LER vs p (sweep experiment):
-PYTHONPATH=. venv/bin/python benchmarks/cross_ls/plot_cross_ls.py \
-    benchmarks/cross_ls/results/cross_ls_results.csv \
-    --experiment sweep
+Run the plotter from the repository root to plot LER against physical error
+rate and surface-code distance. It reads the `sweep` rows in
+`benchmarks/cross_ls/results/cross_ls_results.csv` and writes both figures
+beside the CSV. Use one noise model, decoder configuration and postselection
+policy per input file so each curve represents a single experiment.
 
-# LER vs rounds:
-PYTHONPATH=. venv/bin/python benchmarks/cross_ls/plot_cross_ls.py \
-    benchmarks/cross_ls/results/cross_ls_results.csv \
-    --experiment rounds
+```bash
+PYTHONPATH=. venv/bin/python benchmarks/cross_ls/plot_cross_ls.py
 ```
 
 ## Output CSV columns
@@ -112,5 +115,5 @@ decoder, backend, n_det, n_ps, shots, kept, ps_rate,
 errors, ler, seconds
 ```
 
-`ps_rate` is the fraction of shots surviving PQRM X-stabilizer post-selection.
+`ps_rate` is the fraction of accepted shots in the selected simulation mode. The CSV also records the common `accepted`, `acceptance`, `logical_error_rate`, and `sweep_coordinates` columns.
 A lower `ps_rate` at higher `p` is expected — PQRM X-errors scale as O(p).

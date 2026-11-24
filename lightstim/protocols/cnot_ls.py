@@ -1,8 +1,9 @@
 # experiments/CNOT_LS.py
 
+import logging
+
 import stim
-import numpy as np
-from typing import Type, Literal, Optional, Any, Dict, Tuple
+from typing import Type, Literal, Optional, Any, Dict, Tuple, Mapping, Sequence
 
 from lightstim.ir.builder import CircuitBuilder, DataReadoutStage
 from lightstim.ir.tracker import SyndromeTracker
@@ -13,6 +14,9 @@ from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCodeExtractionBlock,
     UnrotatedTwoPatchCoupler
 )
+
+
+_log = logging.getLogger(__name__)
 
 
 class CNOTLSExperiment:
@@ -30,10 +34,10 @@ class CNOTLSExperiment:
 
     def __init__(self,
                  patch_configs: Dict[str, Dict[str, Any]],
-                 offset_ta: Tuple[float, float],  # Offset for Target relative to Ancilla
-                 offset_ca: Tuple[float, float],   # Offset for Control relative to Ancilla
-                 initial_state_dict: Dict[str, Literal["X", "Z"]] = {"a": "X", "c": "X", "t": "X"},
-                 measure_state_dict: Dict[str, Literal["X", "Z"]] = {"a": "Z", "c": "X", "t": "X"},
+                 offset_ta: Optional[Tuple[float, float]] = None,
+                 offset_ca: Optional[Tuple[float, float]] = None,
+                 initial_state_dict: Optional[Dict[str, Literal["X", "Z"]]] = None,
+                 measure_state_dict: Optional[Dict[str, Literal["X", "Z"]]] = None,
                  code_patch_class: Type = UnrotatedSurfaceCode,
                  coupler_class: Type = UnrotatedTwoPatchCoupler,
                  extraction_block_class: Type = UnrotatedSurfaceCodeExtractionBlock,
@@ -42,16 +46,22 @@ class CNOTLSExperiment:
                  noise_model: Optional[str] = 'circuit_level',
                  if_detector: bool = True,
                  rotate_patches: bool = True,
-                 logical_tracking: Literal["legacy", "slabs"] = "slabs"):
+                 logical_tracking: Literal["legacy", "slabs"] = "slabs",
+                 *,
+                 offset_ancilla: Tuple[float, float] = (0, 0),
+                 patch_transforms: Optional[Mapping[str, Sequence[Mapping[str, Any]]]] = None):
         """
         Args:
-            logical_tracking: Use the S/L/L_absorbed tracker by default; "legacy" is an explicit regression control.
-            patch_config: Configuration dict for all Ancilla, Control, and Target patches (passed to UnrotatedSurfaceCode).
-            offset_ct: (dx, dy) offset for Target patch relative to Control patch.
-            offset_ta: (dx, dy) offset for Ancilla patch relative to Target patch.
-            initial_state_c: Initial state basis for Control patch data qubits ("X" or "Z").
-            initial_state_t: Initial state basis for Target patch data qubits ("X" or "Z").
-            initial_state_a: Initial state basis for Ancilla patch data qubits ("X" or "Z").
+            logical_tracking: Logical tracking model used by the syndrome tracker.
+            patch_configs: Patch constructor arguments keyed by a, c and t.
+            offset_ta: Target displacement from ancilla. Defaults to (2d, 0)
+                for a square ancilla of distance d.
+            offset_ca: Control displacement from ancilla. Defaults to (0, 2d).
+            offset_ancilla: Ancilla position on the canvas.
+            patch_transforms: Ordered canvas transform steps keyed by patch role
+                (a, c, t). An explicit map replaces the rotate_patches preset.
+            initial_state_dict: X or Z preparation basis keyed by patch role.
+            measure_state_dict: X or Z readout basis keyed by patch role.
             extraction_block_class: Class for syndrome extraction block. Defaults to UnrotatedSurfaceCodeExtractionBlock.
             rounds: Number of QEC rounds before and after coupler activations.
             noise_params: Parameters for noise injection.
@@ -59,21 +69,20 @@ class CNOTLSExperiment:
             if_detector: Whether to generate detectors.
             rotate_patches: Whether to rotate ancilla patches by pi and reset rotation angle (default True).
         """
-        # Sanity check
-        # Offsets
-        dx_ta, dy_ta = offset_ta
-        dx_ca, dy_ca = offset_ca
-        
-        # if dx_ta < 0:
-        #     raise ValueError(f"Offset dx_ta for Target-Ancilla must be non-negative for XX interaction. Got (dx={dx_ta}, dy={dy_ta})")
-        # if dy_ca < 0:
-        #     raise ValueError(f"Offset dy_ca for Control-Ancilla must be non-negative for ZZ interaction. Got (dx={dx_ca}, dy={dy_ca})")
-        
         self.patch_configs = patch_configs
-        self.offset_ta = offset_ta
-        self.offset_ca = offset_ca
-        self.initial_state_dict = initial_state_dict
-        self.measure_state_dict = measure_state_dict
+        distance = patch_configs["a"].get("distance")
+        if distance is None and (offset_ta is None or offset_ca is None):
+            raise ValueError("Specify offset_ta and offset_ca for a non-square ancilla.")
+        self.offset_ta = (2 * distance, 0) if offset_ta is None else offset_ta
+        self.offset_ca = (0, 2 * distance) if offset_ca is None else offset_ca
+        self.offset_ancilla = offset_ancilla
+        if patch_transforms is not None and set(patch_transforms) - {"a", "c", "t"}:
+            raise ValueError("patch_transforms keys must be a, c or t.")
+        self.patch_transforms = patch_transforms
+        self.initial_state_dict = ({"a": "X", "c": "X", "t": "X"} if initial_state_dict is None
+                                   else dict(initial_state_dict))
+        self.measure_state_dict = ({"a": "Z", "c": "X", "t": "X"} if measure_state_dict is None
+                                   else dict(measure_state_dict))
         self.code_patch_class = code_patch_class
         self.coupler_class = coupler_class
         self.extraction_block_class = extraction_block_class
@@ -97,15 +106,17 @@ class CNOTLSExperiment:
         if self.initial_state_dict["a"] == "X":
             self.interaction_types = ["ZZ", "XX"]
             if self.measure_state_dict["a"] != "Z":
-                print(f"Measure state of ancilla patch must be Z when initial state is X. Got (measure_state_a={measure_state_dict['a']}). Changed to Z.")
+                _log.warning("Changing ancilla readout from %s to Z for an X preparation.",
+                             self.measure_state_dict['a'])
                 self.measure_state_dict["a"] = "Z"
         elif self.initial_state_dict["a"] == "Z":
             self.interaction_types = ["XX", "ZZ"]
             if self.measure_state_dict["a"] != "X":
-                print(f"Measure state of ancilla patch must be X when initial state is Z. Got (measure_state_a={measure_state_dict['a']}). Changed to X.")
+                _log.warning("Changing ancilla readout from %s to X for a Z preparation.",
+                             self.measure_state_dict['a'])
                 self.measure_state_dict["a"] = "X"
         else:
-            raise ValueError(f"Initial state of ancilla patch must be X or Z. Got (initial_state_a={initial_state_dict['a']})")
+            raise ValueError(f"Initial state of ancilla patch must be X or Z. Got (initial_state_a={self.initial_state_dict['a']})")
 
     def build(self) -> stim.Circuit:
         """
@@ -113,33 +124,32 @@ class CNOTLSExperiment:
         """
         # 1. Create patches
         # ----------------------------------------------------------------------
-        print("Creating patches...")
+        _log.debug("Creating patches...")
         patch_c = self.code_patch_class(**self.patch_configs["c"])
         patch_t = self.code_patch_class(**self.patch_configs["t"])
         patch_a = self.code_patch_class(**self.patch_configs["a"])
         
-        # Rotate Ancilla patch if requested (to align logical operators with the interacting patches)
-        if self.rotate_patches:
-            print("Rotating Ancilla and Control patch for alignment...")
-            patch_a.rotate_coords(np.pi)
-            patch_a.reset_rotation_angle()
-            patch_c.transpose_coords()
-            patch_c.rotate_coords(np.pi/2)
-            patch_c.reset_rotation_angle()
-            patch_c.reset_transposition()
+        transforms = self.patch_transforms
+        if transforms is None:
+            transforms = ({
+                "a": [{"rotate_deg": 180}],
+                "c": [{"transpose": True}, {"rotate_deg": 90}],
+            } if self.rotate_patches else {})
+        for role, patch in (("a", patch_a), ("c", patch_c), ("t", patch_t)):
+            patch.apply_canvas_transform(transforms.get(role, ()))
 
-        
-        # 2. Create system and add patches
-        # ----------------------------------------------------------------------
-        print("Setting up QEC system...")
+        # Register in protocol order so the qubit and stabilizer IDs are stable.
         self.system = QECSystem()
-        self.system.add_patch(patch_a, name=self.patch_a_name)
-        self.system.add_patch(patch_c, name=self.patch_c_name, offset=self.offset_ca)
-        self.system.add_patch(patch_t, name=self.patch_t_name, offset=self.offset_ta)
-        
+        ax, ay = self.offset_ancilla
+        self.system.add_patch(patch_a, name=self.patch_a_name, offset=(ax, ay))
+        self.system.add_patch(patch_c, name=self.patch_c_name,
+                              offset=(ax + self.offset_ca[0], ay + self.offset_ca[1]))
+        self.system.add_patch(patch_t, name=self.patch_t_name,
+                              offset=(ax + self.offset_ta[0], ay + self.offset_ta[1]))
+
         # 3. Register couplers
         # ----------------------------------------------------------------------
-        print("Registering couplers...")
+        _log.debug("Registering couplers...")
         coupler_protocol = self.coupler_class()
         
         # Control-Ancilla coupler for ZZ measurement
@@ -182,12 +192,12 @@ class CNOTLSExperiment:
         
         # 5. Write coordinates
         # ----------------------------------------------------------------------
-        print("Writing coordinates...")
+        _log.debug("Writing coordinates...")
         self.builder.write_coordinates()
         
         # 6. Initialize code patch data qubits
         # ----------------------------------------------------------------------
-        print("Initializing code patch data qubits...")
+        _log.debug("Initializing code patch data qubits...")
         init_dict = {}
         for q in self.system.data_indices:
             owner = self.system.index_to_owner_map[q]
@@ -202,7 +212,7 @@ class CNOTLSExperiment:
         
         # 7. Syndrome extraction rounds (before any coupler activation)
         # ----------------------------------------------------------------------
-        print(f"Building {self.rounds} rounds of syndrome extraction (before coupler activations)...")
+        _log.debug("Building %s rounds of syndrome extraction (before coupler activations)...", self.rounds)
         se_block = self.extraction_block_class(self.system)
         self.builder.apply_syndrome_extraction(
             circuit_chunk=se_block.circuit,
@@ -211,11 +221,11 @@ class CNOTLSExperiment:
         
         # 8. First logical measurement (ZZ or XX depending on initial state of ancilla patch)
         # ----------------------------------------------------------------------
-        print(f"Activating {self.interaction_types[0]} coupler for {self.interaction_types[0]} measurement...")
+        _log.debug("Activating %s coupler for %s measurement...", self.interaction_types[0], self.interaction_types[0])
         self.builder.activate_coupler(first_coupler)
 
         # Initialize first coupler data qubits
-        print(f"Initializing {first_coupler} data qubits...")
+        _log.debug("Initializing %s data qubits...", first_coupler)
         coupler_data_indices_local = self.system.coupler_patches[first_coupler].data_indices
         coupler_data_indices = [
             self.system.local_to_global_map[first_coupler][q]
@@ -229,7 +239,7 @@ class CNOTLSExperiment:
         self.builder.initialize(init_dict=coupler_init_dict_1, n=num_qubits)
         
         # Syndrome extraction after first coupler activation
-        print(f"Building {self.rounds} rounds of syndrome extraction (after the first coupler activation)...")
+        _log.debug("Building %s rounds of syndrome extraction (after the first coupler activation)...", self.rounds)
         se_block = self.extraction_block_class(self.system)
         self.builder.apply_syndrome_extraction(
             circuit_chunk=se_block.circuit,
@@ -238,20 +248,20 @@ class CNOTLSExperiment:
         
         # 9. Second logical measurement (XX or ZZ depending on initial state of ancilla patch)
         # ----------------------------------------------------------------------
-        print(f"Deactivating {first_coupler} coupler...")
+        _log.debug("Deactivating %s coupler...", first_coupler)
         self.builder.deactivate_coupler(first_coupler)
 
         # Measure first coupler data qubits immediately at deactivation.
         # If left until final readout, these qubits sit idle through the entire
         # second-coupler SE phase — the extra idle time corrupts the detector chain.
-        print(f"Measuring {first_coupler} data qubits immediately at deactivation...")
+        _log.debug("Measuring %s data qubits immediately at deactivation...", first_coupler)
         self.builder.apply_data_readout(final_measurements=coupler_init_dict_1)
 
-        print(f"Activating {self.interaction_types[1]} coupler for {self.interaction_types[1]} measurement...")
+        _log.debug("Activating %s coupler for %s measurement...", self.interaction_types[1], self.interaction_types[1])
         self.builder.activate_coupler(second_coupler)
 
         # Initialize second coupler data qubits in X basis (for XX measurement)
-        print(f"Initializing {second_coupler} data qubits...")
+        _log.debug("Initializing %s data qubits...", second_coupler)
         coupler_data_indices_local = self.system.coupler_patches[second_coupler].data_indices
         coupler_data_indices = [
             self.system.local_to_global_map[second_coupler][q]
@@ -265,7 +275,7 @@ class CNOTLSExperiment:
         self.builder.initialize(init_dict=coupler_init_dict_2, n=num_qubits)
         
         # Syndrome extraction after second coupler activation
-        print(f"Building {self.rounds} rounds of syndrome extraction (after the second coupler activation)...")
+        _log.debug("Building %s rounds of syndrome extraction (after the second coupler activation)...", self.rounds)
         se_block = self.extraction_block_class(self.system)
         self.builder.apply_syndrome_extraction(
             circuit_chunk=se_block.circuit,
@@ -274,7 +284,7 @@ class CNOTLSExperiment:
         
         # 10. Final readout
         # ----------------------------------------------------------------------
-        print("Measuring data qubits...")
+        _log.debug("Measuring data qubits...")
         # Measure code patch qubits in the specified basis
         measure_dict = {}
         for q in self.system.data_indices:
@@ -296,7 +306,7 @@ class CNOTLSExperiment:
         # 11. Noise injection
         # ----------------------------------------------------------------------
         if self.noise_params is not None:
-            print("Injecting noise...")
+            _log.debug("Injecting noise...")
             noisy_circuit = self.builder.build_noisy_circuit(
                 noise_params=self.noise_params,
                 noise_model=self.noise_model

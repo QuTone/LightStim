@@ -25,7 +25,13 @@ def _compile_sampler(
     *,
     backend: str,
     seed: int,
+    stream_offset: int | None = None,
 ):
+    if stream_offset is not None or backend == "clifft":
+        # Workers and Clifft batches consume adjacent seeds. Mix the run seed
+        # before reserving those ranges so adjacent runs do not reuse samples.
+        start = int(np.random.SeedSequence(seed).generate_state(1, dtype=np.uint64)[0])
+        seed = (start + (stream_offset or 0)) % 2**64
     if backend == "stim":
         sampler = circuit.compile_detector_sampler(seed=seed)
         yield partial(sampler.sample, bit_packed=False, separate_observables=True)

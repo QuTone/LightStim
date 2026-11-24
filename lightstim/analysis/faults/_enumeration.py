@@ -124,10 +124,13 @@ class FaultEnumerator:
         detector_reference: Sequence[bool] | None = None,
         observable_reference: Sequence[bool] | None = None,
         loss: BranchLoss | None = None,
+        observable_failure_mode: Literal["any", "parity"] = "any",
         limits: QuantumLimits | None = None,
     ):
         if backend not in ("auto", "clifford", "born"):
             raise ValueError("backend must be 'auto', 'clifford', or 'born'")
+        if observable_failure_mode not in ("any", "parity"):
+            raise ValueError("observable_failure_mode must be 'any' or 'parity'")
         limits = limits or QuantumLimits()
         flat = parse_quantum_circuit(circuit, max_instructions=limits.max_instructions, max_targets=limits.max_work)
         if flat.num_observables > limits.max_work:
@@ -175,6 +178,7 @@ class FaultEnumerator:
             raw_observables=post_select_observable_indices,
             corrected_observables=post_select_corrected_observable_indices,
             targets=target_observable_indices, loss=loss,
+            score_parity=observable_failure_mode == "parity",
         )
 
     def _clifford_response(self, signature: int) -> FaultResponse:

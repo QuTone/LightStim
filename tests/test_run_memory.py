@@ -212,6 +212,19 @@ def test_build_circuit_rotated_defect_is_pymatching_compatible():
     assert len(circuit.shortest_graphlike_error()) == 2
 
 
+def test_defect_memory_reports_only_the_complete_experiment_rate(tmp_path):
+    output = tmp_path / "defect.csv"
+    subprocess.run([str(PYTHON), str(RUNNER), "--codes", "rotated_sc_defect",
+                    "--distances", "3", "--rounds", "1", "--p-values", "0", "--basis", "Z",
+                    "--max-shots", "4", "--num-workers", "1", "--output", str(output)],
+                   check=True)
+    row, = pd.read_csv(output).to_dict("records")
+    assert row["shots"] == row["accepted"] == 4
+    assert row["block_failure_probability"] == 0
+    assert pd.isna(row["logical_failure_rate_per_round"])
+    assert pd.isna(row["logical_failure_rate_per_round_se"])
+
+
 @pytest.mark.parametrize("noise_model", ["circuit_level", "phenomenological", "code_capacity"])
 def test_build_circuit_noise_models(noise_model):
     circuit, *_ = build_circuit("rotated_sc", 3, p=1e-2, noise_model=noise_model)
@@ -622,12 +635,14 @@ def test_cli_shyps_defaults_and_decoder_parameter_checkpoint(tmp_path):
     assert set(rows.basis) == {"X", "Z"}
     assert (rows.rounds == 4).all()
     assert (rows.distance == 4).all()
-    assert (rows.decoder_name == "cpu_bposd").all()
+    assert (rows.decoder_name == "bposd").all()
+    assert (rows.backend == "cpu").all()
     assert (rows.detector_basis == "all").all()
     assert (rows.block_class == "SHYPSCodeExtractionBlock").all()
     assert (rows.shots == 16).all()
     assert (rows.k == 9).all()
     assert {json.loads(s)["ms_scaling_factor"] for s in rows.decoder_params} == {0.5, 0.75}
+    assert set(rows.ms_scaling_factor) == {0.5, 0.75}
 
 
 @pytest.mark.parametrize("params", ['[]', 'null', '{bad}', '{"x":NaN}'])
@@ -677,6 +692,43 @@ def test_legacy_checkpoint_keeps_uniform_noise_defaults(tmp_path):
     assert _task_key(row) in _load_done_keys(out)
     assert _task_key({**row, "p_idle": 0}) not in _load_done_keys(out)
     assert _task_key({**row, "detector_basis": "Z"}) not in _load_done_keys(out)
+
+
+def test_historical_gpu_checkpoint_requires_recorded_bp_tuning(tmp_path):
+    import json
+    from run_memory import _load_done_keys
+
+    old = dict(code="bb_72_12_6", distance=6, p=.001, basis="Z", rounds=6,
+               noise_model="circuit_level", decoder_name="gpu_bposd",
+               osd_order=10, max_iterations=10000)
+    preset = _decoder_config("bposd", 10, 10000, backend="gpu")
+    new = {**old, "decoder_name": "bposd", "backend": "gpu",
+           "decoder_params": json.dumps(preset.params, sort_keys=True)}
+    path = tmp_path / "gpu.csv"
+    pd.DataFrame([old]).to_csv(path, index=False)
+    assert _task_key(new) in _load_done_keys(path)
+    del old["max_iterations"]
+    pd.DataFrame([old]).to_csv(path, index=False)
+    assert _task_key(new) not in _load_done_keys(path)
+
+
+def test_cli_resumes_historical_memory_csv(tmp_path):
+    out = tmp_path / "memory.csv"
+    # Header from the original rotated_sc_pymatching benchmark.
+    out.write_text(
+        "code,distance,p,basis,rounds,noise_model,decoder_name,shots,errors,"
+        "logical_error_rate,seconds,n_data,n_total,k,lab_note\n"
+        "rotated_sc,3,0.001,Z,3,circuit_level,pymatching,100,0,0,1,9,17,1,keep me\n"
+    )
+    args = ["--codes", "rotated_sc", "--distances", "3", "--p-values", ".001",
+            "--max-shots", "1", "--max-errors", "1", "--num-workers", "1", "--batch-size", "1"]
+    result = _run_cli(args, out)
+    assert result.returncode == 0, result.stderr
+    assert "0 to run" in result.stdout
+    assert pd.read_csv(out).lab_note.tolist() == ["keep me"]
+    result = _run_cli(args + ["--seed", "7"], out)
+    assert result.returncode == 0, result.stderr
+    assert pd.read_csv(out).shots.tolist() == [100, 1]
 
 
 def test_plot_keeps_idle_overrides_separate_across_p():
@@ -765,7 +817,7 @@ def test_cli_cpu_bposd_surface(tmp_path):
                   "--max-shots", "300", "--max-errors", "3"], out)
     assert r.returncode == 0, r.stderr
     df = pd.read_csv(out)
-    assert df["decoder_name"].iloc[0] == "cpu_bposd"
+    assert (df["decoder_name"].iloc[0], df["backend"].iloc[0]) == ("bposd", "cpu")
 
 
 def test_cli_mle_ilp_surface(tmp_path):
@@ -805,7 +857,7 @@ def test_cli_cpu_bposd_bb(tmp_path):
                   "--max-shots", "300", "--max-errors", "3"], out, timeout=300)
     assert r.returncode == 0, r.stderr
     df = pd.read_csv(out)
-    assert df["decoder_name"].iloc[0] == "cpu_bposd"
+    assert (df["decoder_name"].iloc[0], df["backend"].iloc[0]) == ("bposd", "cpu")
 
 
 @pytest.mark.slow
@@ -817,6 +869,8 @@ def test_cli_gpu_bposd_bb(tmp_path):
                   "--decoder", "gpu_bposd",
                   "--max-shots", "300", "--max-errors", "3"], out, timeout=300)
     assert r.returncode == 0, r.stderr
+    row = pd.read_csv(out).iloc[0]
+    assert (row.decoder_name, row.backend) == ("bposd", "gpu")
 
 
 def test_cli_multiple_codes_and_p_values(tmp_path):

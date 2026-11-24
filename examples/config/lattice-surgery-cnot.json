@@ -1,0 +1,121 @@
+{
+  "schema_version": "lightstim-config/v1",
+  "protocol_id": "lattice-surgery-cnot",
+  "executable": true,
+  "implementation": {
+    "entrypoint": "lightstim.protocols.cnot_ls.CNOTLSExperiment",
+    "runner": "benchmarks/logical_ops/run_logical_ops.py"
+  },
+  "parameters": {
+    "distance": 3,
+    "rounds": 2,
+    "control_init": "X",
+    "target_init": "X",
+    "control_meas": "X",
+    "target_meas": "X",
+    "p": 0.001
+  },
+  "system": {
+    "patches": [
+      {
+        "id": "ancilla",
+        "code_family": "surface",
+        "code": "unrotated_sc",
+        "params": { "distance": { "$param": "distance" } },
+        "offset": [0, 0],
+        "transform": [{ "rotate_deg": 180 }],
+        "syndrome_extraction": "default"
+      },
+      {
+        "id": "control",
+        "code_family": "surface",
+        "code": "unrotated_sc",
+        "params": { "distance": { "$param": "distance" } },
+        "offset": [0, { "$param": "distance", "times": 2 }],
+        "transform": [{ "transpose": true }, { "rotate_deg": 90 }],
+        "syndrome_extraction": "default"
+      },
+      {
+        "id": "target",
+        "code_family": "surface",
+        "code": "unrotated_sc",
+        "params": { "distance": { "$param": "distance" } },
+        "offset": [{ "$param": "distance", "times": 2 }, 0],
+        "syndrome_extraction": "default"
+      }
+    ],
+    "couplers": [
+      { "id": "coupler_ca", "between": ["control", "ancilla"], "interaction": "ZZ" },
+      { "id": "coupler_ta", "between": ["ancilla", "target"], "interaction": "XX" }
+    ]
+  },
+  "operations": [
+    {
+      "op": "initialize",
+      "targets": ["control", "target", "ancilla"],
+      "params": {
+        "basis": {
+          "control": { "$param": "control_init" },
+          "target": { "$param": "target_init" },
+          "ancilla": "X"
+        }
+      }
+    },
+    { "op": "syndrome_extraction", "targets": ["@active"], "params": { "rounds": { "$param": "rounds" } } },
+    { "op": "activate_coupler", "targets": ["coupler_ca"] },
+    { "op": "initialize", "targets": ["coupler_ca"], "params": { "basis": "X" } },
+    { "op": "syndrome_extraction", "targets": ["@active"], "params": { "rounds": { "$param": "rounds" } } },
+    { "op": "deactivate_coupler", "targets": ["coupler_ca"] },
+    { "op": "data_readout", "targets": ["coupler_ca"], "params": { "basis": "X" } },
+    { "op": "activate_coupler", "targets": ["coupler_ta"] },
+    { "op": "initialize", "targets": ["coupler_ta"], "params": { "basis": "Z" } },
+    { "op": "syndrome_extraction", "targets": ["@active"], "params": { "rounds": { "$param": "rounds" } } },
+    {
+      "op": "data_readout",
+      "targets": ["control", "target", "ancilla", "coupler_ta"],
+      "params": {
+        "basis": {
+          "control": { "$param": "control_meas" },
+          "target": { "$param": "target_meas" },
+          "ancilla": "Z",
+          "coupler_ta": "Z"
+        }
+      }
+    }
+  ],
+  "noise": {
+    "model": "circuit_level",
+    "p": { "$param": "p" },
+    "overrides": { "p_1q": null, "p_2q": null, "p_meas": null, "p_reset": null, "p_idle": null },
+    "custom_params": {}
+  },
+  "decoder": {
+    "name": "pymatching",
+    "backend": "cpu",
+    "params": {},
+    "on_decode_failure": "error"
+  },
+  "simulation": {
+    "mode": "decode",
+    "observable_failure_mode": "any",
+    "max_shots": 1000000000,
+    "max_errors": 100,
+    "seed": 0,
+    "batch_size": 1000,
+    "num_workers": 8
+  },
+  "sweep": {
+    "axes": {
+      "distance": [3, 5, 7],
+      "p": [0.0005, 0.001, 0.002, 0.005, 0.01]
+    },
+    "zip": [
+      {
+        "control_init": ["Z", "Z", "X", "X", "X"],
+        "target_init": ["Z", "X", "Z", "Z", "X"],
+        "control_meas": ["Z", "Z", "X", "Z", "X"],
+        "target_meas": ["Z", "X", "X", "Z", "X"]
+      }
+    ]
+  }
+}

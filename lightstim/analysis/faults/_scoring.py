@@ -43,7 +43,7 @@ class BranchScorer:
         decoder_config: DecoderConfig | None, decoder_model: stim.DetectorErrorModel | None,
         detectors: Sequence[int], raw_observables: Sequence[int] | None,
         corrected_observables: Sequence[int] | None, targets: Sequence[int] | None,
-        loss: BranchLoss | None,
+        loss: BranchLoss | None, score_parity: bool,
     ):
         nd, no = circuit.num_detectors, circuit.num_observables
         self.detector_mask = bit_mask(indices(detectors, nd, "post_select_detector_indices"))
@@ -52,6 +52,7 @@ class BranchScorer:
         self.targets = range(no) if targets is None else indices(targets, no, "target_observable_indices")
         self.target_mask = (1 << no) - 1 if targets is None else bit_mask(self.targets)
         self.loss = loss
+        self.score_parity = score_parity
         self.compiled = None
         self.failure_policy = "ignore"
         self.predictions: dict[int, tuple[int, bool]] = {}
@@ -105,7 +106,8 @@ class BranchScorer:
         if corrected & self.corrected_mask:
             return False, 0.
         if self.loss is None:
-            return True, float(bool(corrected & self.target_mask))
+            residual = corrected & self.target_mask
+            return True, float(residual.bit_count() % 2 if self.score_parity else bool(residual))
         bits = tuple(bool(corrected & (1 << i)) for i in self.targets)
         value = float(self.loss(bits, expectations))
         if not math.isfinite(value) or not -1e-12 <= value <= 1 + 1e-12:

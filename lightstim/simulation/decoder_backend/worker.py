@@ -31,6 +31,8 @@ def _decode_worker_cpu(
     allow_gauge_detectors: bool = False,
     *,
     sampler_backend: str = "stim",
+    seed: int = 0,
+    observable_failure_mode: str = "any",
 ) -> None:
     """
     Single worker process: reserve shots -> sample -> post-select -> decode.
@@ -57,13 +59,14 @@ def _decode_worker_cpu(
         ignore_decomposition_failures=allow_gauge_detectors,
     )
     compiled = decoder.compile_decoder_for_dem(dem=dem)
-    seed = os.getpid() + worker_id * 10000
     if sampler_backend == "clifft":
         # ClifftSampler increments its seed per batch. Reserve disjoint ranges.
         max_batches = (max_shots + batch_size - 1) // batch_size
-        seed = worker_id * max_batches
+        stream_offset = worker_id * max_batches
+    else:
+        stream_offset = worker_id
 
-    with _compile_sampler(circuit, backend=sampler_backend, seed=seed) as sample:
+    with _compile_sampler(circuit, backend=sampler_backend, seed=seed, stream_offset=stream_offset) as sample:
         while True:
             with lock:
                 if shots_counter.value >= max_shots or errors_counter.value >= max_errors:
@@ -98,6 +101,7 @@ def _decode_worker_cpu(
                 pred_packed=pred_packed,
                 post_select_corrected_observable_indices=post_select_corrected_observable_indices,
                 target_observable_indices=target_observable_indices,
+                observable_failure_mode=observable_failure_mode,
                 flags=getattr(compiled, "last_flags", None),
                 on_decode_failure=on_decode_failure,
             )

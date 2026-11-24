@@ -1,5 +1,7 @@
 # experiments/CNOT_trans.py
 
+import logging
+
 import stim
 from typing import Type, Literal, Optional, Any, Tuple, Union, Dict
 
@@ -8,6 +10,9 @@ from lightstim.ir.qec_system import QECSystem
 from lightstim.ir.qec_patch import QECPatch
 from lightstim.noise.config import NoiseConfig
 from lightstim.ir.operation import CSSLogicalOpSet
+
+
+_log = logging.getLogger(__name__)
 
 
 class CNOTTransExperiment(QECExperiment):
@@ -79,13 +84,13 @@ class CNOTTransExperiment(QECExperiment):
         """
         # 1. Create patches from code_patch_class and code_params
         # ----------------------------------------------------------------------
-        print("Creating patches...")
+        _log.debug("Creating patches...")
         control_patch_local = self.code_patch_class(**self.code_params_control)
         target_patch_local = self.code_patch_class(**self.code_params_target)
         
         # 2. Create system and add patches
         # ----------------------------------------------------------------------
-        print("Setting up QEC system...")
+        _log.debug("Setting up QEC system...")
         self.system = QECSystem()
         control_patch_global = self.system.add_patch(control_patch_local, name=self.patch_control_name)
         target_patch_global = self.system.add_patch(target_patch_local, name=self.patch_target_name, offset=self.offset_target)
@@ -97,12 +102,12 @@ class CNOTTransExperiment(QECExperiment):
         
         # 4. Write coordinates
         # ----------------------------------------------------------------------
-        print("Writing coordinates...")
+        _log.debug("Writing coordinates...")
         self.builder.write_coordinates()
         
         # 5. Initialize data qubits (basis selectable per patch)
         # ----------------------------------------------------------------------
-        print("Initializing data qubits...")
+        _log.debug("Initializing data qubits...")
         init_dict = {}
         for q in self.system.data_indices:
             owner = self.system.index_to_owner_map[q]
@@ -115,7 +120,7 @@ class CNOTTransExperiment(QECExperiment):
         
         # 6. Syndrome extraction (before transversal CNOT)
         # ----------------------------------------------------------------------
-        print(f"Building {self.rounds_before} rounds of syndrome extraction (before CNOT)...")
+        _log.debug("Building %s rounds of syndrome extraction (before CNOT)...", self.rounds_before)
         se_block = self.extraction_block_class(self.system)
         self.builder.apply_syndrome_extraction(
             circuit_chunk=se_block.circuit,
@@ -124,7 +129,7 @@ class CNOTTransExperiment(QECExperiment):
         
         # 7. Transversal CNOT via LogicalExecutor
         # ----------------------------------------------------------------------
-        print("Applying transversal CNOT gate...")
+        _log.debug("Applying transversal CNOT gate...")
         self.logical_executor.apply_logical_operation(
             op_name="transversal_cnot",
             patches=[control_patch_global, target_patch_global],
@@ -132,7 +137,7 @@ class CNOTTransExperiment(QECExperiment):
         
         # 8. Syndrome extraction (after transversal CNOT)
         # ----------------------------------------------------------------------
-        print(f"Building {self.rounds_after} rounds of syndrome extraction (after CNOT)...")
+        _log.debug("Building %s rounds of syndrome extraction (after CNOT)...", self.rounds_after)
         se_block = self.extraction_block_class(self.system)
         self.builder.apply_syndrome_extraction(
             circuit_chunk=se_block.circuit,
@@ -141,7 +146,7 @@ class CNOTTransExperiment(QECExperiment):
         
         # 9. Final data readout (basis selectable per patch)
         # ----------------------------------------------------------------------
-        print("Measuring data qubits...")
+        _log.debug("Measuring data qubits...")
         measurements = {}
         for q in self.system.data_indices:
             owner = self.system.index_to_owner_map[q]

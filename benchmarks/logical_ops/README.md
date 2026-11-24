@@ -21,12 +21,20 @@ circuit-level noise:
 | `TwoPatchLS_unrotated_ZZ` | Unrotated surface-code joint ZZ measurement | LS_ZZ (1) |
 | `TwoPatchLS_rotated_XX` | Rotated surface-code joint XX measurement | LS_XX (1, rounds=d) |
 | `TwoPatchLS_rotated_ZZ` | Rotated surface-code joint ZZ measurement | LS_ZZ (1, rounds=d) |
-| `memory` | Z-basis memory baseline (rounds=d) | memory_Z (1) |
+| `memory` | X- and Z-basis memory baseline (rounds=d) | memory_X and memory_Z (2) |
 
 All results are written to a single combined CSV with per-task checkpointing —
 safe to interrupt and resume.
 
 ## How to run
+
+Run the three-patch lattice-surgery CNOT example from the repository root with the [shared experiment-config CLI](../../README.md#run-an-experiment-from-json).
+
+```bash
+python benchmarks/logical_ops/run_logical_ops.py --config examples/config/lattice-surgery-cnot.json --quick --output cnot.csv
+```
+
+Use the gate options below to run the built-in benchmark sweeps.
 
 ```bash
 # All gates, default sweep (d=3,5,7; p=5e-4…1e-2):
@@ -41,7 +49,7 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \
 
 # Rotated-code logical S, production grid and historical BP+OSD settings:
 PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \
-    --gate S_rotated --decoder gpu_bposd \
+    --gate S_rotated --decoder bposd --backend gpu \
     --distances 3 5 7 \
     --p-values 5e-4 1e-3 2e-3 3e-3 5e-3 7e-3 1e-2 \
     --max-shots 1000000000 --max-errors 100 \
@@ -68,10 +76,12 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_ops/run_logical_ops.py \
 | `--p-values` | `5e-4 1e-3 2e-3 5e-3 1e-2` | Physical error rates |
 | `--rounds` | `2` | SE rounds for gate benchmarks (memory and rotated two-patch LS use rounds=d) |
 | `--decoder` | `pymatching` for memory and surface-code LS; `bposd` for other gates | Decoder |
-| `--max-shots` | `1e9` | Max shots per task |
+| `--noise-model` | `circuit_level` | Noise model applied to the gate circuit |
+| `--max-shots` | `1000000` | Max shots per task |
 | `--max-errors` | `100` | Stop after this many errors |
-| `--num-workers` | `8` | Parallel workers |
-| `--batch-size` | `1000` | Sampling batch size |
+| `--num-workers` | `4` | Parallel workers |
+| `--seed` | `0` | Sampling seed |
+| `--batch-size` | `10000` | Sampling batch size |
 | `--quick` | off | Fast test mode |
 
 ## How to plot results
@@ -122,7 +132,9 @@ PYTHONPATH=. venv/bin/python paper_artifact/logical_ops/run_all.py
 PYTHONPATH=. venv/bin/python paper_artifact/logical_ops/plot_fig4.py
 ```
 
-## Output CSV schema
+## Output CSV columns
+
+Each row includes the common shot counts, decoder name and backend, and sweep coordinates. Gate-specific columns include the sub-experiment and bases.
 
 ```
 gate, sub_experiment, init_basis, measure_basis, d, rounds, p,
