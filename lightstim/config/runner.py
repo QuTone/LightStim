@@ -72,6 +72,9 @@ def _sample(circuit, point, *, progress=False, progress_interval=30.0):
     policy = sim.get("observable_failure_mode", "any")
     target = _check_indices("target_observable_indices", sim.get("target_observable_indices"),
                             circuit.num_observables)
+    if not circuit.num_observables or target == []:
+        raise ValueError("Measuring a logical error rate requires at least one target observable. "
+                         "Check the initialization and readout bases and target_observable_indices.")
     settings = {k: sim.get(k, getattr(PipelineConfig, k)) for k in
                 ("max_shots", "max_errors", "batch_size", "seed", "num_workers")}
     ps = sim.get("postselection", {})

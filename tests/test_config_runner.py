@@ -59,6 +59,25 @@ def test_cli_overrides_named_noise_axis_and_zipped_parameters(tmp_path, monkeypa
         assert point["simulation"] == spec["simulation"]
 
 
+def test_cnot_without_a_target_observable_cannot_record_a_measured_zero(tmp_path, capsys):
+    output = tmp_path / "cnot.csv"
+    config = ROOT / "examples/config/lattice-surgery-cnot.json"
+    with pytest.raises(SystemExit) as exc:
+        run_cli(["--config", str(config), "--quick", "--param", 'control_meas="X"',
+                 "--param", 'target_meas="X"', "--num-workers", "1", "--output", str(output)])
+    assert exc.value.code == 2
+    assert "at least one target observable" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_empty_target_selection_cannot_record_a_measured_zero():
+    spec = load_config(MEMORY).spec
+    spec["simulation"]["target_observable_indices"] = []
+    circuit = stim.Circuit("M 0\nOBSERVABLE_INCLUDE(0) rec[-1]")
+    with pytest.raises(ValueError, match="at least one target observable"):
+        _sample(circuit, ExperimentConfig(spec).resolve())
+
+
 @pytest.mark.parametrize("num_workers", [1, 3])
 def test_postselection_counts_and_observable_policy(num_workers):
     circ = stim.Circuit("""
