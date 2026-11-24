@@ -16,6 +16,7 @@ LightStim is a modular Quantum Error Correction (QEC) framework built on [Stim](
 ```text
 LightStim/
 ├── lightstim/                  # Main library package
+│   ├── config/                 # Experiment JSON schema, compiler and local runner
 │   ├── ir/                     # Core abstractions (QECPatch, QECSystem, CircuitBuilder, SyndromeTracker)
 │   ├── qec_code/               # Code implementations (surface, toric, BB, color, PQRM, repetition)
 │   ├── noise/                  # Noise config and injectors
@@ -90,6 +91,53 @@ python -m ipykernel install --user --name=lightstim --display-name="LightStim"
 ```
 
 ## Usage examples
+
+### Run an experiment from JSON
+
+An experiment config describes the patches, operations, noise, decoder, and
+sampling settings for a local run. The installed package includes the
+[v1 schema](lightstim/config/schema.json) and the `python -m lightstim.config`
+command. The v1 compiler covers two protocols, with executable examples for
+[rotated surface-code memory](examples/config/rotated-surface-memory.json) and
+[lattice-surgery CNOT](examples/config/lattice-surgery-cnot.json).
+
+This command runs one distance and two physical error rates from the repository root.
+
+```bash
+python -m lightstim.config --config examples/config/rotated-surface-memory.json \
+    --distances 3 --p-values 0.001 0.002 --max-shots 1000 --num-workers 1 --output memory.csv
+```
+
+The source distribution includes both example files. With a wheel installation,
+pass the path to a local copy of the JSON file.
+Explicit CLI flags override the file. The memory example defines `rounds` as
+`{"$param": "distance"}`. Independent axes form a Cartesian product and the
+parameters in each zip group advance together. The loader also accepts
+existing `lightstim-config/v1-draft` files.
+
+```python
+from lightstim.config import compile, expand_sweep, export_benchmarks_json, load_config
+
+config = load_config("examples/config/rotated-surface-memory.json")
+point = next(expand_sweep(config))
+circuit, system = compile(point)
+export_benchmarks_json("memory.csv", config)  # writes benchmarks.json beside the CSV
+```
+
+Each CSV row records a finished sweep point, its resolved parameters, the
+number of shots accepted, and its logical error rate. `config_sha256`
+identifies the compile inputs at that point. `run_config_sha256` identifies
+the effective config including the decoder, simulation settings, and sweep.
+Repeating the command with the same output file skips completed points.
+Use a separate CSV for each configuration you want to export to JSON.
+
+All five repository benchmark runners also accept `--config`. Passing it
+selects the experiment defined in the file. Their protocol-specific CLI
+options remain available for running each benchmark directly. These direct
+runs share the pipeline defaults of 1,000,000 shots, 100 errors, batches of
+10,000, four workers, and seed 0. BP+OSD uses `--decoder bposd` with
+`--backend cpu` or `--backend gpu`. The earlier `cpu_bposd` and `gpu_bposd`
+spellings are deprecated aliases.
 
 ### Build and simulate a memory experiment
 

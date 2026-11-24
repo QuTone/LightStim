@@ -1,0 +1,388 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:lightstim:experiment-config:v1",
+  "title": "LightStim Experiment Config v1",
+  "description": "One file describes a local LightStim experiment. Parameters, system, operations and noise determine the circuit. Decoder, simulation and sweep configure the Monte Carlo run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "protocol_id",
+    "executable",
+    "implementation",
+    "parameters",
+    "system",
+    "operations",
+    "noise",
+    "decoder",
+    "simulation"
+  ],
+  "properties": {
+    "schema_version": { "const": "lightstim-config/v1" },
+    "protocol_id": { "$ref": "#/$defs/slug" },
+    "executable": {
+      "type": "boolean",
+      "description": "Whether the producer has verified circuit-hash parity between the spec interpreter and the reference protocol."
+    },
+    "implementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entrypoint"],
+      "properties": {
+        "entrypoint": {
+          "type": "string",
+          "description": "Python path of the LightStim class or function that currently realises this spec, e.g. lightstim.protocols.memory.MemoryExperiment."
+        },
+        "runner": {
+          "type": "string",
+          "description": "Benchmark runner that sweeps this protocol, relative to the LightStim root."
+        }
+      }
+    },
+
+    "parameters": {
+      "description": "Named experiment knobs. Values elsewhere in the compile section may reference them as {\"$param\": name}; sweep axes are parameter names. A parameter may alias another (e.g. rounds = {\"$param\": \"distance\"}) so it follows that axis in a sweep; aliases must not form cycles. Constraints (ranges, options) live in the protocol definition, not here.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": {
+        "oneOf": [{ "$ref": "#/$defs/scalar" }, { "$ref": "#/$defs/paramRef" }]
+      }
+    },
+
+    "system": {
+      "description": "Spatial layer: the patches and couplers registered on the QECSystem canvas.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["patches"],
+      "properties": {
+        "patches": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/patch" }
+        },
+        "couplers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/coupler" }
+        }
+      }
+    },
+
+    "operations": {
+      "description": "Ordered circuit operations. A terminal data_readout closes targeted active couplers in target order and then tracks the remaining data in the same physical measurement layer.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/operation" }
+    },
+
+    "noise": { "$ref": "#/$defs/noise" },
+    "decoder": { "$ref": "#/$defs/decoder" },
+    "simulation": { "$ref": "#/$defs/simulation" },
+    "sweep": { "$ref": "#/$defs/sweep" }
+  },
+
+  "$defs": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "identifier": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "scalar": { "type": ["number", "string", "boolean"] },
+    "coordinate": { "oneOf": [{ "type": "number" }, { "$ref": "#/$defs/paramRef" }] },
+    "paramRef": {
+      "description": "Reference to a named parameter, optionally as a linear function: value = param * times + plus (e.g. a patch offset of 2d). Deliberately not an expression language.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$param"],
+      "properties": {
+        "$param": { "$ref": "#/$defs/identifier" },
+        "times": { "type": "number" },
+        "plus": { "type": "number" }
+      }
+    },
+    "value": {
+      "description": "A literal or a reference to a named parameter.",
+      "oneOf": [
+        { "$ref": "#/$defs/scalar" },
+        { "$ref": "#/$defs/paramRef" },
+        {
+          "type": "object",
+          "description": "Per-target map, e.g. {\"control\": \"X\", \"ancilla\": \"Z\"}.",
+          "not": { "required": ["$param"] },
+          "additionalProperties": {
+            "oneOf": [{ "$ref": "#/$defs/scalar" }, { "$ref": "#/$defs/paramRef" }]
+          }
+        }
+      ]
+    },
+    "params": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/value" }
+    },
+
+    "patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "code_family", "code", "params", "offset"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "code_family": {
+          "description": "Zoo family slug (families.json).",
+          "$ref": "#/$defs/slug"
+        },
+        "code": {
+          "type": "string",
+          "description": "LightStim code identifier, e.g. rotated_sc, unrotated_sc, color, bb_144_12_12."
+        },
+        "params": { "$ref": "#/$defs/params" },
+        "offset": {
+          "description": "(dx, dy) passed to QECSystem.add_patch.",
+          "type": "array",
+          "prefixItems": [{ "$ref": "#/$defs/coordinate" }, { "$ref": "#/$defs/coordinate" }],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "transform": {
+          "description": "Canvas transforms applied before registration, in order.",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["rotate_deg"],
+                "properties": { "rotate_deg": { "type": "number" } }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["transpose"],
+                "properties": { "transpose": { "const": true } }
+              }
+            ]
+          }
+        },
+        "syndrome_extraction": {
+          "description": "Extraction-circuit choice for this patch, e.g. default, space_multiplexing, coloration.",
+          "type": "string"
+        }
+      }
+    },
+
+    "coupler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "between", "interaction"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "between": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "minItems": 2
+        },
+        "interaction": {
+          "description": "Measured logical Pauli product.",
+          "type": "string",
+          "pattern": "^[XYZ]{2,}$"
+        },
+        "params": { "$ref": "#/$defs/params" }
+      }
+    },
+
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "targets"],
+      "properties": {
+        "op": {
+          "description": "CircuitBuilder atomic operation (LightStim name without the apply_ prefix), or logical_op for a LogicalExecutor named operation.",
+          "enum": [
+            "initialize",
+            "syndrome_extraction",
+            "unitary_block",
+            "activate_coupler",
+            "deactivate_coupler",
+            "mask_stabilizers",
+            "unmask_stabilizers",
+            "mid_data_readout",
+            "data_readout",
+            "logical_op"
+          ]
+        },
+        "targets": {
+          "description": "Patch or coupler ids. \"@active\" means every currently active patch and coupler.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "anyOf": [{ "$ref": "#/$defs/identifier" }, { "const": "@active" }]
+          }
+        },
+        "params": { "$ref": "#/$defs/params" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "op": { "const": "logical_op" } } },
+          "then": {
+            "required": ["params"],
+            "properties": { "params": { "required": ["name"] } }
+          }
+        }
+      ]
+    },
+
+    "noise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "p"],
+      "properties": {
+        "model": {
+          "description": "NoiseInjector.from_<model>.",
+          "enum": [
+            "code_capacity",
+            "phenomenological",
+            "circuit_level",
+            "circuit_level_with_idling",
+            "XZ_biased"
+          ]
+        },
+        "p": {
+          "description": "Base physical error rate; every NoiseConfig rate defaults to it.",
+          "oneOf": [
+            { "type": "number", "minimum": 0, "maximum": 0.5 },
+            { "$ref": "#/$defs/paramRef" }
+          ]
+        },
+        "overrides": {
+          "description": "Fixed NoiseConfig rates that do not follow p (null = follow p).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "p_1q": { "$ref": "#/$defs/rateOrNull" },
+            "p_2q": { "$ref": "#/$defs/rateOrNull" },
+            "p_meas": { "$ref": "#/$defs/rateOrNull" },
+            "p_reset": { "$ref": "#/$defs/rateOrNull" },
+            "p_idle": { "$ref": "#/$defs/rateOrNull" }
+          }
+        },
+        "custom_params": {
+          "description": "NoiseConfig.custom_params, e.g. p_1q_x, p_idle_z for XZ_biased.",
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "rateOrNull": {
+      "oneOf": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "type": "null" }]
+    },
+
+    "decoderStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "description": "Algorithm name, independent of hardware backend.",
+          "enum": [
+            "pymatching",
+            "mwpf",
+            "bposd",
+            "ldpc-bp",
+            "relay-bp",
+            "tesseract",
+            "mle-ilp",
+            "nv-qldpc-decoder",
+            "ionq-beam-search"
+          ]
+        },
+        "backend": { "enum": ["cpu", "gpu", "fpga"], "description": "Defaults to cpu, or gpu for nv-qldpc-decoder." },
+        "params": {
+          "description": "Decoder-specific overrides, e.g. osd_order, max_iterations, bp_method, osd_method, ms_scaling_factor, time_limit.",
+          "type": "object"
+        },
+        "on_decode_failure": { "enum": ["error", "discard", "ignore"], "default": "error" }
+      },
+      "if": { "properties": { "name": { "const": "nv-qldpc-decoder" } } },
+      "then": { "properties": { "backend": { "const": "gpu" } } }
+    },
+    "decoder": {
+      "oneOf": [
+        { "$ref": "#/$defs/decoderStage" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["chain"],
+          "description": "DecoderConfig.chain: stage k+1 re-decodes shots stage k flagged as failed.",
+          "properties": {
+            "chain": {
+              "type": "array",
+              "minItems": 2,
+              "items": { "$ref": "#/$defs/decoderStage" }
+            }
+          }
+        }
+      ]
+    },
+
+    "simulation": {
+      "description": "PipelineConfig subset. Fields marked execution-only do not change the expected LER.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "max_shots", "max_errors"],
+      "properties": {
+        "mode": {
+          "description": "decode: decode every shot. full_postselection: keep only all-zero-detector shots, no decoding. hybrid: postselect the listed detector region, decode the rest.",
+          "enum": ["decode", "full_postselection", "hybrid"]
+        },
+        "postselection": {
+          "description": "Protocol-specific postselection region used by hybrid mode, e.g. injection region or pqrm_only.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "region": { "type": "string" },
+            "detector_indices": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+            "observable_indices": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+          }
+        },
+        "observable_failure_mode": { "enum": ["any", "parity"], "default": "any" },
+        "target_observable_indices": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+          ]
+        },
+        "max_shots": { "type": "integer", "minimum": 1 },
+        "max_errors": { "type": "integer", "minimum": 1 },
+        "seed": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "batch_size": { "type": "integer", "minimum": 1, "description": "execution-only" },
+        "num_workers": { "type": "integer", "minimum": 1, "description": "execution-only" }
+      }
+    },
+
+    "sweep": {
+      "description": "Optional. Without it the file is a single experiment; with it, a benchmark grid. Keys are parameter names. The grid is the Cartesian product of every axis in `axes` and every group in `zip`; parameters inside one zip group advance together (equal lengths), e.g. the (init, measure) basis pairs of a CNOT sub-experiment. A parameter may appear only once across axes and zip groups.",
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [{ "required": ["axes"] }, { "required": ["zip"] }],
+      "properties": {
+        "axes": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/identifier" },
+          "additionalProperties": { "$ref": "#/$defs/axisValues" }
+        },
+        "zip": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "minProperties": 2,
+            "propertyNames": { "$ref": "#/$defs/identifier" },
+            "additionalProperties": { "$ref": "#/$defs/axisValues" }
+          }
+        }
+      }
+    },
+    "axisValues": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scalar" }
+    }
+  }
+}

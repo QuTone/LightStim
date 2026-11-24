@@ -104,7 +104,12 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # repo root → lightstim importable
 
 from lightstim.ir.qec_system import QECSystem
-from lightstim.noise.config import NoiseConfig
+from benchmarks._config import (
+    add_run_options, benchmark_decoder, benchmark_noise, checkpoint_key, checkpoint_rows,
+    validate_run_options,
+)
+from lightstim.config.results import RESULT_COLUMNS, append_result_row, upgrade_csv
+from lightstim.config.runner import run_config_cli, sample_full_postselection
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.protocols.rotated_surface_defect import (
     RotatedSurfaceDefectMemoryExperiment,
@@ -299,52 +304,14 @@ def _decoder_config(
     max_iterations: int = 1000,
     mle_time_limit: float = 0.0,
     on_decode_failure: str = "error",
+    *,
+    backend: str | None = None,
+    ms_scaling_factor: float = 0,
 ) -> DecoderConfig:
-    if name in {"relay-bp", "ldpc-bp", "tesseract"}:
-        return DecoderConfig(name=name, backend="cpu", on_decode_failure=on_decode_failure)
-    if name == "pymatching":
-        return DecoderConfig(
-            name="pymatching", backend="cpu",
-            on_decode_failure=on_decode_failure,
-        )
-    if name == "mwpf":
-        return DecoderConfig(
-            name="mwpf", backend="cpu", params={"cluster_node_limit": 50},
-            on_decode_failure=on_decode_failure,
-        )
-    if name == "cpu_bposd":
-        return DecoderConfig(
-            name="bposd", backend="cpu", params={
-                "max_iterations": max_iterations, "osd_order": osd_order,
-                "bp_method": "min_sum", "ms_scaling_factor": 0,
-                "osd_method": "osd_cs",
-            },
-            on_decode_failure=on_decode_failure,
-        )
-    if name == "gpu_bposd":
-        return DecoderConfig(
-            name="nv-qldpc-decoder", backend="gpu",
-            params={
-                "max_iterations": max_iterations, "osd_order": osd_order,
-                "bp_method": "min_sum", "ms_scaling_factor": 0,
-                "osd_method": "osd_cs", "use_osd": True,
-            },
-            on_decode_failure=on_decode_failure,
-        )
-    if name == "mle-ilp":
-        return DecoderConfig(
-            name="mle-ilp", backend="cpu",
-            params={"time_limit": mle_time_limit},
-            on_decode_failure=on_decode_failure,
-        )
-    if name == "ionq-beam-search":
-        return DecoderConfig(
-            name="ionq-beam-search", backend="cpu",
-            on_decode_failure=on_decode_failure,
-        )
-    raise ValueError(
-        f"Unknown decoder: {name!r}. Choose: pymatching, mwpf, cpu_bposd, "
-        "gpu_bposd, relay-bp, ldpc-bp, tesseract, mle-ilp, ionq-beam-search"
+    return benchmark_decoder(
+        name, backend, osd_order=osd_order, max_iterations=max_iterations,
+        ms_scaling_factor=ms_scaling_factor, mle_time_limit=mle_time_limit,
+        on_decode_failure=on_decode_failure,
     )
 
 
@@ -392,6 +359,7 @@ def build_circuit(
     *,
     p_idle: float | None = None,
     p_1q: float | None = None,
+    noise_custom_params: dict | None = None,
     detector_basis: str = "all",
     h_n: int = 6,
 ):
@@ -410,9 +378,7 @@ def build_circuit(
         if rate is not None and (not np.isfinite(rate) or not 0 <= rate <= 1):
             raise ValueError(f"{name} must be finite and between 0 and 1.")
     code, block_cls = _make_code(code_name, distance, se_circuit, h_n=h_n)
-    noise = NoiseConfig(p_idle=p if p_idle is None else p_idle,
-                        p_1q=p if p_1q is None else p_1q,
-                        p_2q=p, p_meas=p, p_reset=p)
+    noise = benchmark_noise(p, noise_model, noise_custom_params, p_idle=p_idle, p_1q=p_1q)
     r = rounds if rounds is not None else distance
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -468,32 +434,20 @@ def build_circuit(
 
 # ── Checkpointing ─────────────────────────────────────────────────────────────
 
-_RESULT_COLS = frozenset({
-    "shots",
-    "accepted",
-    "rejected",
-    "acceptance",
-    "errors",
-    "logical_error_rate",
-    "seconds",
-    "n_data",
-    "n_total",
-    "k",
-    "layout",
-    "block_class",
-})
-
-_RESULT_COLUMNS = [
+_RESULT_COLUMNS = RESULT_COLUMNS
+_INPUT_FIELDS = {
     "code", "distance", "h_n", "p", "basis", "rounds", "se_circuit", "mode",
     "p_idle", "p_1q", "p_idle_mode", "p_1q_mode", "detector_basis",
-    "noise_model", "decoder_name", "decoder_params", "decoder_time_limit",
-    "on_decode_failure", "layout", "block_class", "shots", "errors",
-    "accepted", "rejected", "acceptance",
-    "logical_error_rate", "seconds", "n_data", "n_total", "k",
-]
+    "noise_model", "noise_custom_params", "decoder_name", "backend", "decoder_params",
+    "decoder_time_limit", "on_decode_failure", "seed", "observable_failure_mode",
+    "p_2q", "p_meas", "p_reset", "config_sha256",
+}
 _RESULT_METADATA_DEFAULTS = {
+    "noise_custom_params": "{}",
     "decoder_params": "{}",
     "h_n": 0,
+    "seed": 0,
+    "observable_failure_mode": "any",
     "mode": "decode",
     "decoder_time_limit": 0.0,
     "on_decode_failure": "error",
@@ -505,77 +459,79 @@ _RESULT_METADATA_DEFAULTS = {
 
 def _ensure_result_schema(path: Path) -> None:
     """Upgrade older benchmark CSVs before checkpointing or appending."""
-    if not path.exists():
-        return
-    df = pd.read_csv(path)
-    unknown = set(df.columns) - set(_RESULT_COLUMNS)
-    if unknown:
-        raise ValueError(
-            f"Cannot migrate {path}: unknown result columns {sorted(unknown)}"
-        )
-    changed = False
-    for column in ("p_idle", "p_1q"):
-        if column not in df.columns:
-            df[column] = df["p"]
-            changed = True
-    for column, default in _RESULT_METADATA_DEFAULTS.items():
-        if column not in df.columns:
-            df[column] = default
-            changed = True
-    if changed or list(df.columns) != _RESULT_COLUMNS:
-        df.reindex(columns=_RESULT_COLUMNS).to_csv(path, index=False)
+    def defaults_for(row):
+        defaults = dict(_RESULT_METADATA_DEFAULTS)
+        if "decoder_params" not in row:
+            name = row.get("decoder_name")
+            if name == "mwpf":
+                params = benchmark_decoder(name).params
+            elif name == "mle-ilp" and row.get("decoder_time_limit"):
+                params = benchmark_decoder(name, mle_time_limit=float(row["decoder_time_limit"])).params
+            elif name in ("cpu_bposd", "gpu_bposd") and row.get("osd_order") and row.get("max_iterations"):
+                # Early BP+OSD CSVs sometimes omitted the iteration limit or
+                # OSD order, even when callers changed them. Only resume a
+                # preset when both adjustable parameters were recorded.
+                params = benchmark_decoder(
+                    "bposd", name.split("_")[0],
+                    osd_order=int(float(row["osd_order"])),
+                    max_iterations=int(float(row["max_iterations"])),
+                    ms_scaling_factor=float(row["ms_scaling_factor"]) if row.get("ms_scaling_factor") else 0,
+                ).params
+            else:
+                params = {}
+            defaults["decoder_params"] = json.dumps(params, sort_keys=True)
+        for rate in ("p_idle", "p_1q"):
+            defaults[rate] = row.get("p")
+            if row.get(rate) and float(row[rate]) != float(row["p"]):
+                defaults[f"{rate}_mode"] = "fixed"
+        return defaults
+
+    upgrade_csv(path, _RESULT_COLUMNS, defaults_for)
 
 
 def _task_key(row: dict) -> tuple:
     """Stable key from input-only columns (used to skip completed tasks)."""
-    row = {**_RESULT_METADATA_DEFAULTS,
-           **{f"{name}_mode": "fixed" if name in row else "sweep" for name in ("p_idle", "p_1q")},
-           "p_idle": row.get("p"),
-           "p_1q": row.get("p"), **row}
-    return tuple(
-        f"{v:.6e}" if isinstance(v, float) else str(v)
-        for k, v in sorted(row.items()) if k not in _RESULT_COLS
-    )
+    row = {k: v for k, v in row.items()
+           if k in _INPUT_FIELDS | {"osd_order", "max_iterations", "ms_scaling_factor"} and pd.notna(v)}
+    defaults = {
+        **_RESULT_METADATA_DEFAULTS, "backend": "cpu", "se_circuit": "default",
+        **dict.fromkeys(("p_idle", "p_1q", "p_2q", "p_meas", "p_reset"), row.get("p")),
+    }
+    for rate in ("p_idle", "p_1q"):
+        if rate in row:
+            defaults[f"{rate}_mode"] = "fixed"
+    name = row.get("decoder_name")
+    if name in ("cpu_bposd", "gpu_bposd"):
+        row["decoder_name"] = "bposd"
+        row["backend"] = "gpu" if name == "gpu_bposd" else "cpu"
+    fields = _INPUT_FIELDS
+    if row.get("decoder_name") in ("bposd", "nv-qldpc-decoder"):
+        # Old runs vary these options. Compare recorded values even when a
+        # CSV predates the full decoder_params JSON column.
+        fields = fields | {"osd_order", "max_iterations", "ms_scaling_factor"}
+        params = json.loads(row.get("decoder_params", "{}"))
+        for key in ("osd_order", "max_iterations", "ms_scaling_factor"):
+            defaults[key] = params.get(key)
+    return checkpoint_key(row, fields, defaults)
 
 
 def _load_done_keys(path: Path) -> set:
-    if not path.exists():
+    if not path.exists() or not path.stat().st_size:
         return set()
     _ensure_result_schema(path)
-    df = pd.read_csv(path)
-    return {_task_key(r) for r in df.to_dict("records")}
+    return {_task_key(r) for r in checkpoint_rows(path)}
 
 
 # ── Main runner ───────────────────────────────────────────────────────────────
 
-def sample_postselected_memory(circuit, *, max_shots, max_errors, batch_size, seed=0):
-    """Full detector postselection, including readout; score any logical flip.
-
-    Count errors only among accepted shots. Stop at the error target after
-    each batch, with a strict cap on total attempted shots. No decoder or
-    logical-outcome filter is applied.
-    """
-    sampler = circuit.compile_detector_sampler(seed=seed)
-    shots = accepted = errors = 0
-    while shots < max_shots and errors < max_errors:
-        dets, obs = sampler.sample(
-            min(batch_size, max_shots - shots), separate_observables=True,
-        )
-        keep = ~dets.any(axis=1)
-        shots += len(keep)
-        accepted += int(keep.sum())
-        errors += int(obs[keep].any(axis=1).sum())
-    return {
-        "shots": shots, "accepted": accepted, "rejected": shots - accepted,
-        "errors": errors, "acceptance": accepted / shots if shots else np.nan,
-        "logical_error_rate": errors / accepted if accepted else np.nan,
-    }
+# Keep the public benchmark helper for existing callers.
+sample_postselected_memory = sample_full_postselection
 
 
 def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
         max_shots: int, max_errors: int,
         num_workers: int, batch_size: int,
-        output_path: Path) -> None:
+        output_path: Path, seed: int = 0) -> None:
     """
     Run all tasks, skipping any already present in output_path (checkpoint resume).
 
@@ -592,7 +548,9 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
              and t.get("mode", "decode") == "decode"
              and decoder_cfg is not None and decoder_cfg.name == "pymatching"
              else "all"
-         ), **t,
+         ), **t, "seed": seed,
+         "decoder_name": decoder_cfg.name if decoder_cfg else "none",
+         "backend": decoder_cfg.backend if decoder_cfg else None,
          "decoder_params": json.dumps(
              decoder_cfg.params if decoder_cfg is not None else {}, sort_keys=True,
          )}
@@ -618,6 +576,7 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
         max_errors=max_errors,
         batch_size=batch_size,
         num_workers=1 if decoder_cfg.backend == "gpu" else num_workers,
+        seed=seed,
         print_progress=True,
         progress_interval_sec=30.0,
     ) if decoder_cfg is not None else None
@@ -645,13 +604,12 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
             p_1q=task["p_1q"],
             detector_basis=task["detector_basis"],
             h_n=task["h_n"],
+            noise_custom_params=json.loads(task["noise_custom_params"]),
         )
         if task["mode"] == "full_postselection":
-            # Validate determinism without forcing graphlike decomposition.
-            circuit.detector_error_model(decompose_errors=False)
             result = sample_postselected_memory(
                 circuit, max_shots=max_shots, max_errors=max_errors,
-                batch_size=batch_size,
+                batch_size=batch_size, seed=seed, num_workers=num_workers,
             )
         else:
             if task["code"] in _SHYPS_CONFIGS and decoder_cfg.name == "pymatching":
@@ -672,6 +630,24 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
                 "logical_error_rate": stats.logical_error_rate if accepted else np.nan,
             }
         elapsed = time.perf_counter() - t0
+        block_failure_probability = result["logical_error_rate"]
+        block_failure_se = (
+            block_failure_probability * (1 - block_failure_probability)
+            / result["accepted"]
+        ) ** 0.5 if result["accepted"] else np.nan
+        rounds = task["rounds"]
+        if block_failure_probability >= 1:
+            logical_failure_rate_per_round = 1.0
+            logical_failure_rate_per_round_se = 0.0
+        else:
+            logical_failure_rate_per_round = (
+                1 - (1 - block_failure_probability) ** (1 / rounds)
+            )
+            logical_failure_rate_per_round_se = (
+                (1 / rounds)
+                * (1 - block_failure_probability) ** (1 / rounds - 1)
+                * block_failure_se
+            )
 
         if task["code"] == "color":
             color_spec = _color_se_spec(task["se_circuit"])
@@ -704,14 +680,19 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
             **result,
             "layout":               layout,
             "block_class":          block_class,
+            "block_failure_probability": block_failure_probability,
+            "block_failure_se": block_failure_se,
+            "logical_failure_rate_per_round": logical_failure_rate_per_round,
+            "logical_failure_rate_per_round_se": logical_failure_rate_per_round_se,
             "seconds":             elapsed,
             "n_data":              n_data,
             "n_total":             n_total,
             "k":                   k,
         }
-        pd.DataFrame([row], columns=_RESULT_COLUMNS).to_csv(
-            output_path, mode="a", header=not output_path.exists(), index=False,
-        )
+        coordinates = {key: row[key] for key in ("code", "distance", "p", "basis", "se_circuit")}
+        if row["code"] == "h_code":
+            coordinates["h_n"] = row["h_n"]
+        append_result_row(output_path, {**row, "sweep_coordinates": coordinates})
         print(f"  LER={result['logical_error_rate']:.2e} | "
               f"errors={result['errors']} | accepted={result['accepted']:,}/"
               f"{result['shots']:,} | {elapsed:.1f}s\n")
@@ -762,11 +743,11 @@ def main():
     ap.add_argument(
         "--decoder",
         choices=[
-            "pymatching", "mwpf", "cpu_bposd", "gpu_bposd", "mle-ilp",
+            "pymatching", "mwpf", "bposd", "nv-qldpc-decoder", "cpu_bposd", "gpu_bposd", "mle-ilp",
             "ionq-beam-search", "relay-bp", "ldpc-bp", "tesseract",
         ],
         default=None,
-        help="Decoder for decode mode (default: cpu_bposd if SHYPS is selected, otherwise pymatching)",
+        help="Decoder for decode mode (default: bposd on CPU if SHYPS is selected, otherwise pymatching)",
     )
     ap.add_argument("--decoder-params", default="{}",
                     help="JSON object of decoder-specific parameter overrides; recorded in the CSV/checkpoint key")
@@ -774,34 +755,24 @@ def main():
                     help="OSD order for cpu_bposd/gpu_bposd decoders (default: 10)")
     ap.add_argument("--max-iterations", type=int, default=1000,
                     help="BP iteration limit for cpu_bposd/gpu_bposd decoders (default: 1000)")
-    ap.add_argument(
-        "--mle-time-limit", type=float, default=0.0,
-        help="Soft seconds/shot limit for mle-ilp; 0 is exact/unlimited (default: 0)",
-    )
-    ap.add_argument(
-        "--on-decode-failure", choices=["error", "discard", "ignore"],
-        default="error",
-        help="Policy for decoder timeouts/failures (default: error)",
-    )
-    ap.add_argument("--max-shots",   type=int, default=1_000_000)
-    ap.add_argument("--max-errors",  type=int, default=200)
-    ap.add_argument("--num-workers", type=int, default=8)
-    ap.add_argument("--batch-size",  type=int, default=1_000)
-    ap.add_argument("--noise-model",
-                    choices=["circuit_level", "phenomenological", "code_capacity"],
-                    default="circuit_level",
-                    help="Noise model (default: circuit_level)")
+    ap.add_argument("--ms-scaling-factor", type=float, default=0,
+                    help="Min-sum scaling factor for BP+OSD (default: 0, "
+                         "meaning dynamic iteration-dependent scaling)")
     ap.add_argument("--output", default=None,
                     help="Output CSV path (auto-computed as results/<codes>_<decoder>.csv if omitted)")
     ap.add_argument("--quick", action="store_true",
                     help="Smoke test: d=3,5 and 2 p-values (1e-3, 5e-3)")
+    add_run_options(ap)
+    if run_config_cli(ap):
+        return
     args = ap.parse_args()
+    validate_run_options(ap, args)
 
     if args.mode == "full_postselection" and args.decoder is not None:
         ap.error("--decoder applies only to --mode decode")
     if args.decoder is None:
         args.decoder = (
-            "cpu_bposd" if set(args.codes) & set(_SHYPS_CONFIGS) else "pymatching"
+            "bposd" if set(args.codes) & set(_SHYPS_CONFIGS) else "pymatching"
         ) if args.mode == "decode" else "none"
     try:
         decoder_params = json.loads(args.decoder_params)
@@ -821,10 +792,6 @@ def main():
         ap.error(f"Unknown code(s): {unknown_codes}. Available: {ALL_CODES}")
     if not 1 <= args.num_workers <= 48:
         ap.error("--num-workers must be between 1 and 48")
-    if args.batch_size < 1:
-        ap.error("--batch-size must be positive")
-    if args.max_shots < 1 or args.max_errors < 1:
-        ap.error("--max-shots and --max-errors must be positive")
     if args.rounds is not None and args.rounds < 1:
         ap.error("--rounds must be positive")
     if any(n < 6 or n % 2 for n in args.h_n):
@@ -834,10 +801,8 @@ def main():
         if any(rate is not None and (not np.isfinite(rate) or not 0 <= rate <= 1)
                for rate in rates):
             ap.error(f"{name} must be finite and between 0 and 1")
-    if not np.isfinite(args.mle_time_limit) or args.mle_time_limit < 0:
-        ap.error("--mle-time-limit must be finite and non-negative")
-    if args.mle_time_limit > 0 and args.decoder != "mle-ilp":
-        ap.error("--mle-time-limit is only valid with --decoder mle-ilp")
+    if args.ms_scaling_factor < 0:
+        ap.error("--ms-scaling-factor must be non-negative")
 
     if args.quick:
         args.codes = args.codes if args.codes else ["rotated_sc"]
@@ -863,8 +828,9 @@ def main():
         ap.error("middle_out supports only X/Z memory experiments")
 
     decoder_cfg = _decoder_config(
-        args.decoder, args.osd_order, args.max_iterations,
-        args.mle_time_limit, args.on_decode_failure,
+        name=args.decoder, osd_order=args.osd_order, backend=args.backend,
+        max_iterations=args.max_iterations, ms_scaling_factor=args.ms_scaling_factor,
+        mle_time_limit=args.mle_time_limit, on_decode_failure=args.on_decode_failure,
     ) if args.mode == "decode" else None
     if decoder_cfg is not None:
         decoder_cfg.params.update(decoder_params)
@@ -922,12 +888,25 @@ def main():
                             "rounds": r,
                             "se_circuit": se_circuit,
                             "noise_model": args.noise_model,
-                            "decoder_name": args.decoder,
+                            "decoder_name": decoder_cfg.name if decoder_cfg else "none",
+                            "backend": decoder_cfg.backend if decoder_cfg else None,
+                            "noise_custom_params": json.dumps(args.noise_custom_params, sort_keys=True),
                             "decoder_time_limit": (
                                 args.mle_time_limit
                                 if args.decoder == "mle-ilp" else 0.0
                             ),
                             "on_decode_failure": args.on_decode_failure,
+                            "osd_order": (decoder_cfg.params.get("osd_order", args.osd_order)
+                                          if decoder_cfg is not None else args.osd_order),
+                            "max_iterations": (decoder_cfg.params.get("max_iterations", args.max_iterations)
+                                               if decoder_cfg is not None else args.max_iterations),
+                            "ms_scaling_factor": (decoder_cfg.params.get("ms_scaling_factor", args.ms_scaling_factor)
+                                                  if decoder_cfg is not None else args.ms_scaling_factor),
+                            "seed": args.seed,
+                            "observable_failure_mode": "any",
+                            "p_2q": p,
+                            "p_meas": p,
+                            "p_reset": p,
                         })
 
     # Default output path
@@ -952,14 +931,14 @@ def main():
     if "h_code" in args.codes:
         print(f"H-code:      n={args.h_n} | SE={', '.join(args.h_se_circuits)}")
     print(f"batch_size:  {args.batch_size}")
-    effective_workers = 1 if args.decoder in {"gpu_bposd", "none"} else args.num_workers
+    effective_workers = 1 if decoder_cfg is not None and decoder_cfg.backend == "gpu" else args.num_workers
     print(f"workers:     {effective_workers}")
     print(f"max_shots:   {args.max_shots:.0e} | max_errors={args.max_errors}\n")
 
     run(tasks, decoder_cfg,
         args.max_shots, args.max_errors,
         args.num_workers, args.batch_size,
-        output)
+        output, args.seed)
 
 
 if __name__ == "__main__":

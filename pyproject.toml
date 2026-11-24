@@ -21,6 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "jsonschema>=4.18",
     "numpy>=1.20.0",
     "stim>=1.15.0",
     "sinter>=1.15.0",
@@ -67,6 +68,9 @@ license-files = ["LICENSE", "third_party/stim/LICENSE"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["lightstim*"]
+
+[tool.setuptools.package-data]
+"lightstim.config" = ["schema.json"]
 
 [tool.pytest.ini_options]
 markers = [

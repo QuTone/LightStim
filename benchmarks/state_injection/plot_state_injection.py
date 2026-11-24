@@ -47,10 +47,12 @@ _DEFAULT_OUTPUT = SCRIPT_DIR / "results" / "state_injection_plot.png"
 STATE_COLORS  = {"Z": CODES["rotated_sc"], "X": PALETTE[0], "Y": PALETTE[1]}
 STATE_MARKERS = {"Z": "o", "X": "s", "Y": "^"}
 
-# full_postselection=RUST, full_qec=TEAL, hybrid=VIOLET
-MODE_COLORS  = {"full_postselection": PALETTE[0], "full_qec": PALETTE[1], "hybrid": PALETTE[2]}
-MODE_MARKERS = {"full_postselection": "o", "full_qec": "^", "hybrid": "s"}
-MODE_LABELS  = {"full_postselection": "Full PS", "full_qec": "Full QEC", "hybrid": "Hybrid"}
+# The legacy full_postselection mode tags injection detectors only.
+MODE_COLORS  = {"full_postselection": PALETTE[0], "full_qec": PALETTE[1], "hybrid": PALETTE[2],
+                "all_detectors": PALETTE[3]}
+MODE_MARKERS = {"full_postselection": "o", "full_qec": "^", "hybrid": "s", "all_detectors": "D"}
+MODE_LABELS  = {"full_postselection": "Injection-region PS", "full_qec": "Decode",
+                "hybrid": "Logical-strip PS", "all_detectors": "All-detector PS"}
 
 
 def _plot_panel_states(ax1, df, distance, protocol, ps_mode):
@@ -96,7 +98,7 @@ def _plot_panel_modes(ax1, df, distance, state, protocol):
     ]
     ax2 = ax1.twinx()
     plotted = []
-    for mode in ["full_postselection", "full_qec", "hybrid"]:
+    for mode in MODE_LABELS:
         mdf = sub[sub["post_select_mode"] == mode].sort_values("p")
         if mdf.empty:
             continue
@@ -138,7 +140,7 @@ def main():
     )
     ap.add_argument(
         "--ps-mode", default="full_postselection",
-        choices=["full_postselection", "full_qec", "hybrid"],
+        choices=list(MODE_LABELS),
         help="PS mode to show when --mode=states (default: full_postselection)",
     )
     ap.add_argument(
@@ -173,7 +175,7 @@ def main():
         if args.mode == "states":
             _plot_panel_states(ax1, df, d, args.inject_protocol, args.ps_mode)
             title = f"{args.inject_protocol.capitalize()} Injection, $d={d}$"
-            subtitle = args.ps_mode.replace("_", " ").title()
+            subtitle = MODE_LABELS[args.ps_mode]
         else:
             _plot_panel_modes(ax1, df, d, args.inject_state, args.inject_protocol)
             title = f"$|{args.inject_state}\\rangle$ {args.inject_protocol.capitalize()}, $d={d}$"

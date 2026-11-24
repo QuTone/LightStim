@@ -45,6 +45,8 @@ _GROUP_COLUMNS = [
     "rounds",
     "noise_model",
     "decoder_name",
+    "backend",
+    "noise_custom_params",
     "decoder_params",
     "detector_basis",
     "p_idle_setting",
@@ -61,6 +63,8 @@ def _with_group_defaults(df: pd.DataFrame) -> pd.DataFrame:
         "rounds": -1,
         "noise_model": "circuit_level",
         "decoder_name": "unknown",
+        "backend": "cpu",
+        "noise_custom_params": "{}",
         "decoder_params": "{}",
         "detector_basis": "all",
         "h_n": 0,
@@ -71,6 +75,10 @@ def _with_group_defaults(df: pd.DataFrame) -> pd.DataFrame:
             df[column] = default
         else:
             df[column] = df[column].fillna(default)
+    for alias, backend in (("cpu_bposd", "cpu"), ("gpu_bposd", "gpu")):
+        legacy = df["decoder_name"] == alias
+        df.loc[legacy, "backend"] = backend
+        df.loc[legacy, "decoder_name"] = "bposd"
     for column in ("p_idle", "p_1q"):
         rates = df[column].fillna(df["p"]) if column in df else df["p"]
         modes = df[column + "_mode"].fillna("sweep") if column + "_mode" in df else ["sweep"] * len(df)
@@ -85,7 +93,7 @@ def plot_ler_vs_p(df: pd.DataFrame, ax: plt.Axes, title: str = "") -> None:
     df = _with_group_defaults(df)
     groups = df.groupby(_GROUP_COLUMNS, sort=True, dropna=False)
     for i, (group, sub) in enumerate(groups):
-        code, se_circuit, basis, d, h_n, mode, rounds, noise_model, decoder, decoder_params, detectors, idle, one_q = group
+        code, se_circuit, basis, d, h_n, mode, rounds, noise_model, decoder, backend, noise_params, decoder_params, detectors, idle, one_q = group
         sub = sub.sort_values("p")
         color  = PALETTE_DISTANCE.get(int(d), f"C{i % 10}")
         marker = _MARKERS[i % len(_MARKERS)]
@@ -97,6 +105,10 @@ def plot_ler_vs_p(df: pd.DataFrame, ax: plt.Axes, title: str = "") -> None:
             label += f" r={rounds}"
         if df["noise_model"].nunique() > 1:
             label += f" {noise_model}"
+        if df["backend"].nunique() > 1:
+            label += f" {backend}"
+        if df["noise_custom_params"].nunique() > 1:
+            label += f" noise params={noise_params}"
         if df["decoder_params"].nunique() > 1:
             label += f" params={decoder_params}"
         for column, value, name in (("detector_basis", detectors, "detectors"),
@@ -155,7 +167,11 @@ def main():
     if args.basis:
         df = df[df["basis"].isin(args.basis)]
     if args.decoders:
-        df = df[df["decoder_name"].isin(args.decoders)]
+        matches = df["decoder_name"].isin(args.decoders)
+        for backend in ("cpu", "gpu"):
+            if f"{backend}_bposd" in args.decoders:
+                matches |= (df["decoder_name"] == "bposd") & (df["backend"] == backend)
+        df = df[matches]
 
     if df.empty:
         print("No data after filtering — nothing to plot.")

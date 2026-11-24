@@ -1,7 +1,27 @@
 """Configuration dataclasses for the decoder backend pipeline."""
 
+import warnings
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
+
+
+def normalize_decoder(name: str, backend: str | None = None) -> tuple[str, str]:
+    """Separate a CLI decoder name from its backend, translating legacy names."""
+    if name in ("cpu_bposd", "gpu_bposd"):
+        legacy_backend = name.split("_", 1)[0]
+        if backend is not None and backend != legacy_backend:
+            raise ValueError(f"{name!r} conflicts with backend {backend!r}")
+        warnings.warn(
+            f"{name!r} is deprecated. Use --decoder bposd --backend {legacy_backend}.",
+            FutureWarning, stacklevel=2,
+        )
+        return "bposd", legacy_backend
+    if name == "nv-qldpc-decoder":
+        if backend not in (None, "gpu"):
+            raise ValueError(f"{name!r} requires backend 'gpu', got {backend!r}")
+        return name, "gpu"
+    return name, backend or "cpu"
 
 
 @dataclass
@@ -27,6 +47,26 @@ class DecoderConfig:
                 "on_decode_failure must be 'error', 'discard', or 'ignore', "
                 f"got {self.on_decode_failure!r}"
             )
+
+    @classmethod
+    def from_spec(cls, decoder: Mapping[str, Any]) -> "DecoderConfig":
+        """Construct one stage or a fallback chain from an experiment decoder section."""
+        from lightstim.config.loader import _validate
+
+        spec = deepcopy(dict(decoder))
+        stages = spec.get("chain", [spec])
+        if isinstance(stages, list):
+            for stage in stages:
+                if (
+                    isinstance(stage, dict)
+                    and stage.get("name") in ("cpu_bposd", "gpu_bposd", "nv-qldpc-decoder")
+                    and ("backend" not in stage or isinstance(stage["backend"], str))
+                ):
+                    stage["name"], stage["backend"] = normalize_decoder(stage["name"], stage.get("backend"))
+        _validate(spec, "decoder")
+        if "chain" in spec:
+            return cls.chain([cls(**stage) for stage in spec["chain"]])
+        return cls(**spec)
 
     @classmethod
     def chain(cls, configs: Sequence[Any]) -> "DecoderConfig":
@@ -82,8 +122,14 @@ class PipelineConfig:
     progress_file_backup_count: int = 5
     print_progress: bool = True
     sampler_backend: Literal["stim", "clifft"] = "stim"
+    seed: int = field(default=0, kw_only=True)
+    observable_failure_mode: Literal["any", "parity"] = field(default="any", kw_only=True)
 
     def __post_init__(self):
+        if type(self.seed) is not int or not 0 <= self.seed < 2**64:
+            raise ValueError("seed must be an unsigned 64-bit integer")
+        if self.observable_failure_mode not in ("any", "parity"):
+            raise ValueError("observable_failure_mode must be 'any' or 'parity'")
         if self.sampler_backend not in ("stim", "clifft"):
             raise ValueError(f"sampler_backend must be 'stim' or 'clifft', got {self.sampler_backend!r}")
         if self.decoder is None:

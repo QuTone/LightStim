@@ -34,8 +34,7 @@ from lightstim.ir.builder import CircuitBuilder
 from lightstim.ir.tracker import SyndromeTracker
 from lightstim.simulation.decoder_backend.pipeline import SimulationPipeline
 from lightstim.simulation.decoder_backend.config import DecoderConfig
-from lightstim.noise.config import NoiseConfig
-from lightstim.noise.injector import NoiseInjector
+from ._distillation_noise import inject_distillation_noise
 from lightstim.noise.rules import FlipAfterYResetFiltered
 from lightstim.simulation.observable_analysis import (
     build_obs_patch_matrix,
@@ -195,7 +194,8 @@ def build_distillation_circuit(d, rounds_init=None, rounds_gate=1):
     return circuit, circuit_info, system
 
 
-def inject_noise(circuit, magic_qubits, p, p_injected, mode="full"):
+def inject_noise(circuit, magic_qubits, p, p_injected, mode="full", *, noise_model="circuit_level",
+                 background_noise=None, background_data_indices=None):
     """
     Inject noise into a clean TG 7-to-1 distillation circuit.
 
@@ -205,33 +205,17 @@ def inject_noise(circuit, magic_qubits, p, p_injected, mode="full"):
         p_injected:   Injection noise rate on magic corner qubits only.
         mode:         'injection' | 'full' | 'both'.
     """
-    all_qubits = list(range(circuit.num_qubits))
-
-    if mode == "injection":
-        cfg = NoiseConfig(p_reset=p_injected)
-        inj = NoiseInjector(cfg)
-        inj.add_rule(FlipAfterYResetFiltered(magic_qubits, param_name="p_reset"))
-        return inj.inject_noise(circuit)
-
-    elif mode == "full":
-        cfg = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p)
-        return NoiseInjector.from_circuit_level(cfg, all_qubits).inject_noise(circuit)
-
-    elif mode == "both":
-        cfg = NoiseConfig(p_1q=p, p_2q=p, p_meas=p, p_reset=p,
-                          custom_params={"p_injected": p_injected})
-        inj = NoiseInjector.from_circuit_level(cfg, all_qubits)
-        inj.add_rule(FlipAfterYResetFiltered(magic_qubits, param_name="p_injected"))
-        return inj.inject_noise(circuit)
-
-    else:
-        raise ValueError(f"Unknown noise mode: {mode!r}. Choose from 'injection', 'full', 'both'.")
+    return inject_distillation_noise(
+        circuit, FlipAfterYResetFiltered, magic_qubits, p, p_injected, mode,
+        noise_model=noise_model, background_noise=background_noise,
+        background_data_indices=background_data_indices,
+    )
 
 
 def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
                   max_shots=10_000_000, max_errors=100, batch_size=5_000,
                   decoder_name="bposd", backend="cpu", decoder_params=None,
-                  on_decode_failure="error"):
+                  on_decode_failure="error", *, seed=0, noise_model="circuit_level", background_noise=None):
     """
     Estimate effective logical input infidelity P_in for TG |Y⟩ magic state.
 
@@ -271,20 +255,12 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
     builder.apply_data_readout(final_measurements={q: 'X' for q in sys1.data_indices})
 
     circuit = builder.to_stim_circuit()
-    all_qubits = list(range(circuit.num_qubits))
-
-    if p_background > 0:
-        cfg = NoiseConfig(p_1q=p_background, p_2q=p_background,
-                          p_meas=p_background, p_reset=p_background,
-                          custom_params={"p_injected": p_injected})
-        inj = NoiseInjector.from_circuit_level(cfg, all_qubits)
-        inj.add_rule(FlipAfterYResetFiltered(set(sys1.data_indices), param_name="p_injected"))
-    else:
-        cfg = NoiseConfig(p_reset=p_injected)
-        inj = NoiseInjector(cfg)
-        inj.add_rule(FlipAfterYResetFiltered(set(sys1.data_indices), param_name="p_reset"))
-
-    noisy = inj.inject_noise(circuit)
+    noisy = inject_noise(
+        circuit, set(sys1.data_indices), p_background, p_injected,
+        "both" if p_background > 0 or background_noise is not None else "injection",
+        noise_model=noise_model, background_noise=background_noise,
+        background_data_indices=sys1.data_indices,
+    )
 
     pipeline = SimulationPipeline(
         decoder_config=DecoderConfig(
@@ -296,6 +272,7 @@ def estimate_p_in(d, rounds_init=None, p_injected=1e-3, p_background=0.0,
         max_shots=max_shots,
         max_errors=max_errors,
         batch_size=batch_size,
+        seed=seed,
         num_workers=1,
         target_observable_indices=[0],
         print_progress=False,
@@ -307,7 +284,8 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
                    T, ps_indices, target_indices, decoder_name="bposd",
                    max_shots=10_000_000, max_errors=200,
                    num_workers=32, backend="cpu", batch_size=50_000,
-                   decoder_params=None, on_decode_failure="error"):
+                   decoder_params=None, on_decode_failure="error", *, seed=0, noise_model="circuit_level",
+                   background_noise=None, background_data_indices=None):
     """
     Run noisy TG simulation with GF(2)-transformed post-selection.
 
@@ -325,7 +303,8 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
         params=decoder_params,
         on_decode_failure=on_decode_failure,
     )
-    noisy = inject_noise(circuit, magic_qubits, p, p_injected, mode)
+    noisy = inject_noise(circuit, magic_qubits, p, p_injected, mode, noise_model=noise_model,
+                         background_noise=background_noise, background_data_indices=background_data_indices)
     n_obs = circuit.num_observables
     n_det = circuit.num_detectors
 
@@ -335,6 +314,7 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
             max_shots=max_shots,
             max_errors=max_errors,
             batch_size=batch_size,
+            seed=seed,
             num_workers=num_workers,
             post_select_observable_indices=ps_indices,
             target_observable_indices=target_indices,
@@ -356,7 +336,7 @@ def run_simulation(circuit, magic_qubits, p, p_injected, mode,
         approximate_disjoint_errors=True,
     )
     compiled = decoder.compile_decoder_for_dem(dem=dem)
-    sampler = noisy.compile_detector_sampler()
+    sampler = noisy.compile_detector_sampler(seed=seed)
 
     total_shots = 0
     kept_shots = 0

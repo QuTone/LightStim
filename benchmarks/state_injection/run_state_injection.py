@@ -33,6 +33,7 @@ Usage
 """
 
 import argparse
+import json
 import contextlib
 import io
 import sys
@@ -40,13 +41,17 @@ import time
 from itertools import product
 from pathlib import Path
 
-import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parents[1]))  # repo root → lightstim importable
 
 from lightstim.protocols.state_injection import StateInjectionExperiment
-from lightstim.noise.config import NoiseConfig
+from benchmarks._config import (
+    add_run_options, benchmark_decoder, benchmark_noise, checkpoint_key, checkpoint_rows,
+    decoder_metadata, validate_run_options,
+)
+from lightstim.config.results import append_result_row
+from lightstim.config.runner import run_config_cli, sample_full_postselection
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 from lightstim.qec_code.surface_code.unrotated import (
     UnrotatedSurfaceCode,
@@ -56,10 +61,11 @@ from lightstim.qec_code.surface_code.unrotated import (
 
 # ── Task builder ───────────────────────────────────────────────────────────────
 
-def build_tasks(distances, p_values, rounds, states, protocols, modes):
+def build_tasks(distances, p_values, rounds, states, protocols, modes, *,
+                noise_model="circuit_level", custom_params=None):
     tasks = []
     for state, protocol, mode, d, p in product(states, protocols, modes, distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        noise = benchmark_noise(p, noise_model, custom_params)
         with contextlib.redirect_stdout(io.StringIO()):
             exp = StateInjectionExperiment(
                 code_patch_class=UnrotatedSurfaceCode,
@@ -67,22 +73,30 @@ def build_tasks(distances, p_values, rounds, states, protocols, modes):
                 op_set_class=UnrotatedSurfaceCodeLogicalOpSet,
                 distance=d,
                 inject_state=state,
-                post_select_mode=mode,
+                post_select_mode="full_qec" if mode == "all_detectors" else mode,
                 rounds=rounds,
                 protocol=protocol,
                 noise_params=noise,
-                noise_model="circuit_level",
+                noise_model=noise_model,
             )
             circuit = exp.build()
         meta = {
+            "sweep_coordinates": {"basis": state, "injection_protocol": protocol,
+                                  "post_select_mode": mode, "distance": d, "p": p},
             "gate": "state_injection",
             "sub_experiment": f"{state}_{protocol}_{mode}",
             "inject_state": state,
             "injection_protocol": protocol,
             "post_select_mode": mode,
+            "basis": state,
+            "mode": {"all_detectors": "full_postselection", "full_qec": "decode"}.get(mode, "hybrid"),
+            "postselection_region": {"full_postselection": "injection", "hybrid": "logical_strip"}.get(mode),
+            "noise_model": noise_model,
+            "noise_custom_params": json.dumps(custom_params or {}, sort_keys=True),
             "d": d,
             "rounds": rounds,
-            "p": p,
+            "p": p, "code": "unrotated_sc",
+            **dict.fromkeys(("p_1q", "p_2q", "p_meas", "p_reset", "p_idle"), p),
         }
         tasks.append((circuit, meta))
     return tasks
@@ -90,23 +104,21 @@ def build_tasks(distances, p_values, rounds, states, protocols, modes):
 
 # ── Checkpointing ─────────────────────────────────────────────────────────────
 
-_RESULT_COLS = frozenset({
-    "shots", "post_selected_shots", "post_selection_rate",
-    "errors", "logical_error_rate", "seconds", "decoder",
-})
-
-
 def _ck_key(row: dict) -> tuple:
-    return tuple(
-        f"{v:.6e}" if isinstance(v, float) else str(v)
-        for k, v in sorted(row.items()) if k not in _RESULT_COLS
-    )
+    fields = ("gate", "sub_experiment", "inject_state", "injection_protocol", "post_select_mode",
+              "d", "rounds", "p", "seed", "noise_model", "noise_custom_params",
+              "decoder_name", "backend", "decoder_params", "on_decode_failure",
+              "decoder_time_limit", "config_sha256")
+    defaults = {"noise_model": "circuit_level", "noise_custom_params": "{}", "seed": 0,
+                "backend": "cpu", "decoder_params": "{}", "on_decode_failure": "error",
+                "decoder_time_limit": 0.0, "decoder_name": row.get("decoder")}
+    return checkpoint_key(row, fields, defaults)
 
 
 def _load_done_keys(path: Path) -> set:
-    if not path.exists():
+    if not path.exists() or not path.stat().st_size:
         return set()
-    return {_ck_key(r) for r in pd.read_csv(path).to_dict("records")}
+    return {_ck_key(r) for r in checkpoint_rows(path)}
 
 
 # ── Runner ─────────────────────────────────────────────────────────────────────
@@ -114,9 +126,14 @@ def _load_done_keys(path: Path) -> set:
 def _run_tasks(task_list, decoder_cfg: DecoderConfig,
                max_shots: int, max_errors: int,
                num_workers: int, output_path: Path,
-               *, batch_size: int = 1_000) -> None:
+               *, batch_size: int = 1_000, seed: int = 0) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    task_list = [
+        (c, {**meta, "seed": seed, **(decoder_metadata(decoder_cfg) if meta["mode"] != "full_postselection"
+                                     else {"decoder_name": "none"})})
+        for c, meta in task_list
+    ]
     done_keys = _load_done_keys(output_path)
     if done_keys:
         print(f"  Checkpoint: {len(done_keys)} task(s) already done, skipping.")
@@ -134,8 +151,9 @@ def _run_tasks(task_list, decoder_cfg: DecoderConfig,
         max_errors=max_errors,
         batch_size=batch_size,
         num_workers=num_workers,
+        seed=seed,
         print_progress=True,
-    )
+    ) if any(m["mode"] != "full_postselection" for _, m in pending) else None
 
     for i, (circuit, meta) in enumerate(pending):
         print(f"  [{i+1}/{len(pending)}] {meta['inject_state']} "
@@ -143,24 +161,24 @@ def _run_tasks(task_list, decoder_cfg: DecoderConfig,
               f"d={meta['d']} p={meta['p']:.2e}", flush=True)
 
         t0 = time.perf_counter()
-        stats = pipeline.run(circuit, meta)
+        if meta["mode"] == "full_postselection":
+            result = sample_full_postselection(circuit, max_shots=max_shots, max_errors=max_errors,
+                                               batch_size=batch_size, seed=seed, num_workers=num_workers)
+            result.update(post_selected_shots=result["accepted"], post_selection_rate=result["acceptance"])
+        else:
+            stats = pipeline.run(circuit, meta)
+            result = {"shots": stats.shots, "post_selected_shots": stats.post_selected_shots,
+                      "post_selection_rate": stats.post_selection_rate,
+                      "errors": stats.errors, "logical_error_rate": stats.logical_error_rate}
         elapsed = time.perf_counter() - t0
 
         row = {
             **meta,
-            "shots": stats.shots,
-            "post_selected_shots": stats.post_selected_shots,
-            "post_selection_rate": stats.post_selection_rate,
-            "errors": stats.errors,
-            "logical_error_rate": stats.logical_error_rate,
-            "seconds": elapsed,
-            "decoder": stats.decoder,
+            **result, "seconds": elapsed, "decoder": meta["decoder_name"],
         }
-        pd.DataFrame([row]).to_csv(
-            output_path, mode="a", header=not output_path.exists(), index=False,
-        )
-        print(f"  -> LER={stats.logical_error_rate:.2e} "
-              f"({stats.errors} errors, {stats.shots:,} shots, {elapsed:.1f}s)", flush=True)
+        append_result_row(output_path, row)
+        print(f"  -> LER={row['logical_error_rate']:.2e} "
+              f"({row['errors']} errors, {row['shots']:,} shots, {elapsed:.1f}s)", flush=True)
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -171,7 +189,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument(
-        "--inject-states", nargs="+", default=["Z", "X", "Y"],
+        "--inject-states", "--basis", nargs="+", default=["Z", "X", "Y"],
         choices=["Z", "X", "Y"],
         help="States to inject (default: Z X Y)",
     )
@@ -180,7 +198,10 @@ def main():
         choices=["corner", "middle"],
         help="Injection protocols (default: corner middle)",
     )
-    ap.add_argument(
+    modes_group = ap.add_mutually_exclusive_group()
+    modes_group.add_argument("--mode", choices=["decode", "full_postselection", "hybrid"])
+    ap.add_argument("--postselection-region", choices=["injection", "logical_strip"])
+    modes_group.add_argument(
         "--inject-modes", nargs="+",
         default=["full_postselection", "full_qec", "hybrid"],
         choices=["full_postselection", "full_qec", "hybrid"],
@@ -200,14 +221,11 @@ def main():
         help="SE rounds (default: 2)",
     )
     ap.add_argument(
-        "--decoder", choices=["pymatching", "bposd", "mwpf", "ionq-beam-search"],
+        "--decoder", choices=["pymatching", "bposd", "cpu_bposd", "gpu_bposd", "nv-qldpc-decoder",
+                              "mwpf", "mle-ilp", "ionq-beam-search"],
         default="pymatching",
         help="Decoder (default: pymatching)",
     )
-    ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
-    ap.add_argument("--max-errors",  type=int, default=100)
-    ap.add_argument("--batch-size",  type=int, default=1_000)
-    ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument(
         "--quick", action="store_true",
         help="Quick mode: Z only, corner, full_postselection, d=[3,5], 2 p-values",
@@ -216,9 +234,11 @@ def main():
         "--output", default=None,
         help="Output CSV path (default: benchmarks/state_injection/results/state_injection_results.csv)",
     )
+    add_run_options(ap)
+    if run_config_cli(ap):
+        return
     args = ap.parse_args()
-    if args.batch_size < 1:
-        ap.error("--batch-size must be positive")
+    validate_run_options(ap, args)
 
     if args.quick:
         states    = ["Z"]
@@ -237,10 +257,18 @@ def main():
         max_shots  = args.max_shots
         max_errors = args.max_errors
 
+    if args.postselection_region and args.mode != "hybrid":
+        ap.error("--postselection-region requires --mode hybrid")
+    if args.mode:
+        region = args.postselection_region or "injection"
+        modes = [{"decode": "full_qec", "full_postselection": "all_detectors",
+                  "hybrid": "full_postselection" if region == "injection" else "hybrid"}[args.mode]]
+
     output_path = Path(args.output) if args.output else \
         SCRIPT_DIR / "results" / "state_injection_results.csv"
 
-    decoder_cfg = DecoderConfig(name=args.decoder, backend="cpu")
+    decoder_cfg = benchmark_decoder(args.decoder, args.backend, use_presets=False,
+                                    mle_time_limit=args.mle_time_limit, on_decode_failure=args.on_decode_failure)
 
     print("=" * 60)
     print("State Injection Benchmark — Unrotated Surface Code")
@@ -258,11 +286,12 @@ def main():
     print(f"Output     : {output_path}")
     print("=" * 60)
 
-    tasks = build_tasks(distances, p_values, args.rounds, states, protocols, modes)
+    tasks = build_tasks(distances, p_values, args.rounds, states, protocols, modes,
+                        noise_model=args.noise_model, custom_params=args.noise_custom_params)
     print(f"Total tasks: {len(tasks)}")
 
     _run_tasks(tasks, decoder_cfg, max_shots, max_errors, args.num_workers, output_path,
-               batch_size=args.batch_size)
+               batch_size=args.batch_size, seed=args.seed)
 
     print("\n" + "=" * 60)
     print("BENCHMARK COMPLETE")

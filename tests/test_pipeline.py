@@ -12,6 +12,7 @@ Run:  pytest tests/test_pipeline.py -m smoke -q
 import io
 import contextlib
 import pytest
+import stim
 
 from lightstim.noise.config import NoiseConfig
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
@@ -112,3 +113,38 @@ def test_pipeline_noise_models():
 
         stats = _run_pipeline(noisy)
         assert stats.errors > 0, f"{nm}: LER=0 — p_idle may not be applied"
+
+
+@pytest.mark.parametrize("num_workers", [1, 2])
+@pytest.mark.parametrize(("mode", "targets", "fails"), [
+    ("any", None, True),
+    ("parity", None, False),
+    ("parity", [1], True),
+])
+def test_target_failure_mode_matches_enumeration(num_workers, mode, targets, fails):
+    # A single physical fault flips both logical observables together.
+    circuit = stim.Circuit("""
+        R 0
+        X_ERROR(1) 0
+        M 0
+        OBSERVABLE_INCLUDE(0) rec[-1]
+        OBSERVABLE_INCLUDE(1) rec[-1]
+    """)
+    pipeline = SimulationPipeline(
+        num_workers=num_workers, max_shots=32, batch_size=8, print_progress=False,
+        target_observable_indices=targets, observable_failure_mode=mode,
+    )
+    stats = pipeline.run(circuit)
+    assert stats.post_selected_shots == 32
+    assert stats.errors == (32 if fails else 0)
+    assert pipeline.enumerate_faults(circuit).conditional_loss == float(fails)
+
+
+@pytest.mark.parametrize("seed", [29, 2**64 - 1])
+def test_pipeline_passes_seed_to_stim(seed):
+    circuit = stim.Circuit("R 0\nX_ERROR(0.25) 0\nM 0\nOBSERVABLE_INCLUDE(0) rec[-1]")
+    _, expected = circuit.compile_detector_sampler(seed=seed).sample(64, separate_observables=True)
+    pipeline = SimulationPipeline(
+        num_workers=1, max_shots=64, batch_size=64, seed=seed, print_progress=False,
+    )
+    assert pipeline.run(circuit).errors == expected.sum()

@@ -69,6 +69,8 @@ class SimulationPipeline:
         progress_file_backup_count: int = 5,
         *,
         sampler_backend: Literal["stim", "clifft"] = "stim",
+        seed: int = 0,
+        observable_failure_mode: Literal["any", "parity"] = "any",
     ):
         # A list/tuple of configs means multi-level decoding: each stage
         # re-decodes the shots the previous stage failed on (Chen-style
@@ -101,6 +103,8 @@ class SimulationPipeline:
             progress_file_backup_count=progress_file_backup_count,
             print_progress=print_progress,
             sampler_backend=sampler_backend,
+            seed=seed,
+            observable_failure_mode=observable_failure_mode,
         )
         self._status_logger = None
         if self.config.progress_output in ("logging", "both"):
@@ -167,7 +171,7 @@ class SimulationPipeline:
             post_select_corrected_observable_indices=self.config.post_select_corrected_observable_indices,
             target_observable_indices=self.config.target_observable_indices,
             detector_reference=detector_reference, observable_reference=observable_reference,
-            loss=loss, limits=limits,
+            loss=loss, limits=limits, observable_failure_mode=self.config.observable_failure_mode,
         )
         return experiment.enumerate(
             max_order=max_order, max_configurations=max_configurations, witness_limit=witness_limit,
@@ -250,6 +254,8 @@ class SimulationPipeline:
                 kwargs={
                     "allow_gauge_detectors": self.config.allow_gauge_detectors,
                     "sampler_backend": self.config.sampler_backend,
+                    "seed": self.config.seed,
+                    "observable_failure_mode": self.config.observable_failure_mode,
                 },
             )
             p.start()
@@ -325,7 +331,7 @@ class SimulationPipeline:
         with _compile_sampler(
             circuit,
             backend=self.config.sampler_backend,
-            seed=0,
+            seed=self.config.seed,
         ) as sample:
             while total_shots < self.config.max_shots and errors < self.config.max_errors:
                 det_data, obs_data = sample(min(batch_size, self.config.max_shots - total_shots))
@@ -361,6 +367,7 @@ class SimulationPipeline:
                         self.config.post_select_corrected_observable_indices
                     ),
                     target_observable_indices=self.config.target_observable_indices,
+                    observable_failure_mode=self.config.observable_failure_mode,
                     flags=getattr(compiled, "last_flags", None),
                     on_decode_failure=self.config.decoder.on_decode_failure,
                 )

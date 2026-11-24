@@ -1,9 +1,9 @@
 # Logical Circuits Benchmark
 
 Benchmarks for multi-patch logical circuit protocols: Bell-state teleportation,
-S-gate teleportation, routing overhead, and magic state distillation (LS and TG 7-to-1).
+S-gate teleportation, and magic state distillation (LS and TG 7-to-1).
 
-All experiments share a single unified runner with per-task checkpointing.
+All experiments share a single runner with per-task checkpointing. Use `--experiment` for the protocols below. Passing `--config FILE` runs the local experiment declared in the file through the [shared experiment-config CLI](../../README.md#run-an-experiment-from-json).
 
 ## Experiments
 
@@ -13,7 +13,7 @@ All experiments share a single unified runner with per-task checkpointing.
 | `s_gate_tele` | Logical S-gate teleportation via ZZ-LS / transversal CNOT | `results/s_gate_tele_results.csv` |
 | `distill_ls` | LS 7-to-1 \|Y⟩ distillation (Steane protocol) | `results/distill_ls_results.csv` |
 | `distill_tg` | TG 7-to-1 \|Y⟩ distillation (PQRM hypercube) | `results/distill_tg_results.csv` |
-| `all` | All of the above | all three CSVs |
+| `all` | All of the above | all four CSVs |
 
 Protocol implementations:
 - Bell teleportation: `lightstim/protocols/bell_teleportation.py`
@@ -24,7 +24,7 @@ Protocol implementations:
 ## How to run
 
 ```bash
-# Quick smoke test (d=3,5, 2 p-values):
+# Quick smoke test (d=3, 2 p-values):
 PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py --quick
 
 # Bell teleportation sweep:
@@ -44,7 +44,7 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py
 
 # LS 7-to-1 distillation, circuit-level noise:
 PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py \
-    --experiment distill_ls \
+    --experiment distill_ls --noise-mode full \
     --distances 3 5 7 \
     --p-values 1e-3 3e-3 5e-3
 
@@ -59,7 +59,7 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py
     --experiment distill_tg \
     --distances 3 5 7 \
     --p-values 1e-3 3e-3 5e-3 \
-    --decoder gpu_bposd --num-workers 1
+    --decoder bposd --backend gpu --num-workers 1
 
 # All experiments:
 PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py --experiment all
@@ -69,22 +69,25 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py
 
 | Flag | Default | Description |
 |---|---|---|
-| `--experiment` | `bell_tele` | Experiment to run (see table above) |
+| `--experiment` | `all` | Experiment to run (see table above) |
 | `--distances` | `3 5 7` | Code distances |
 | `--p-values` | `5e-4 1e-3 2e-3 5e-3` | Physical error rates |
 | `--codes` | `unrotated_sc` | Codes for S-gate teleportation |
 | `--s-gate-methods` | all | S-gate teleportation methods |
 | `--state-preps` | `logical_gate` | S-gate resource-state preparation modes (`logical_gate` or `inject`) |
-| `--noise-mode` | `circuit_level` | `circuit_level` or `injection` |
-| `--p-injected` | — | Injection noise p (injection mode only) |
-| `--decoder` | auto | `pymatching`, `mwpf`, `cpu_bposd`, `gpu_bposd`, `mle-ilp` (`bposd` and `nv-qldpc-decoder` are accepted aliases) |
+| `--basis`, `--states` | `X Z` | Bell teleportation input states |
+| `--noise-mode` | `injection` | Distillation noise placement (`injection`, `full`, or `both`) |
+| `--noise-model` | `circuit_level` | Background noise model |
+| `--p-injected` | `0.001 0.005 0.02` | Injection noise for `injection` or `both` |
+| `--decoder` | per experiment | `pymatching`, `mwpf`, `bposd`, `nv-qldpc-decoder`, `mle-ilp`, or `ionq-beam-search` |
 | `--mle-time-limit` | `0` | Soft seconds-per-shot limit for `mle-ilp`; zero is unlimited |
 | `--on-decode-failure` | `error` | Count, discard, or ignore decoder timeout/failure shots |
-| `--num-workers` | `8` | Parallel CPU workers (use 1 for GPU) |
-| `--max-shots` | `1e9` | Max shots per task |
+| `--seed` | `0` | Sampling seed |
+| `--num-workers` | `4` | Parallel CPU workers (use 1 for GPU) |
+| `--max-shots` | `1000000` | Max shots per task |
 | `--max-errors` | `100` | Stop after N logical errors |
 | `--batch-size` | `10000` | Simulation batch size |
-| `--quick` | off | Smoke test: d=3,5, 2 p-values |
+| `--quick` | off | Smoke test at d=3 and two p values |
 
 The formal S-gate benchmark defaults to `unrotated_sc` with `logical_gate`
 resource-state preparation. `inject` is available for explicit comparisons, but
@@ -94,12 +97,12 @@ fault-tolerant verification path.
 
 > **Decoder guidance**: Bell teleportation (TG protocol) and TG distillation produce
 > hyperedge DEMs. Use `mle-ilp` for an exact small-instance reference, `mwpf`
-> (CPU), `cpu_bposd` (CPU BP+OSD), or `gpu_bposd`
+> (CPU), `--decoder bposd --backend cpu`, or `--decoder bposd --backend gpu`
 > (CUDA BP+OSD via `cudaq_qec`) for these.
 > LS-based experiments (ZZ-LS, XX-LS, LS distillation) use `pymatching`.
-> The runner defaults TG distillation to `cpu_bposd` and LS distillation to
+> The runner defaults TG distillation to `bposd` on CPU and LS distillation to
 > `pymatching` when `--decoder` is omitted.
-> `gpu_bposd` requires a visible NVIDIA GPU (`nvidia-smi -L`).
+> The GPU backend requires a visible NVIDIA GPU (`nvidia-smi -L`).
 
 Exact MLE is unlimited by default. Large DEMs can have long solve tails, so a
 bounded benchmark should set both `--mle-time-limit` and an explicit
@@ -113,10 +116,12 @@ PYTHONPATH=. venv/bin/python benchmarks/logical_circuits/run_logical_circuits.py
 
 ## Output format
 
-### bell_tele / routing
+Each CSV contains the common shot counts, decoder name and backend, and sweep coordinates. The following lists show experiment-specific selections.
+
+### bell_tele
 
 ```
-gate, protocol, state, routing_mult, d, rounds, p,
+experiment, protocol, state, routing_mult, d, rounds, p,
 decoder, decoder_time_limit, on_decode_failure,
 shots, errors, logical_error_rate, seconds
 ```
