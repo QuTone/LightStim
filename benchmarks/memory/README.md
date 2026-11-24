@@ -290,7 +290,10 @@ are small interface checks, not enough shots for a performance comparison.
 This target runs `d` pre-defect rounds, measures and disables the center data
 qubit, then runs `d` rounds alternating the affected Z and X gauge checks.
 Unaffected checks remain active throughout. Both Z- and X-memory experiments
-are supported.
+are supported. `--rounds` sets the pre-defect stage length. The CSV reports
+the block failure probability for the complete experiment and leaves the
+per-round rate and its standard error empty because the extraction schedule
+changes at the defect.
 
 ```bash
 venv/bin/python benchmarks/memory/run_memory.py \
@@ -428,6 +431,14 @@ decoding, or `<codes>_full_postselection.csv` in the same directory for full
 postselection. `h_n` is the H-code size (zero for other codes); `mode`
 distinguishes the evaluation rules. In decode mode, `rejected` also counts
 shots discarded by the configured decoder failure policy.
+
+For repeated memory cycles, `block_failure_probability` is the measured
+fraction of accepted shots that failed. With block failure probability
+`P` over `R` cycles, `logical_failure_rate_per_round` reports
+`1 - (1 - P) ** (1 / R)`. This gives the constant per-cycle failure
+probability whose survival probability over `R` cycles equals `1 - P`.
+It is a normalization of the block measurement. Inferring a per-cycle
+logical bit-flip probability would require a model for cancellation of flips.
 
 The `results/` directory is git-ignored. Benchmark data stays local unless it
 is deliberately published elsewhere.

@@ -62,11 +62,11 @@ def _decode_worker_cpu(
     if sampler_backend == "clifft":
         # ClifftSampler increments its seed per batch. Reserve disjoint ranges.
         max_batches = (max_shots + batch_size - 1) // batch_size
-        seed = (seed + worker_id * max_batches) % 2**64
+        stream_offset = worker_id * max_batches
     else:
-        seed = (seed + worker_id) % 2**64
+        stream_offset = worker_id
 
-    with _compile_sampler(circuit, backend=sampler_backend, seed=seed) as sample:
+    with _compile_sampler(circuit, backend=sampler_backend, seed=seed, stream_offset=stream_offset) as sample:
         while True:
             with lock:
                 if shots_counter.value >= max_shots or errors_counter.value >= max_errors:

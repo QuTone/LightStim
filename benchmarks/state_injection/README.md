@@ -60,6 +60,9 @@ The historical `--inject-modes full_postselection` filters the injection region 
 
 ## `plot_state_injection.py` options
 
+Use one noise model and decoder configuration per input CSV. Each curve
+compares physical error rates within a state or postselection mode.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mode` | states | `states` (color by Z/X/Y) or `modes` (color by PS mode) |

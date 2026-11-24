@@ -636,7 +636,11 @@ def run(tasks: list[dict], decoder_cfg: DecoderConfig | None,
             / result["accepted"]
         ) ** 0.5 if result["accepted"] else np.nan
         rounds = task["rounds"]
-        if block_failure_probability >= 1:
+        if not result["accepted"] or task["code"] == "rotated_sc_defect":
+            # The defect protocol's rounds field counts only the pre-defect stage.
+            logical_failure_rate_per_round = None
+            logical_failure_rate_per_round_se = None
+        elif block_failure_probability >= 1:
             logical_failure_rate_per_round = 1.0
             logical_failure_rate_per_round_se = 0.0
         else:

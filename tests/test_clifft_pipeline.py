@@ -112,6 +112,21 @@ def test_unavailable_clifft_does_not_fall_back_to_stim(monkeypatch, tmp_path):
         _pipeline().run(circuit)
 
 
+@pytest.mark.usefixtures("clifft_python")
+def test_adjacent_run_seeds_give_distinct_clifft_batches():
+    from lightstim.simulation.decoder_backend._sampling import _compile_sampler
+
+    circuit = stim.Circuit("R 0\nX_ERROR(0.25) 0\nM 0\nOBSERVABLE_INCLUDE(0) rec[-1]")
+
+    def batches(seed):
+        with _compile_sampler(circuit, backend="clifft", seed=seed) as sample:
+            return [sample(512)[1].tobytes() for _ in range(2)]
+
+    first = batches(7)
+    assert first == batches(7)
+    assert set(first).isdisjoint(batches(8))
+
+
 def test_repeated_pauli_target_observable_is_rejected():
     circuit = stim.Circuit("""
         REPEAT 2 {

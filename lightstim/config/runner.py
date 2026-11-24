@@ -26,7 +26,9 @@ def sample_full_postselection(circuit, *, max_shots, max_errors, batch_size, see
         raise ValueError("seed must be an unsigned 64-bit integer")
     if observable_failure_mode not in {"any", "parity"}:
         raise ValueError(f"Unknown observable_failure_mode {observable_failure_mode!r}")
-    circuit.detector_error_model(decompose_errors=False)
+    # Check detector and observable determinism. Sampling below uses the original
+    # circuit, including the exact correlations of disjoint Pauli channels.
+    circuit.detector_error_model(decompose_errors=False, approximate_disjoint_errors=True)
     nworkers = min(num_workers, (max_shots + batch_size - 1) // batch_size)
     seeds = ([seed] if nworkers == 1 else
              [int(s) for s in np.random.SeedSequence(seed).generate_state(nworkers, dtype=np.uint64)])
@@ -131,6 +133,10 @@ def _result_metadata(point, system, circuit):
     for name in ("p_idle", "p_1q"):
         row[f"{name}_mode"] = "fixed" if noise.get("overrides", {}).get(name) is not None else "sweep"
     row.update({k: parameters[k] for k in ("basis", "rounds", "distance") if k in parameters})
+    if point["protocol_id"] == "rotated-surface-memory":
+        # A recovery block may use a literal, an affine parameter or several extraction stages.
+        row["rounds"] = sum(int(op["params"]["rounds"]) for op in point["operations"]
+                            if op["op"] == "syndrome_extraction")
     return row
 
 
@@ -140,7 +146,13 @@ def run_experiment(config, output, *, source_config=None, progress=False, progre
 
     path = Path(output)
     spec = config.spec
-    overrides = {k: v for k, v in spec.items() if source_config and v != source_config.spec.get(k)}
+    # Use the same equality as the run digest (e.g. 3 and 3.0 serialize differently).
+    overrides = {
+        k: v for k, v in spec.items()
+        if source_config is not None and (
+            k not in source_config or canonical_json(v) != canonical_json(source_config[k])
+        )
+    }
     run_sha = config_digest(spec)
     done = set()
     if path.exists():
@@ -161,7 +173,6 @@ def run_experiment(config, output, *, source_config=None, progress=False, progre
         row = _result_metadata(point, system, circuit)
         row.update(result, seconds=perf_counter() - start, config_sha256=point_config_digest(spec, point["parameters"]),
                    run_config_sha256=run_sha, config_overrides=overrides)
-        # For memory the rounds parameter is the number of recovery cycles in a shot.
         # LS CNOT uses 'rounds' separately in each of three different stages.
         if spec["protocol_id"] == "rotated-surface-memory" and row.get("rounds") and row["accepted"]:
             rate = row["logical_error_rate"]

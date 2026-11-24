@@ -98,6 +98,36 @@ def test_legacy_cnot_csv_maps_bases_and_preserves_columns(tmp_path):
     assert "logical_error_rate_per_round" not in series1["points"][0]
 
 
+@pytest.mark.parametrize(("protocol", "fields"), [
+    ("rotated-surface-memory", {"code": "bb_144_12_12"}),
+    ("rotated-surface-memory", {"gate": "memory", "init_basis": "X"}),
+    ("rotated-surface-memory", {"gate": "state_injection"}),
+    ("lattice-surgery-cnot", {"gate": "CNOT_trans"}),
+    ("lattice-surgery-cnot", {"gate": "CNOT_LS_XX_ZZ"}),
+    ("lattice-surgery-cnot", {"experiment": "distill_ls"}),
+])
+def test_legacy_protocol_conflicts_abort_export(tmp_path, protocol, fields):
+    path = tmp_path / "legacy.csv"
+    _write_rows(path, [{"d": 3, "p": 0.001, "shots": 10, "errors": 1,
+                        "logical_error_rate": 0.1, **fields}])
+    output = tmp_path / "benchmarks.json"
+    output.write_text("previous export")
+    with pytest.raises(ValueError, match="CSV line 2: Legacy"):
+        export_benchmarks_json(path, EXAMPLES / f"{protocol}.json")
+    assert output.read_text() == "previous export"
+
+
+def test_legacy_logical_ops_memory_uses_recorded_basis(tmp_path):
+    source = load_config(EXAMPLES / "rotated-surface-memory.json").spec
+    source["protocol_id"] = "unrotated-memory"
+    source["system"]["patches"][0]["code"] = "unrotated_sc"
+    path = tmp_path / "legacy.csv"
+    _write_rows(path, [{"gate": "memory", "init_basis": "X", "measure_basis": "X",
+                        "d": 3, "p": 0.001, "shots": 10, "errors": 1, "logical_error_rate": 0.1}])
+    doc = export_benchmarks_json(path, source)
+    assert doc["series"][0]["points"][0]["parameters"]["basis"] == "X"
+
+
 def test_distinguishes_rounds_and_zero_acceptance(tmp_path):
     source = load_config(EXAMPLES / "rotated-surface-memory.json")
     source.spec["sweep"]["axes"]["rounds"] = [1, 2]

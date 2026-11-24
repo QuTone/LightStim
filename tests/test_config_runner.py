@@ -7,9 +7,9 @@ import sys
 import pytest
 import stim
 
-from lightstim.config import ExperimentConfig, expand_sweep, load_config
+from lightstim.config import ExperimentConfig, expand_sweep, export_benchmarks_json, load_config
 from lightstim.config.cli import run_cli
-from lightstim.config.runner import _sample, sample_full_postselection
+from lightstim.config.runner import _sample, run_experiment, sample_full_postselection
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +37,44 @@ def test_runner_config_overrides_and_checkpoint(tmp_path, runner):
     assert row["rounds"] == row["distance"] == "3"
     assert json.loads(row["sweep_coordinates"]) == {"p": 0, "distance": 3}
     assert len(row["config_sha256"]) == 64
+
+
+def test_numeric_override_preserves_digest_on_export(tmp_path):
+    path = tmp_path / "run.csv"
+    run_cli(["--config", str(MEMORY), "--quick", "--num-workers", "1", "--max-shots", "2",
+             "--param", "distance=3.0", "--output", str(path)])
+    exported = export_benchmarks_json(path, MEMORY)
+    distance = exported["provenance"]["config"]["parameters"]["distance"]
+    assert type(distance) is float and distance == 3.0
+    assert exported["series"][0]["points"][0]["shots"] == 2
+
+
+@pytest.mark.parametrize("cycles", [6, 0])
+def test_memory_per_round_rate_uses_executed_recovery_cycles(tmp_path, monkeypatch, cycles):
+    spec = load_config(MEMORY).spec
+    del spec["sweep"]
+    if cycles:
+        spec["operations"][1]["params"]["rounds"] = {"$param": "rounds", "times": 2}
+    else:
+        del spec["operations"][1]
+    monkeypatch.setattr("lightstim.config.runner._sample", lambda *args, **kwargs: {
+        "shots": 10, "accepted": 10, "errors": 5, "logical_error_rate": 0.5,
+    })
+    config = ExperimentConfig(spec)
+    path = run_experiment(config, tmp_path / "run.csv")
+    with path.open(newline="") as src:
+        row, = csv.DictReader(src)
+    assert json.loads(row["parameters"])["rounds"] == 3
+    assert row["rounds"] == str(cycles)
+    exported = export_benchmarks_json(path, config)["series"][0]["points"][0]
+    assert exported["parameters"]["rounds"] == 3
+    if cycles:
+        expected = pytest.approx(1 - 0.5 ** (1 / cycles))
+        assert float(row["logical_failure_rate_per_round"]) == expected
+        assert exported["logical_error_rate_per_round"] == expected
+    else:
+        assert not row["logical_failure_rate_per_round"]
+        assert "logical_error_rate_per_round" not in exported
 
 
 def test_cli_overrides_named_noise_axis_and_zipped_parameters(tmp_path, monkeypatch):
@@ -95,6 +133,20 @@ def test_postselection_counts_and_observable_policy(num_workers):
                                      observable_failure_mode="parity", **settings)["errors"] == 7
     circ.append("DETECTOR", [stim.target_rec(-1)])
     assert sample_full_postselection(circ, **settings)["accepted"] == 0
+
+
+def test_postselected_sampler_preserves_disjoint_error_correlations():
+    # IX or XI always occurs. A quiet detector therefore guarantees a logical flip.
+    circuit = stim.Circuit("""
+        R 0 1
+        PAULI_CHANNEL_2(0.5,0,0,0.5,0,0,0,0,0,0,0,0,0,0,0) 0 1
+        M 0 1
+        DETECTOR rec[-2]
+        OBSERVABLE_INCLUDE(0) rec[-1]
+    """)
+    result = sample_full_postselection(circuit, max_shots=128, max_errors=128, batch_size=128)
+    assert 0 < result["accepted"] < 128
+    assert result["errors"] == result["accepted"]
 
 
 def test_decode_ignores_tags_and_hybrid_honors_them():

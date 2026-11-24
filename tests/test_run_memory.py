@@ -212,6 +212,19 @@ def test_build_circuit_rotated_defect_is_pymatching_compatible():
     assert len(circuit.shortest_graphlike_error()) == 2
 
 
+def test_defect_memory_reports_only_the_complete_experiment_rate(tmp_path):
+    output = tmp_path / "defect.csv"
+    subprocess.run([str(PYTHON), str(RUNNER), "--codes", "rotated_sc_defect",
+                    "--distances", "3", "--rounds", "1", "--p-values", "0", "--basis", "Z",
+                    "--max-shots", "4", "--num-workers", "1", "--output", str(output)],
+                   check=True)
+    row, = pd.read_csv(output).to_dict("records")
+    assert row["shots"] == row["accepted"] == 4
+    assert row["block_failure_probability"] == 0
+    assert pd.isna(row["logical_failure_rate_per_round"])
+    assert pd.isna(row["logical_failure_rate_per_round_se"])
+
+
 @pytest.mark.parametrize("noise_model", ["circuit_level", "phenomenological", "code_capacity"])
 def test_build_circuit_noise_models(noise_model):
     circuit, *_ = build_circuit("rotated_sc", 3, p=1e-2, noise_model=noise_model)

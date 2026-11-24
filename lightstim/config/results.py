@@ -176,6 +176,8 @@ def _sweep_axes(config):
 
 def _legacy_parameters(row, config):
     values = dict(row)
+    if row.get("gate") == "memory" and not values.get("basis"):
+        values["basis"] = row.get("init_basis")
     # The legacy LS CNOT runner recorded the two patch bases in one column.
     for column, suffix in (("init_basis", "init"), ("measure_basis", "meas")):
         pair = row.get(column)
@@ -192,6 +194,34 @@ def _legacy_parameters(row, config):
                 raise ValueError(f"Cannot identify the swept parameter {key!r} in the legacy CSV")
             overrides[key] = axes[key][0]
     return config.resolve(overrides)["parameters"]
+
+
+def _check_legacy_protocol(row, config):
+    """Check protocol identifiers emitted by the repository's direct runners."""
+    entrypoint = config["implementation"]["entrypoint"]
+    memory = entrypoint == "lightstim.protocols.memory.MemoryExperiment"
+    cnot = entrypoint == "lightstim.protocols.cnot_ls.CNOTLSExperiment"
+    if not (memory or cnot):
+        return
+    if row.get("experiment") in {"bell_tele", "s_gate_tele", "distill_ls", "distill_tg"} or row.get("pqrm"):
+        raise ValueError(f"Legacy experiment belongs to another protocol than {config['protocol_id']!r}")
+    gate = row.get("gate")
+    code = row.get("code")
+    if gate:
+        expected = "memory"
+        if cnot:
+            interactions = {item["id"]: item["interaction"] for item in config["system"].get("couplers", [])}
+            order = [interactions[target] for op in config["operations"] if op["op"] == "activate_coupler"
+                     for target in op["targets"] if target in interactions]
+            expected = "CNOT_LS_" + "_".join(order)
+        if gate != expected:
+            raise ValueError(f"Legacy gate {gate!r} conflicts with the configured {expected!r}")
+        # The historical logical-ops 'memory' gate used an unrotated surface patch.
+        if memory and not code:
+            code = "unrotated_sc"
+    codes = {patch["code"] for patch in config["system"]["patches"]}
+    if code and set(code.split(",")) != codes:
+        raise ValueError(f"Legacy code {code!r} conflicts with the configured patch codes {sorted(codes)}")
 
 
 def _json_object(row, name):
@@ -308,6 +338,8 @@ def export_benchmarks_json(csv_path, config, output=None):
                 if row["run_config_sha256"] and row["run_config_sha256"] != run_digest:
                     raise ValueError("Run digest does not match the supplied config and overrides")
 
+                if not row["run_config_sha256"]:
+                    _check_legacy_protocol(row, effective)
                 parameters = _recorded_parameters(row, effective)
                 has_legacy |= not bool(row["run_config_sha256"])
                 decoder = row["decoder_name"] or effective["decoder"].get("name", "chain")

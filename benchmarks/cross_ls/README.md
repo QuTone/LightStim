@@ -97,16 +97,14 @@ PYTHONPATH=. venv/bin/python benchmarks/cross_ls/run_cross_ls.py \
 
 ## How to plot
 
-```bash
-# LER vs p (sweep experiment):
-PYTHONPATH=. venv/bin/python benchmarks/cross_ls/plot_cross_ls.py \
-    benchmarks/cross_ls/results/cross_ls_results.csv \
-    --experiment sweep
+Run the plotter from the repository root to plot LER against physical error
+rate and surface-code distance. It reads the `sweep` rows in
+`benchmarks/cross_ls/results/cross_ls_results.csv` and writes both figures
+beside the CSV. Use one noise model, decoder configuration and postselection
+policy per input file so each curve represents a single experiment.
 
-# LER vs rounds:
-PYTHONPATH=. venv/bin/python benchmarks/cross_ls/plot_cross_ls.py \
-    benchmarks/cross_ls/results/cross_ls_results.csv \
-    --experiment rounds
+```bash
+PYTHONPATH=. venv/bin/python benchmarks/cross_ls/plot_cross_ls.py
 ```
 
 ## Output CSV columns

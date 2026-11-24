@@ -148,3 +148,16 @@ def test_pipeline_passes_seed_to_stim(seed):
         num_workers=1, max_shots=64, batch_size=64, seed=seed, print_progress=False,
     )
     assert pipeline.run(circuit).errors == expected.sum()
+
+
+def test_adjacent_run_seeds_give_distinct_stim_worker_streams():
+    from lightstim.simulation.decoder_backend._sampling import _compile_sampler
+
+    circuit = stim.Circuit("R 0\nX_ERROR(0.25) 0\nM 0\nOBSERVABLE_INCLUDE(0) rec[-1]")
+
+    def samples(seed, worker):
+        with _compile_sampler(circuit, backend="stim", seed=seed, stream_offset=worker) as sample:
+            return sample(512)[1].tobytes()
+
+    assert len({samples(seed, worker) for seed in (7, 8) for worker in (0, 1)}) == 4
+    assert samples(7, 1) == samples(7, 1)
