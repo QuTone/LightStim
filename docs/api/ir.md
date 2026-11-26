@@ -99,21 +99,34 @@ view  # Last expression in a notebook cell displays the interactive HTML.
 ```
 
 `visualize(*, title=None, overlays=None)` returns a `PatchVisualization` HTML
-snapshot for a self-contained patch. It displays coordinates,
-data/syndrome roles, stabilizer generators, logical operators, and declared gauges.
-X support is red, Z blue, and Y green. Operator names are optional; unnamed records
-receive generated labels. No code-specific JSON or protocol metadata is required.
+snapshot for a self-contained patch. The opening view shows the stabilizers
+together. Switch layers to inspect X or Z checks and logical representatives,
+or select an individual operator to see its signed Pauli string and physical
+support. While inspecting an operator, click another check to switch directly.
+The back button returns to the overview you started from.
+Filled circles mark data qubits and hollow circles mark syndrome qubits.
+Click a qubit for its ID, coordinates, and role. While inspecting an operator,
+selecting a syndrome qubit associated with one active check also focuses that check.
+X uses coral, Z uses blue,
+and Y uses green. For mixed operators, individual factors remain visible
+in the inspector. Logical X and Z layers follow the declared logical labels,
+including mixed physical representatives. A double ring marks an overlap
+with an anticommuting logical representative. Gauge generators have their own
+category. A noncollinear weight-three check forms a triangle over its three
+support sites. A weight-two boundary check can also form a triangle when it
+has an off-axis syndrome qubit. The hollow vertex marks the measurement site
+and the displayed Pauli string contains the two support sites.
+
+The QuTone website repository keeps the shared palette and legend in the
+**Code Structure visual reference** section of `qpz/README.md`.
 
 The viewer accepts at most **500 registered qubits**, counting data and auxiliary
 qubits together. Exactly 500 is allowed; larger patches raise `ValueError` before
 generating or saving HTML. This keeps the interactive view small enough to inspect.
 
-Operator support must use integer IDs with coordinates stored in the patch (or
-a signed `stim.PauliString` over those IDs). `LogicalCouplerPatch` is currently
-unsupported and raises a descriptive `ValueError`: its coordinate-based or
-external-qubit references require geometry from the surrounding `QECSystem`.
-A system-level viewer is outside this patch-only API's scope. Subclasses inherit
-the method, but their data must satisfy these requirements.
+Standalone patch operators use integer IDs with coordinates stored in the patch
+(or a signed `stim.PauliString` over those IDs). To inspect a coupler and its
+cross-patch support, register it in a system and call `system.visualize()`.
 
 ```python
 view.save_html("patch.html")  # Save one standalone file for viewing or sharing.
@@ -136,8 +149,7 @@ slices remain available through Stim's circuit diagrams.
 
 See the executed [patch visualization notebook](../../notebooks/System/qec_patch_visualization.ipynb).
 
-The Python regression tests run with
-`python -m pytest tests/frontend/test_patch_html.py tests/frontend/test_patch_visualize.py`.
+The Python regression tests run with `python -m pytest tests/frontend/`.
 Optional browser regressions check filtering and independent notebook frames:
 
 ```bash
@@ -165,6 +177,26 @@ from lightstim.ir.qec_system import QECSystem
 
 system = QECSystem()
 ```
+
+### Visualizing a configuration
+
+```python
+from lightstim.qec_code.surface_code.rotated import RotatedSurfaceCode
+
+system.add_patch(RotatedSurfaceCode(distance=3), name="left")
+system.add_patch(RotatedSurfaceCode(distance=3), name="right", offset=(8, 0))
+view = system.visualize(title="Two rotated surface code patches")
+view.save_html("system.html")
+view  # Interactive output in a trusted notebook
+```
+
+The snapshot uses registered global qubit IDs. Select a patch or coupler by name to highlight its
+members. The overview shows active stabilizers.
+The operator inspector also includes inactive declarations and indicates
+their status. The logical count sums the declarations on registered patches.
+Regenerate the snapshot after activating a coupler or changing a patch.
+The same 500-qubit limit applies to the whole system, counting each global
+qubit once. No circuit or round of syndrome extraction is needed.
 
 ### Adding patches
 

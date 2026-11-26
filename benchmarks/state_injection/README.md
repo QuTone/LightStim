@@ -2,7 +2,7 @@
 
 General-purpose state injection benchmark for the unrotated surface code.
 
-Sweeps `inject_state × injection_protocol × post_select_mode × distance × p`.
+Sweeps `inject_state × injection_protocol × post_select_mode × distance × p`. Use the injection options below to run this protocol. Passing `--config FILE` runs the experiment declared in that file through the [shared experiment-config CLI](../../README.md#run-an-experiment-from-json).
 
 ```
 benchmarks/state_injection/
@@ -36,22 +36,32 @@ PYTHONPATH=. venv/bin/python benchmarks/state_injection/plot_state_injection.py 
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--inject-states` | Z X Y | States to inject |
+| `--basis`, `--inject-states` | Z X Y | States to inject |
 | `--inject-protocols` | corner middle | Injection protocols |
-| `--inject-modes` | all three | Post-selection modes |
+| `--inject-modes` | all three | Historical modes `full_qec`, `full_postselection`, and `hybrid` |
+| `--mode` | — | `decode`, `full_postselection`, or `hybrid` |
+| `--postselection-region` | `injection` in hybrid mode | Filter the `injection` or `logical_strip` region before decoding |
 | `--distances` | 3 5 7 | Code distances |
 | `--p-values` | 1e-4 … 1e-2 | Physical error rates |
 | `--rounds` | 2 | SE rounds |
-| `--decoder` | pymatching | Decoder backend |
-| `--max-shots` | 1e9 | Shot budget per task |
+| `--noise-model` | circuit_level | Noise model |
+| `--decoder` | pymatching | Decoder algorithm |
+| `--max-shots` | 1000000 | Shot budget per task |
 | `--max-errors` | 100 | Stop after N logical errors |
-| `--num-workers` | 8 | Parallel workers |
+| `--batch-size` | 10000 | Sampling batch size |
+| `--seed` | 0 | Sampling seed |
+| `--num-workers` | 4 | Parallel workers |
 | `--quick` | off | Smoke test (Z/corner/full_ps, d=3,5, 2 p-values) |
 | `--output` | results/state_injection_results.csv | Output CSV path |
+
+The historical `--inject-modes full_postselection` filters the injection region and decodes the survivors. Its equivalent is `--mode hybrid --postselection-region injection`. With `--mode full_postselection`, every detector must be quiet and the runner scores the accepted shots' raw observables.
 
 ---
 
 ## `plot_state_injection.py` options
+
+Use one noise model and decoder configuration per input CSV. Each curve
+compares physical error rates within a state or postselection mode.
 
 | Flag | Default | Description |
 |------|---------|-------------|

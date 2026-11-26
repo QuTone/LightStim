@@ -320,8 +320,12 @@ class CrossLSExperiment(QECExperiment):
                 data_indices = [self.system.index_map[c] for c in self.system.data_coords]
                 method_name = f"from_{self.noise_model}"
                 factory_method = getattr(NoiseInjector, method_name)
-                injector = factory_method(self.noise_params, data_indices)
-                noisy_suffix = injector.inject_noise(clean_suffix)
+                targets = (list(range(builder.circuit.num_qubits))
+                           if self.noise_model == "circuit_level_with_idling" else data_indices)
+                injector = factory_method(self.noise_params, targets)
+                # Surface data was initialized in the clean prefix and remains
+                # active when tagged idle noise starts on the suffix.
+                noisy_suffix = injector.inject_noise(clean_suffix, active_qubits=set(sf_data))
                 return clean_prefix + noisy_suffix
             return self._inject_noise(builder.circuit)
         return builder.to_stim_circuit()

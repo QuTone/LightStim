@@ -477,3 +477,20 @@ def test_logical_ops_runner_keeps_historical_bposd_settings():
 
     assert cpu.params == expected
     assert gpu.params == {**expected, "use_osd": True}
+
+
+def test_logical_ops_old_checkpoint_matches_only_the_historical_preset(tmp_path):
+    from benchmarks._config import decoder_metadata
+
+    output = tmp_path / "legacy.csv"
+    base = dict(gate="H", sub_experiment="H_ZtoX", init_basis="Z", measure_basis="X",
+                d=3, rounds=2, p=0.001)
+    pd.DataFrame([{**base, "decoder": "nv-qldpc-decoder", "shots": 12,
+                   "errors": 0, "logical_error_rate": 0.0}]).to_csv(output, index=False)
+    keys = _load_done_keys(output)
+    current = {**base, **decoder_metadata(_decoder_config("bposd", "gpu")),
+               "seed": 0, "noise_model": "circuit_level", "noise_custom_params": "{}",
+               "observable_failure_mode": "any"}
+    assert _ck_key(current) in keys
+    assert _ck_key({**current, "seed": 1}) not in keys
+    assert _ck_key({**current, "backend": "cpu"}) not in keys

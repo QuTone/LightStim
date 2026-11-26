@@ -1,0 +1,72 @@
+{
+  "schema_version": "lightstim-config/v1",
+  "protocol_id": "rotated-surface-memory",
+  "executable": true,
+  "implementation": {
+    "entrypoint": "lightstim.protocols.memory.MemoryExperiment",
+    "runner": "benchmarks/memory/run_memory.py"
+  },
+  "parameters": {
+    "distance": 3,
+    "rounds": { "$param": "distance" },
+    "basis": "Z",
+    "p": 0.001
+  },
+  "system": {
+    "patches": [
+      {
+        "id": "memory",
+        "code_family": "surface",
+        "code": "rotated_sc",
+        "params": { "distance": { "$param": "distance" } },
+        "offset": [0, 0],
+        "syndrome_extraction": "default"
+      }
+    ],
+    "couplers": []
+  },
+  "operations": [
+    {
+      "op": "initialize",
+      "targets": ["memory"],
+      "params": { "basis": { "$param": "basis" } }
+    },
+    {
+      "op": "syndrome_extraction",
+      "targets": ["@active"],
+      "params": { "rounds": { "$param": "rounds" } }
+    },
+    {
+      "op": "data_readout",
+      "targets": ["memory"],
+      "params": { "basis": { "$param": "basis" } }
+    }
+  ],
+  "noise": {
+    "model": "circuit_level",
+    "p": { "$param": "p" },
+    "overrides": { "p_1q": null, "p_2q": null, "p_meas": null, "p_reset": null, "p_idle": null },
+    "custom_params": {}
+  },
+  "decoder": {
+    "name": "pymatching",
+    "backend": "cpu",
+    "params": {},
+    "on_decode_failure": "error"
+  },
+  "simulation": {
+    "mode": "decode",
+    "observable_failure_mode": "any",
+    "max_shots": 1000000,
+    "max_errors": 200,
+    "seed": 0,
+    "batch_size": 1000,
+    "num_workers": 8
+  },
+  "sweep": {
+    "axes": {
+      "distance": [3, 5, 7, 9],
+      "p": [0.001, 0.002, 0.003, 0.005, 0.007, 0.01]
+    }
+  }
+}

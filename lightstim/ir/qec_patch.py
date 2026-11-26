@@ -306,6 +306,31 @@ class QECPatch(ABC):
         # 5. Update accumulated rotation angle and rebuild grid map
         self.rotation_angle = (self.rotation_angle + theta) % (2 * np.pi)
     
+    def apply_canvas_transform(self, steps: Sequence[Mapping[str, Any]]) -> None:
+        """Place this patch in a new canvas orientation before registration.
+
+        Each step transposes the coordinates or rotates them by a multiple of
+        90 degrees about the current bounding-box centre. The extraction
+        schedule uses the fixed square-lattice directions of the canvas.
+        """
+        for step in steps:
+            if not isinstance(step, Mapping) or len(step) != 1:
+                raise ValueError(f"Unknown canvas transform step {step!r}")
+            if "rotate_deg" in step:
+                if type(step["rotate_deg"]) not in (int, float) or step["rotate_deg"] % 90:
+                    raise ValueError("Canvas rotations must be multiples of 90 degrees")
+            elif step.get("transpose") is not True:
+                raise ValueError(f"Unknown canvas transform step {step!r}")
+        for step in steps:
+            if "rotate_deg" in step:
+                degrees = step["rotate_deg"]
+                self.rotate_coords(math.radians(degrees % 360))
+            else:
+                self.transpose_coords()
+        if steps:
+            self.reset_rotation_angle()
+            self.reset_transposition()
+
     def _get_bounds(self) -> Tuple[float, float, float, float]:
         """Returns (min_x, max_x, min_y, max_y)"""
         xs = [c[0] for c in self.qubit_coords.values()]

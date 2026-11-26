@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__TITLE__ · LightStim code structure</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f5f2ea;
+      --card: #fff;
+      --ink: #182f35;
+      --muted: #4a5d63;
+      --accent: #356c70;
+      --line: #dce3e1;
+      --sage: #dde8e4;
+      --soft: #f2f6f4;
+      --x: #c77766;
+      --z: #477fc9;
+      --y: #49944f;
+      --display: "Newsreader", Georgia, "Times New Roman", serif;
+      --sans: "DM Sans", system-ui, -apple-system, sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 0.9375rem/1.5 var(--sans);
+    }
+    h1, h2, h3, p, dl, dd { margin: 0; }
+    button, input { font: inherit; }
+    button, label:has(input[type="checkbox"]) { cursor: pointer; }
+    button { color: var(--ink); }
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
+    .page {
+      max-width: 88rem;
+      margin: 0 auto;
+      padding: clamp(1rem, 3.2vw, 2.5rem);
+    }
+    .page-head {
+      margin-bottom: clamp(1rem, 2.4vw, 1.7rem);
+      padding-bottom: clamp(1rem, 2.4vw, 1.7rem);
+      border-bottom: 1px solid #cbd4d0;
+    }
+    .context {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      margin-bottom: 0.6rem;
+      color: var(--muted);
+      font: 0.75rem/1.4 var(--sans);
+    }
+    .context strong { font-weight: 650; color: var(--ink); }
+    .context .separator { color: #98a6a3; }
+    h1, h2 { font-family: var(--display); font-weight: 400; letter-spacing: -0.025em; }
+    h1 { font-size: clamp(1.875rem, 3.6vw, 3rem); line-height: 1.15; overflow-wrap: anywhere; }
+    h2 { font-size: clamp(1.375rem, 2vw, 1.7rem); line-height: 1.25; }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.9fr) minmax(16.5rem, 1fr);
+      align-items: start;
+      gap: clamp(1rem, 2vw, 1.5rem);
+    }
+    .card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 0.875rem;
+      background: var(--card);
+    }
+    .card-head, .diagram-key, .details-card, .operators-card {
+      padding: 1.05rem clamp(0.9rem, 1.8vw, 1.4rem);
+    }
+    .card-head { border-bottom: 1px solid var(--line); }
+    .diagram-heading {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 0.55rem 1rem;
+      margin-bottom: 0.8rem;
+    }
+    #figure-title { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; scroll-margin-top: 1rem; }
+    #back-to-layer {
+      padding: 0.35rem 0.65rem;
+      border: 1px solid #a7b9b4;
+      border-radius: 0.4rem;
+      background: var(--card);
+      color: var(--ink);
+      font-size: 0.8rem;
+    }
+    #back-to-layer:hover { border-color: var(--accent); background: var(--soft); }
+    #back-to-layer::before { content: "←" / ""; margin-right: 0.35em; }
+    .label-option, .overlays label, .patch-key-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
+    .layers, .tabs, .overlays, .patch-key, .legend {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+    .layers button, .tabs button {
+      border: 1px solid var(--line);
+      border-radius: 2rem;
+      background: var(--card);
+      color: var(--muted);
+      font-size: 0.76rem;
+      padding: 0.32rem 0.65rem;
+      line-height: 1.4;
+    }
+    .layers button:hover, .tabs button:hover { border-color: #95a8a3; }
+    .layers button[aria-pressed="true"], .tabs button[aria-pressed="true"] {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+    }
+    .canvas { padding: 1rem; }
+    #patch-diagram {
+      display: block;
+      width: 100%;
+      height: clamp(17rem, 52vh, 33rem);
+    }
+    svg text { font-family: var(--mono); pointer-events: none; }
+    /* Keep fine outlines legible against the corresponding translucent fill. */
+    .op-shape[data-basis="Z"] { --edge-color: var(--z); }
+    .op-shape[data-basis="Y"] { --edge-color: var(--y); }
+    .op-shape:is([data-basis="Z"], [data-basis="Y"]) polygon {
+      stroke: color-mix(in srgb, var(--edge-color) 85%, var(--ink));
+    }
+    .op-shape:is([data-basis="Z"], [data-basis="Y"])[data-state="focus"] polygon {
+      stroke: color-mix(in srgb, var(--edge-color) 65%, var(--ink));
+    }
+    @media (hover: hover) {
+      .op-shape[data-state="context"]:hover { opacity: 0.6; }
+    }
+    .q { cursor: pointer; }
+    .q:focus-visible { outline: none; }
+    .q:focus-visible .glyph, .q:hover .glyph {
+      stroke: var(--ink);
+      stroke-width: 3;
+    }
+    .diagram-key {
+      display: grid;
+      gap: 0.75rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    .legend, .patch-key, .overlays { gap: 0.4rem 0.9rem; }
+    .legend > span { display: inline-flex; align-items: center; gap: 0.3rem; }
+    .legend .symbol { display: inline-block; width: 0.67rem; height: 0.67rem; }
+    .data-dot { border-radius: 50%; background: var(--ink); }
+    .check-circle { border: 2px solid var(--ink); border-radius: 50%; background: var(--card); }
+    .other-box { border: 1.5px solid var(--muted); }
+    .legend .basis { font-family: var(--mono); color: var(--ink); }
+    .swatch {
+      display: inline-block;
+      width: 0.65rem;
+      height: 0.65rem;
+      border-radius: 0.18rem;
+      flex: none;
+    }
+    .swatch-x { background: var(--x); }
+    .swatch-z { background: var(--z); }
+    .swatch-y { background: var(--y); }
+    .swatch-mixed { background: var(--muted); }
+    .patch-key { gap: 0.35rem; }
+    .patch-key-item {
+      padding: 0.35rem 0.65rem;
+      border: 1px solid var(--line);
+      border-radius: 0.4rem;
+      background: var(--card);
+    }
+    .patch-key-item:hover { border-color: #95a8a3; }
+    .patch-key-item[aria-pressed="true"] { background: var(--soft); border-color: var(--accent); color: var(--ink); }
+    .patch-key:empty, .overlays:empty { display: none; }
+    #qubit-info {
+      border-top: 1px solid var(--line);
+      padding-top: 0.7rem;
+      overflow-wrap: anywhere;
+    }
+    .sidebar { display: grid; gap: 1rem; min-width: 0; }
+    #metadata { margin-top: 0.55rem; }
+    #metadata > div {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+      align-items: baseline;
+      gap: 0.75rem;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    #metadata > div:last-child { padding-bottom: 0; border-bottom: 0; }
+    dt { color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
+    dd { font: 0.77rem/1.5 var(--mono); text-align: right; overflow-wrap: anywhere; }
+    .tabs { margin-top: 0.7rem; }
+    #search {
+      width: 100%;
+      margin: 0.75rem 0 0.4rem;
+      padding: 0.48rem 0.65rem;
+      border: 1px solid #bfcac7;
+      border-radius: 0.4rem;
+      background: var(--card);
+      color: var(--ink);
+      font-size: 0.83rem;
+    }
+    #search::placeholder { color: var(--muted); }
+    #operator-list { max-height: 12.5rem; overflow-y: auto; padding: 0.2rem; }
+    .op {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      width: 100%;
+      gap: 0.4rem;
+      padding: 0.38rem 0.5rem;
+      border: 1px solid transparent;
+      border-radius: 0.35rem;
+      background: transparent;
+      text-align: left;
+      font-size: 0.83rem;
+    }
+    .op:hover { background: var(--soft); }
+    .op.selected { background: var(--soft); border-color: #bdcec7; }
+    .op-name { display: inline-flex; min-width: 0; gap: 0.4rem; align-items: center; overflow-wrap: anywhere; }
+    .op small { color: var(--muted); font: 0.69rem/1.45 var(--mono); }
+    .op .op-patch { overflow-wrap: anywhere; }
+    .empty, .group-note { padding: 0.5rem; font-size: 0.8rem; color: var(--muted); }
+    .operator-detail {
+      margin-top: 0.75rem;
+      padding-top: 0.7rem;
+      border-top: 1px solid var(--line);
+      overflow-wrap: anywhere;
+    }
+    .detail-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+    #operator-name { margin-bottom: 0.3rem; font-size: 0.95rem; font-weight: 600; }
+    #category-label, #weight, #detail-meta { font-size: 0.8rem; color: var(--muted); }
+    #weight { flex: none; font-family: var(--mono); }
+    #pauli {
+      margin: 0.4rem 0;
+      padding: 0.5rem 0.65rem;
+      max-height: 6.5rem;
+      overflow: auto;
+      border-radius: 0.35rem;
+      background: var(--soft);
+      font: 0.875rem/1.55 var(--mono);
+    }
+    #detail-meta { max-height: 4.5rem; overflow: auto; }
+    .operator-detail:not(:has(#weight[hidden])) #operator-name,
+    .operator-detail:has(#weight[hidden]) .detail-head,
+    .operator-detail:has(#weight[hidden]) #pauli { display: none; }
+    @media (min-width: 52rem) and (min-height: 48rem) {
+      .diagram-card { position: sticky; top: 1rem; }
+    }
+    @media (max-width: 51.99rem) {
+      .layout { grid-template-columns: 1fr; }
+      #patch-diagram { height: clamp(16rem, 55vw, 28rem); }
+    }
+    @media (max-width: 30rem) {
+      .page { padding: 1rem 0.65rem; }
+      .canvas { padding: 0.5rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="page-head">
+      <p class="context"><strong>LightStim</strong><span class="separator" aria-hidden="true">/</span> Code structure</p>
+      <h1 id="title">__TITLE__</h1>
+    </header>
+    <main class="layout">
+      <section class="card diagram-card" aria-labelledby="figure-title">
+        <div class="card-head">
+          <div class="diagram-heading">
+            <h2 id="figure-title" tabindex="-1">Geometry</h2>
+            <button id="back-to-layer" type="button" hidden>Back to overview</button>
+            <label class="label-option"><input id="qubit-labels" type="checkbox"> Qubit IDs</label>
+          </div>
+          <div id="layers" class="layers" role="group" aria-label="Structure layers"></div>
+          <div id="operator-detail" class="operator-detail" aria-live="polite" aria-atomic="true" hidden>
+            <div class="detail-head">
+              <span id="category-label"></span>
+              <span id="weight" hidden></span>
+            </div>
+            <h3 id="operator-name"></h3>
+            <div id="pauli" tabindex="0" role="group" aria-label="Signed Pauli support"></div>
+            <p id="detail-meta"></p>
+          </div>
+        </div>
+        <div class="canvas">
+          <svg id="patch-diagram" role="group" aria-label="Qubit geometry and Pauli supports"></svg>
+        </div>
+        <div class="diagram-key">
+          <div class="legend" role="group" aria-label="Diagram legend">
+            <span><i class="symbol data-dot" aria-hidden="true"></i>Data</span>
+            <span id="legend-aux"><i class="symbol check-circle" aria-hidden="true"></i>Syndrome</span>
+            <span id="legend-other" hidden><i class="symbol other-box" aria-hidden="true"></i>Other</span>
+            <span class="basis"><i class="swatch swatch-x" aria-hidden="true"></i>X</span>
+            <span class="basis"><i class="swatch swatch-z" aria-hidden="true"></i>Z</span>
+            <span class="basis"><i class="swatch swatch-y" aria-hidden="true"></i>Y</span>
+            <span id="legend-mixed" hidden><i class="swatch swatch-mixed" aria-hidden="true"></i>Mixed</span>
+          </div>
+          <div id="patch-key" class="patch-key" role="group" aria-label="Highlight patch sites"></div>
+          <div id="overlays" class="overlays" role="group" aria-label="Region annotations"></div>
+          <p id="qubit-info" role="status">Select a qubit to inspect its coordinates and memberships.</p>
+        </div>
+      </section>
+      <div class="sidebar">
+        <section class="card details-card" aria-labelledby="configuration-title">
+          <h2 id="configuration-title">Configuration</h2>
+          <dl id="metadata"></dl>
+        </section>
+        <section class="card operators-card" aria-labelledby="operators-title">
+          <h2 id="operators-title">Operators</h2>
+          <div id="tabs" class="tabs" role="group" aria-label="Operator category"></div>
+          <input id="search" type="search" aria-label="Filter operators" placeholder="Search name or Pauli support">
+          <div id="operator-list"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script id="patch-data" type="application/json">__PAYLOAD__</script>
+  <script>__VIEWER_JS__</script>
+</body>
+</html>

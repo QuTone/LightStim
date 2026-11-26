@@ -54,12 +54,12 @@ Usage
 """
 
 import argparse
+import json
 import contextlib
 import io
 import sys
 import time
 from itertools import product
-from numbers import Real
 from pathlib import Path
 
 import pandas as pd
@@ -81,7 +81,12 @@ from lightstim.protocols.cnot_ls import CNOTLSExperiment
 from lightstim.protocols.memory import MemoryExperiment
 from lightstim.protocols.ghz import GHZExperiment
 from lightstim.protocols.two_patch_ls import TwoPatchLSExperiment
-from lightstim.noise.config import NoiseConfig
+from benchmarks._config import (
+    add_run_options, benchmark_decoder, benchmark_noise, checkpoint_key, checkpoint_rows,
+    decoder_metadata, validate_run_options,
+)
+from lightstim.config.results import append_result_row
+from lightstim.config.runner import run_config_cli
 from lightstim.simulation.decoder_backend import SimulationPipeline, DecoderConfig
 from lightstim.ir.qec_system import QECSystem
 from lightstim.qec_code.surface_code.unrotated import (
@@ -124,7 +129,7 @@ _CNOT_SUB_EXPERIMENTS = [
 
 # ── Circuit builders ──────────────────────────────────────────────────────────
 
-def _build_h_tasks(distances, p_values, rounds):
+def _build_h_tasks(distances, p_values, rounds, *, noise_model="circuit_level", custom_params=None):
     """H gate: 2 sub-experiments (Z→X and X→Z)."""
     tasks = []
     sub_exps = [
@@ -132,11 +137,11 @@ def _build_h_tasks(distances, p_values, rounds):
         ("H_XtoZ", "X", "Z"),
     ]
     for (sub, init_b, meas_b), d, p in product(sub_exps, distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        noise = benchmark_noise(p, noise_model, custom_params)
         with contextlib.redirect_stdout(io.StringIO()):
             circuit = build_gate_verification_circuit(
                 d, ["fold_transversal_hadamard"], init_b, meas_b,
-                rounds=rounds, unencode=False, noise_params=noise,
+                rounds=rounds, unencode=False, noise_params=noise, noise_model=noise_model,
             )
         meta = {
             "gate": "H",
@@ -151,13 +156,13 @@ def _build_h_tasks(distances, p_values, rounds):
     return tasks
 
 
-def _build_s_oneway_tasks(distances, p_values, rounds):
+def _build_s_oneway_tasks(distances, p_values, rounds, *, noise_model="circuit_level", custom_params=None):
     """S gate 1-way: noisy S + noiseless S†+MX. LER ≈ LER_per_S."""
     tasks = []
     for d, p in product(distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        noise = benchmark_noise(p, noise_model, custom_params)
         with contextlib.redirect_stdout(io.StringIO()):
-            circuit = build_s_oneway_circuit(d, rounds=rounds, noise_params=noise)
+            circuit = build_s_oneway_circuit(d, rounds=rounds, noise_params=noise, noise_model=noise_model)
         meta = {
             "gate": "S_oneway",
             "sub_experiment": "S_oneway",
@@ -171,13 +176,13 @@ def _build_s_oneway_tasks(distances, p_values, rounds):
     return tasks
 
 
-def _build_s_roundtrip_tasks(distances, p_values, rounds):
+def _build_s_roundtrip_tasks(distances, p_values, rounds, *, noise_model="circuit_level", custom_params=None):
     """S gate 2-way: both S and S† noisy. LER_per_gate ≈ total_LER / 2."""
     tasks = []
     for d, p in product(distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        noise = benchmark_noise(p, noise_model, custom_params)
         with contextlib.redirect_stdout(io.StringIO()):
-            circuit = build_s_roundtrip_circuit(d, rounds=rounds, noise_params=noise)
+            circuit = build_s_roundtrip_circuit(d, rounds=rounds, noise_params=noise, noise_model=noise_model)
         meta = {
             "gate": "S_roundtrip",
             "sub_experiment": "S_roundtrip",
@@ -191,7 +196,7 @@ def _build_s_roundtrip_tasks(distances, p_values, rounds):
     return tasks
 
 
-def _build_rotated_s_tasks(distances, p_values, rounds):
+def _build_rotated_s_tasks(distances, p_values, rounds, *, noise_model="circuit_level", custom_params=None):
     """Rotated-code dynamical S: roundtrip plus two gate-only checks.
 
     The two-way circuit follows the historical S benchmark and makes
@@ -210,20 +215,20 @@ def _build_rotated_s_tasks(distances, p_values, rounds):
         distances,
         p_values,
     ):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        noise = benchmark_noise(p, noise_model, custom_params)
         with contextlib.redirect_stdout(io.StringIO()):
             if sub == "S_then_S_DAG":
                 circuit = build_rotated_s_two_way_circuit(
                     distance=d,
                     rounds=rounds,
-                    noise_params=noise,
+                    noise_params=noise, noise_model=noise_model,
                 )
             else:
                 circuit = build_rotated_s_y_injection_circuit(
                     distance=d,
                     gate="S_DAG" if sub == "S_DAG_plusY_to_X" else "S",
                     padding_rounds=rounds,
-                    noise_params=noise,
+                    noise_params=noise, noise_model=noise_model,
                 )
         meta = {
             "gate": "S_rotated",
@@ -239,26 +244,25 @@ def _build_rotated_s_tasks(distances, p_values, rounds):
     return tasks
 
 
-def _build_cnot_trans_tasks(distances, p_values, rounds):
+def _build_cnot_trans_tasks(distances, p_values, rounds, *, noise_model="circuit_level", custom_params=None):
     """Transversal CNOT: 5 sub-experiments."""
     tasks = []
     for (sub, ic, it, mc, mt), d, p in product(_CNOT_SUB_EXPERIMENTS, distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
-        with contextlib.redirect_stdout(io.StringIO()):
-            exp = CNOTTransExperiment(
-                code_patch_class=UnrotatedSurfaceCode,
-                extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
-                code_params_control={"distance": d},
-                offset_target=(2 * d + 2, 0),
-                initial_basis_control=ic,
-                initial_basis_target=it,
-                measure_basis_control=mc,
-                measure_basis_target=mt,
-                rounds_before=rounds,
-                rounds_after=rounds,
-                noise_params=noise,
-            )
-            circuit = exp.build()
+        noise = benchmark_noise(p, noise_model, custom_params)
+        exp = CNOTTransExperiment(
+            code_patch_class=UnrotatedSurfaceCode,
+            extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
+            code_params_control={"distance": d},
+            offset_target=(2 * d + 2, 0),
+            initial_basis_control=ic,
+            initial_basis_target=it,
+            measure_basis_control=mc,
+            measure_basis_target=mt,
+            rounds_before=rounds,
+            rounds_after=rounds,
+            noise_params=noise, noise_model=noise_model,
+        )
+        circuit = exp.build()
         meta = {
             "gate": "CNOT_trans",
             "sub_experiment": sub,
@@ -272,7 +276,7 @@ def _build_cnot_trans_tasks(distances, p_values, rounds):
     return tasks
 
 
-def _build_cnot_ls_tasks(distances, p_values, rounds, protocol):
+def _build_cnot_ls_tasks(distances, p_values, rounds, protocol, *, noise_model="circuit_level", custom_params=None):
     """
     Lattice Surgery CNOT: 5 sub-experiments.
 
@@ -283,23 +287,22 @@ def _build_cnot_ls_tasks(distances, p_values, rounds, protocol):
     ancilla_init = "X" if protocol == "ZZ_XX" else "Z"  # |+⟩ for ZZ_XX, |0⟩ for XX_ZZ
     tasks = []
     for (sub, ic, it, mc, mt), d, p in product(_CNOT_SUB_EXPERIMENTS, distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
-        with contextlib.redirect_stdout(io.StringIO()):
-            exp = CNOTLSExperiment(
-                patch_configs={
-                    "c": {"distance": d},
-                    "t": {"distance": d},
-                    "a": {"distance": d},
-                },
-                offset_ta=(2 * d, 0),
-                offset_ca=(0, 2 * d),
-                initial_state_dict={"a": ancilla_init, "c": ic, "t": it},
-                measure_state_dict={"a": "Z", "c": mc, "t": mt},  # ancilla meas auto-corrected
-                extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
-                rounds=rounds,
-                noise_params=noise,
-            )
-            circuit = exp.build()
+        noise = benchmark_noise(p, noise_model, custom_params)
+        exp = CNOTLSExperiment(
+            patch_configs={
+                "c": {"distance": d},
+                "t": {"distance": d},
+                "a": {"distance": d},
+            },
+            offset_ta=(2 * d, 0),
+            offset_ca=(0, 2 * d),
+            initial_state_dict={"a": ancilla_init, "c": ic, "t": it},
+            measure_state_dict={"a": "Z", "c": mc, "t": mt},  # ancilla meas auto-corrected
+            extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
+            rounds=rounds,
+            noise_params=noise, noise_model=noise_model,
+        )
+        circuit = exp.build()
         gate_label = f"CNOT_LS_{protocol}"
         meta = {
             "gate": gate_label,
@@ -314,11 +317,11 @@ def _build_cnot_ls_tasks(distances, p_values, rounds, protocol):
     return tasks
 
 
-def _build_memory_tasks(distances, p_values):
+def _build_memory_tasks(distances, p_values, *, noise_model="circuit_level", custom_params=None):
     """Memory baseline: Z and X basis, rounds = d. Plot scripts average the two."""
     tasks = []
     for basis, d, p in product(["Z", "X"], distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        noise = benchmark_noise(p, noise_model, custom_params)
         with contextlib.redirect_stdout(io.StringIO()):
             system = QECSystem()
             system.add_patch(UnrotatedSurfaceCode(distance=d), name="patch")
@@ -327,7 +330,7 @@ def _build_memory_tasks(distances, p_values):
                 extraction_block_class=UnrotatedSurfaceCodeExtractionBlock,
                 rounds=d,
                 noise_params=noise,
-                noise_model="circuit_level",
+                noise_model=noise_model,
                 basis=basis,
             )
             circuit = exp.build()
@@ -344,7 +347,7 @@ def _build_memory_tasks(distances, p_values):
     return tasks
 
 
-def _build_ghz_tasks(distances, p_values, rounds):
+def _build_ghz_tasks(distances, p_values, rounds, *, noise_model="circuit_level", custom_params=None):
     """GHZ state prep: patch1=|+>, patch2=patch3=|0>; CNOT(1,2) + CNOT(1,3).
     Sub-experiments: measure in Z,Z,Z (test ZZ correlations) and X,X,X (test XX).
     """
@@ -354,7 +357,7 @@ def _build_ghz_tasks(distances, p_values, rounds):
         ("GHZ_XXX", "X", "X", "X"),
     ]
     for (sub, mb1, mb2, mb3), d, p in product(sub_exps, distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        noise = benchmark_noise(p, noise_model, custom_params)
         dx = 4 * (2 * d - 1) - 2
         with contextlib.redirect_stdout(io.StringIO()):
             exp = GHZExperiment(
@@ -370,7 +373,7 @@ def _build_ghz_tasks(distances, p_values, rounds):
                 rounds_before=rounds,
                 rounds_after=rounds,
                 noise_params=noise,
-                noise_model="circuit_level",
+                noise_model=noise_model,
             )
             circuit = exp.build()
         meta = {
@@ -387,7 +390,8 @@ def _build_ghz_tasks(distances, p_values, rounds):
 
 
 def _build_two_patch_ls_tasks(
-    distances, p_values, rounds, code_family, interaction_type
+    distances, p_values, rounds, code_family, interaction_type, *,
+    noise_model="circuit_level", custom_params=None,
 ):
     """Build an XX or ZZ two-patch LS sweep for one surface-code family."""
     if interaction_type not in ("XX", "ZZ"):
@@ -412,7 +416,7 @@ def _build_two_patch_ls_tasks(
         raise ValueError(f"Unsupported surface-code family: {code_family!r}")
 
     for d, p in product(distances, p_values):
-        noise = NoiseConfig(p_meas=p, p_reset=p, p_1q=p, p_2q=p, p_idle=p)
+        noise = benchmark_noise(p, noise_model, custom_params)
         step = 2 * d + 2 if code_family == "rotated" else 2 * (2 * d - 1)
         offset = (step, 0) if interaction_type == "XX" else (0, step)
         task_rounds = d if code_family == "rotated" else rounds
@@ -428,7 +432,7 @@ def _build_two_patch_ls_tasks(
                 measure_state_patch2=meas2,
                 rounds=task_rounds,
                 noise_params=noise,
-                noise_model="circuit_level",
+                noise_model=noise_model,
                 **code_options,
             )
             circuit = exp.build()
@@ -445,67 +449,50 @@ def _build_two_patch_ls_tasks(
     return tasks
 
 
-def build_tasks(gate: str, distances, p_values, rounds: int):
+def build_tasks(
+    gate: str,
+    distances,
+    p_values,
+    rounds: int,
+    *,
+    noise_model: str = "circuit_level",
+    custom_params=None,
+):
     """Dispatch to the appropriate circuit builder for a given gate."""
+    noise_kwargs = {"noise_model": noise_model, "custom_params": custom_params}
     if gate == "H":
-        return _build_h_tasks(distances, p_values, rounds)
+        return _build_h_tasks(distances, p_values, rounds, **noise_kwargs)
     if gate == "S_oneway":
-        return _build_s_oneway_tasks(distances, p_values, rounds)
+        return _build_s_oneway_tasks(distances, p_values, rounds, **noise_kwargs)
     if gate == "S_roundtrip":
-        return _build_s_roundtrip_tasks(distances, p_values, rounds)
+        return _build_s_roundtrip_tasks(distances, p_values, rounds, **noise_kwargs)
     if gate == "S_rotated":
-        return _build_rotated_s_tasks(distances, p_values, rounds)
+        return _build_rotated_s_tasks(distances, p_values, rounds, **noise_kwargs)
     if gate == "CNOT_trans":
-        return _build_cnot_trans_tasks(distances, p_values, rounds)
+        return _build_cnot_trans_tasks(distances, p_values, rounds, **noise_kwargs)
     if gate == "CNOT_LS_ZZ_XX":
-        return _build_cnot_ls_tasks(distances, p_values, rounds, "ZZ_XX")
+        return _build_cnot_ls_tasks(distances, p_values, rounds, "ZZ_XX", **noise_kwargs)
     if gate == "CNOT_LS_XX_ZZ":
-        return _build_cnot_ls_tasks(distances, p_values, rounds, "XX_ZZ")
+        return _build_cnot_ls_tasks(distances, p_values, rounds, "XX_ZZ", **noise_kwargs)
     if gate == "GHZ":
-        return _build_ghz_tasks(distances, p_values, rounds)
+        return _build_ghz_tasks(distances, p_values, rounds, **noise_kwargs)
     if gate in ALL_GATES and gate.startswith("TwoPatchLS_"):
         code_family, interaction_type = gate.removeprefix("TwoPatchLS_").split("_")
         return _build_two_patch_ls_tasks(
-            distances, p_values, rounds, code_family, interaction_type
-        )
+            distances, p_values, rounds, code_family, interaction_type, **noise_kwargs)
     if gate == "memory":
-        return _build_memory_tasks(distances, p_values)
+        return _build_memory_tasks(distances, p_values, **noise_kwargs)
     raise ValueError(f"Unknown gate: {gate!r}. Available: {ALL_GATES}")
 
 
 # ── Decoder config ────────────────────────────────────────────────────────────
 
-def _decoder_config(name: str) -> DecoderConfig:
-    if name in ("pymatching", "ionq-beam-search"):
-        return DecoderConfig(name=name, backend="cpu")
-    if name == "mwpf":
-        return DecoderConfig(name="mwpf", backend="cpu",
-                             params={"cluster_node_limit": 50})
-    if name == "cpu_bposd":
-        return DecoderConfig(name="bposd", backend="cpu", params={
-            "max_iterations": 1000, "osd_order": 10,
-            "bp_method": "min_sum", "ms_scaling_factor": 0,
-            "osd_method": "osd_cs",
-        })
-    if name == "gpu_bposd":
-        return DecoderConfig(name="nv-qldpc-decoder", backend="gpu", params={
-            "max_iterations": 1000, "osd_order": 10,
-            "bp_method": "min_sum", "ms_scaling_factor": 0,
-            "osd_method": "osd_cs", "use_osd": True,
-        })
-    raise ValueError(
-        f"Unknown decoder: {name!r}. "
-        "Choose: cpu_bposd, gpu_bposd, pymatching, mwpf, ionq-beam-search"
-    )
+def _decoder_config(name, backend=None, mle_time_limit=0.0, on_decode_failure="error"):
+    return benchmark_decoder(name, backend, mle_time_limit=mle_time_limit,
+                             on_decode_failure=on_decode_failure)
 
 
 # ── Checkpointing ─────────────────────────────────────────────────────────────
-
-_RESULT_COLS = frozenset({
-    "shots", "post_selected_shots", "post_selection_rate",
-    "errors", "logical_error_rate", "seconds", "decoder",
-})
-
 
 def _ck_key(row: dict) -> tuple:
     """Stable checkpoint key from input-only fields.
@@ -514,80 +501,55 @@ def _ck_key(row: dict) -> tuple:
     missing fields as NaN. Normalize those cases so a persisted task still
     matches the metadata produced by a fresh benchmark run.
     """
-    key = []
-    for field, value in sorted(row.items()):
-        if field in _RESULT_COLS or pd.isna(value):
-            continue
-        if isinstance(value, Real) and not isinstance(value, bool):
-            value = f"{float(value):.12g}"
-        else:
-            value = str(value)
-        key.append((field, value))
-    return tuple(key)
+    fields = {
+        "gate", "sub_experiment", "init_basis", "measure_basis", "d", "rounds", "p",
+        "noisy_gate_count", "seed",
+        "noise_model", "noise_custom_params", "backend", "decoder_params",
+        "on_decode_failure", "decoder_time_limit", "observable_failure_mode", "config_sha256",
+    }
+    defaults = {"seed": 0, "noise_model": "circuit_level", "noise_custom_params": "{}",
+                "observable_failure_mode": "any"}
+    historical = row.get("decoder")
+    if pd.isna(row.get("backend")) and historical in {
+        "pymatching", "mwpf", "bposd", "nv-qldpc-decoder", "ionq-beam-search",
+    }:
+        # The original GPU preset recorded the underlying registry name.
+        gpu = historical == "nv-qldpc-decoder"
+        defaults.update(decoder_metadata(benchmark_decoder("bposd" if gpu else historical,
+                                                           "gpu" if gpu else "cpu")))
+        if gpu:
+            row = {**row, "decoder_name": "bposd"}
+    if "decoder_name" in defaults or (row.get("backend") and not pd.isna(row["backend"])):
+        fields.add("decoder_name")
+    return checkpoint_key(row, fields, defaults)
 
 
 def _load_done_keys(path: Path) -> set:
-    if not path.exists():
+    if not path.exists() or not path.stat().st_size:
         return set()
-    df = pd.read_csv(path)
-    return {_ck_key(r) for r in df.to_dict("records")}
-
-
-def _ensure_csv_schema(path: Path, rows) -> None:
-    """Add newly introduced fields to an existing results CSV."""
-    if not path.exists():
-        return
-
-    df = pd.read_csv(path)
-    missing = []
-    for row in rows:
-        for field in row:
-            if field not in df.columns and field not in missing:
-                missing.append(field)
-    if not missing:
-        return
-
-    columns = list(df.columns)
-    insert_at = next(
-        (i for i, field in enumerate(columns) if field in _RESULT_COLS),
-        len(columns),
-    )
-    for field in missing:
-        df.insert(insert_at, field, pd.NA)
-        insert_at += 1
-    df.to_csv(path, index=False)
+    return {_ck_key(r) for r in checkpoint_rows(path)}
 
 
 def _append_result_row(path: Path, row: dict) -> None:
-    """Append one result while preserving the CSV's column alignment."""
-    _ensure_csv_schema(path, [row])
-    exists = path.exists()
-    columns = (
-        list(pd.read_csv(path, nrows=0).columns)
-        if exists
-        else list(row)
-    )
-    pd.DataFrame([row], columns=columns).to_csv(
-        path,
-        mode="a",
-        header=not exists,
-        index=False,
-    )
+    append_result_row(path, row)
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
+
 def _run_tasks(task_list, decoder_cfg: DecoderConfig,
                max_shots: int, max_errors: int,
                num_workers: int, output_path: Path,
-               *, batch_size: int = 1_000) -> None:
+               *, batch_size: int = 1_000, seed: int = 0) -> None:
     """
     Run a list of (circuit, metadata) tuples with per-task checkpointing.
     Already-completed tasks (by checkpoint key) are skipped on resume.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _ensure_csv_schema(output_path, (metadata for _, metadata in task_list))
+    task_list = [(c, {**m, **decoder_metadata(decoder_cfg), "seed": seed,
+                      "observable_failure_mode": "any"})
+                 for c, m in task_list]
     done_keys = _load_done_keys(output_path)
     if done_keys:
         print(f"  Checkpoint: {len(done_keys)} task(s) already done, skipping.")
@@ -606,6 +568,7 @@ def _run_tasks(task_list, decoder_cfg: DecoderConfig,
         max_errors=max_errors,
         batch_size=batch_size,
         num_workers=num_workers,
+        seed=seed,
         print_progress=True,
     )
 
@@ -616,9 +579,12 @@ def _run_tasks(task_list, decoder_cfg: DecoderConfig,
         t0 = time.perf_counter()
         stats = pipeline.run(circuit, meta)
         elapsed = time.perf_counter() - t0
-
         row = {
             **meta,
+            "mode": "decode",
+            "sweep_coordinates": {"gate": meta["gate"], "sub_experiment": meta["sub_experiment"],
+                                  "distance": meta["d"], "p": meta["p"]},
+            **dict.fromkeys(("p_1q", "p_2q", "p_idle", "p_meas", "p_reset"), meta["p"]),
             "shots": stats.shots,
             "post_selected_shots": stats.post_selected_shots,
             "post_selection_rate": stats.post_selection_rate,
@@ -663,17 +629,13 @@ def main():
     )
     ap.add_argument(
         "--decoder",
-        choices=["cpu_bposd", "gpu_bposd", "pymatching", "mwpf", "ionq-beam-search"],
+        choices=["bposd", "nv-qldpc-decoder", "mle-ilp", "cpu_bposd", "gpu_bposd", "pymatching", "mwpf", "ionq-beam-search"],
         default=None,
         help=(
             "Decoder to use (default: pymatching for memory and surface-code "
-            "LS, cpu_bposd for other gates)"
+            "LS, bposd on CPU for other gates)"
         ),
     )
-    ap.add_argument("--max-shots",   type=int, default=1_000_000_000)
-    ap.add_argument("--max-errors",  type=int, default=100)
-    ap.add_argument("--num-workers", type=int, default=8)
-    ap.add_argument("--batch-size", type=int, default=1_000)
     ap.add_argument(
         "--quick", action="store_true",
         help="Quick mode: distances=[3,5], 2 p-values, max_shots=100k, max_errors=20",
@@ -685,7 +647,11 @@ def main():
             "an S_rotated-only run and results/logical_ops_results.csv otherwise."
         ),
     )
+    add_run_options(ap)
+    if run_config_cli(ap):
+        return
     args = ap.parse_args()
+    validate_run_options(ap, args)
 
     # Quick mode overrides
     if args.quick:
@@ -737,20 +703,32 @@ def main():
         ):
             decoder_name = "pymatching"
         else:
-            decoder_name = "cpu_bposd"
+            decoder_name = "bposd"
 
         print(f"Decoder    : {decoder_name}")
 
-        tasks = build_tasks(gate, distances, p_values, args.rounds)
+        tasks = build_tasks(
+            gate,
+            distances,
+            p_values,
+            args.rounds,
+            noise_model=args.noise_model, custom_params=args.noise_custom_params,
+        )
+        for _, meta in tasks:
+            if gate == "memory":
+                meta["basis"] = meta["init_basis"]
+            meta["noise_model"] = args.noise_model
+            meta["noise_custom_params"] = json.dumps(args.noise_custom_params, sort_keys=True)
         print(f"Tasks      : {len(tasks)}")
 
         _run_tasks(
             tasks,
-            _decoder_config(decoder_name),
+            _decoder_config(decoder_name, args.backend, args.mle_time_limit, args.on_decode_failure),
             max_shots, max_errors,
             args.num_workers,
             output_path,
             batch_size=args.batch_size,
+            seed=args.seed,
         )
 
     print("\n" + "=" * 60)

@@ -2,8 +2,9 @@
 
 **Module:** `lightstim.simulation.decoder_backend`
 
-The simulation layer takes a built `stim.Circuit` and runs it through a
-sample → post-select → decode → stats pipeline.
+`SimulationPipeline` takes a built `stim.Circuit` and runs it through a
+sample → post-select → decode → stats pipeline. The optional `ClifftSampler`
+below also accepts Clifford+T circuit text for standalone sampling.
 
 ---
 
@@ -42,13 +43,126 @@ pipeline = SimulationPipeline(
 stats: SimulationStats = pipeline.run(circuit)
 ```
 
+### Enumerate physical faults
+
+Use the same pipeline to enumerate faults through a fixed number of independent
+physical locations. The pipeline applies its detector, observable, target and
+decoder settings. Each section of the report contains the probability of
+exactly that fault order, including the probability that all other locations
+were quiet.
+
+```python
+report = pipeline.enumerate_faults(circuit, max_order=2)
+for row in report.per_order:
+    print(row.order, row.configurations, row.accepted_mass, row.loss_mass)
+print(report.conditional_loss, report.omitted_probability, report.full_loss_bounds)
+```
+
+`conditional_loss` conditions on **both** acceptance and the enumerated
+orders. The bounds include the remaining probability mass. A conditional
+quantity with zero possible acceptance is `None`. Each two-qubit depolarizing
+channel is one location with 15 mutually exclusive alternatives. Measurement
+faults flip the reported result, including its use in feedback, while preserving
+the quantum state after measurement. The catalogue supports independent
+`X/Y/Z_ERROR`, `DEPOLARIZE1/2`, `PAULI_CHANNEL_1/2` and noisy single-qubit,
+paired, and Pauli-product readouts. Each `MXX`, `MYY` or `MZZ` pair must
+address two distinct qubits, including when a target is inverted. Correlated-error
+chains, heralded noise, and noisy `MPAD` raise an error.
+
+Clifford inputs use Stim's deterministic detector and observable flip signatures,
+relative to the noiseless reference. Physical T/T† text or an `EXP_VAL` probe
+selects exhaustive Born-branch propagation. The Born evaluator applies gates
+to sparse complex amplitudes and integrates the supported measurement, reset,
+and feedback branches for each **joint** fault set. Arithmetic is floating
+point. Ordinary Clifford input can also request `backend="born"` to use this
+calculation with Stim's reference parities. Extended inputs use raw record
+parities with zero reference by default. Supply `detector_reference` and
+`observable_reference` when the expected parities differ.
+
+```python
+import math
+from lightstim.simulation.decoder_backend import SimulationPipeline
+
+# A single T prepares (|0> + exp(i*pi/4)|1>)/sqrt(2) from |+>.
+# EXP_VAL returns the conditional Pauli expectations in declaration order.
+physical = "H 0\nX_ERROR(0.02) 0\nT 0\nX_ERROR(0.02) 0\nEXP_VAL X0 Y0"
+
+def magic_state_infidelity(corrected_target_bits, expectations):
+    x, y = expectations
+    return (1 - (x + y) / math.sqrt(2)) / 2
+
+report = SimulationPipeline().enumerate_faults(physical, max_order=2, loss=magic_state_infidelity)
+assert math.isclose(report.conditional_loss, 0.01)
+```
+
+With a decoder, pass `decoder_model=...` for extended physical text containing
+detectors or observable frame bits. The caller is responsible for matching
+detector order, logical labels and references to that model. The enumerator
+caches each observed syndrome's prediction and success flag, so the decoder
+must return the same decision and flag for repeated inputs. The optional `loss(corrected_target_bits,
+expectations)` receives corrected bits in target-index order and returns
+a loss in [0, 1]. The default is one if any targeted observable is flipped.
+An `EXP_VAL` probe requires an explicit loss so that the target is defined.
+For a deterministic Clifford circuit the pipeline builds its usual decoder
+model automatically. An explicit model also works for channels whose exact
+physical enumeration is supported but whose DEM Stim cannot directly produce
+for the configured decoder.
+
+For identity recovery, or to replay individual witnesses, use the standalone
+analyzer. Pass the same decoder configuration, detector selection and reference
+bits to reproduce a decoded pipeline experiment.
+
+```python
+from lightstim.analysis.faults import FaultEnumerator
+
+audit = FaultEnumerator(circuit)
+report = audit.enumerate(max_order=2)
+for witness in report.witnesses:
+    for site, alternative in witness.faults:
+        location = report.locations[site]
+        print(location.instruction_index, location.target_start, location.alternatives[alternative])
+    assert audit.evaluate(witness.faults) == witness.response
+```
+
+Witness indices refer to this flattened circuit's positive-rate physical
+catalogue. Witnesses include up to `witness_limit` harmful configurations per
+order. Born witnesses must have conditional loss above
+`QuantumLimits.roundoff_tolerance`. The report retains the computed numeric losses.
+`max_configurations` bounds the number of physical configurations through
+`max_order`. `QuantumLimits` bounds circuit expansion, live state sizes,
+branches and work for each fixed-fault propagation. The generic Born backend is
+intended for small circuits and bounded witnesses. An exceeded limit raises
+an exception. Enumeration works with the core LightStim dependencies.
+
 ### Sampling source
 
-All worker counts sample the supplied noisy circuit using
-`circuit.compile_detector_sampler()`. The detector error model (DEM) is used to
-configure the decoder, not to generate the evaluation samples. Changing the
-worker count preserves the sampling model, not the exact random draws. A failed
-worker raises `RuntimeError` rather than returning incomplete statistics.
+The sampler draws from the supplied noisy circuit. The detector error model
+(DEM) configures the decoder separately. With `sampler_backend="stim"` (the
+default), each worker uses `circuit.compile_detector_sampler()`.
+
+For Clifford circuits whose instructions Clifft supports, choose
+`sampler_backend="clifft"` to draw the measurement records with Clifft.
+Install Clifft in the Python 3.12+ environment running LightStim. The sampler
+uses that environment by default. The [installation instructions](#clifftsampler)
+also cover running Clifft in a separate environment.
+The pipeline converts those records to detector events and observable flips
+relative to Stim's noiseless reference. Both backends then use the same
+post-selection, decoder, and error accounting.
+
+```python
+pipeline = SimulationPipeline(
+    sampler_backend="clifft",
+    decoder_config=DecoderConfig("pymatching"),
+    num_workers=2,
+)
+stats = pipeline.run(clifford_circuit)
+```
+
+Samples follow the same model across worker counts. Work scheduling can change
+the exact draws. A failed worker raises `RuntimeError`. The Clifft pipeline requires
+measurement record targets in `OBSERVABLE_INCLUDE`. Clifft 0.7.0 reports
+unsupported instructions such as heralded channels at compilation. For extended
+Clifford+T circuit text and `EXP_VAL`, use the standalone sampler below.
 
 ### Post-selection modes
 
@@ -72,6 +186,57 @@ For compatibility, `True` also enables DEM decomposition with
 the chosen decoder must support them. These settings apply to both single- and
 multi-worker execution and do not change the circuit used for sampling. The
 pipeline emits a warning when this option is enabled.
+
+---
+
+## `ClifftSampler`
+
+`lightstim.simulation.clifft_backend.ClifftSampler` samples physical Clifford+T
+circuit text in batches. Install the tested Clifft version in the Python 3.12+
+environment running LightStim.
+
+```bash
+python -m pip install clifft==0.7.0
+```
+
+```python
+from lightstim.simulation.clifft_backend import ClifftSampler
+
+circuit = "RX 0\nT 0\nEXP_VAL X0\nEXP_VAL Y0\nMX 0\n"
+with ClifftSampler(circuit, seed=42) as sampler:
+    batch = sampler.sample_batch(1024)
+
+print(batch.expectations.mean(axis=0))  # [1/sqrt(2), 1/sqrt(2)]
+```
+
+If LightStim runs on Python 3.10 or 3.11, install Clifft in a separate Python
+3.12+ environment and set `CLIFFT_PYTHON` to that environment's Python executable
+before running LightStim. This setting applies to both the sampler and the
+pipeline. Standalone sampler callers can also specify `python_executable`
+directly if they need a per-instance override.
+
+The sampler compiles once per instance. Each `ClifftBatch` array has one row per
+attempted shot and zero columns if that output is absent from the circuit.
+
+| Field | Meaning |
+| --- | --- |
+| `measurements` | Classical measurement records in circuit order |
+| `detectors` | Raw XOR parities of the declared detector records |
+| `observables` | Raw XOR parities at the declared observable indices |
+| `expectations` | Values of the explicitly supplied `EXP_VAL` probes, in circuit order |
+
+Raw parities can be nonzero on ideal circuits. An ideal true-T circuit can also
+have intrinsically random logical readout. Interpret results using the
+experiment's reference, acceptance policy, and metric. This low-level sampler
+leaves that interpretation to the caller, independently of the Stim LER pipeline.
+Instruction tags are stripped from the transport text; gates, noise, and record
+targets are preserved.
+
+The `threads` option defaults to one worker thread. `max_peak_rank` limits the
+peak rank reported by Clifft (default `24`), and `timeout` limits each compile or
+sample request in seconds (default `300`). On a failed request the sampler
+closes its worker. Use the same seed, batch sizes, thread count, and runtime to
+replay a run.
 
 ---
 
