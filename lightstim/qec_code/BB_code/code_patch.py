@@ -70,6 +70,8 @@ class BBCode(QECPatch):
         Example: [[3,0],[0,1],[0,2]] represents x^3 + y + y^2.
     B : list[list[int]]
         3x2 polynomial matrix, same format as A.
+    logical_preset : str, optional
+        Use ``"tour_de_gross"`` for the paper's ordered gross-code logical basis.
     shift : tuple, optional (default: (0, 0))
         Global coordinate offset.
     d : int, optional
@@ -100,6 +102,9 @@ class BBCode(QECPatch):
         self.h = self.params.get('h')
         self.alpha = self.params.get('alpha')
         self.beta = self.params.get('beta')
+        self.logical_preset = self.params.get('logical_preset')
+        if self.logical_preset not in (None, "tour_de_gross"):
+            raise ValueError(f"Unknown BB logical preset: {self.logical_preset!r}")
 
         if self.l is None or self.m is None:
             raise ValueError("Both 'l' and 'm' must be provided.")
@@ -217,6 +222,10 @@ class BBCode(QECPatch):
 
     def _build_logical_operators(self):
         """Dispatch to polynomial or numerical logical construction."""
+        if self.logical_preset == "tour_de_gross":
+            self._build_tour_de_gross_logicals()
+            return
+
         # 1. Explicit polynomial params provided
         if self.f is not None and self.g is not None and self.h is not None:
             self._build_logical_operators_polynomial()
@@ -243,6 +252,38 @@ class BBCode(QECPatch):
             "(f,g,h,alpha,beta). Either provide them as params, use a smaller code "
             "(l*m <= 200 for numerical fallback), or add this (l,m,A,B) to logical_presets."
         )
+
+    def _build_tour_de_gross_logicals(self):
+        """Register the paper's 1..12 logical order, Eqs. (32), (34), (35)."""
+        from .logical_presets import TOUR_DE_GROSS_CONFIG, TOUR_DE_GROSS_LOGICALS
+
+        def reduced_terms(terms):
+            return {(a % self.l, b % self.m) for a, b in terms}
+
+        if (self.l, self.m) != (12, 6) or any(
+            reduced_terms(getattr(self, name)) != reduced_terms(TOUR_DE_GROSS_CONFIG[name])
+            for name in ("A", "B")
+        ):
+            raise ValueError("tour_de_gross requires the gross-code polynomials of Eq. (27).")
+        if any(v is not None for v in (self.f, self.g, self.h, self.alpha, self.beta)):
+            raise ValueError("Do not combine tour_de_gross with explicit polynomial logicals.")
+        basis = TOUR_DE_GROSS_LOGICALS
+        self.num_logicals = 12
+
+        def register_logical(op, shift, left, right):
+            coords = _multiply_monomial_by_polynomial(shift, left, self.l, self.m, 'L')
+            coords += _multiply_monomial_by_polynomial(shift, right, self.l, self.m, 'R')
+            self.create_stim_logical({coord: op for coord in coords}, op)
+
+        def transpose(poly):
+            return _transpose_exponents(poly, self.l, self.m)
+
+        for a, b in zip(basis['alpha'], basis['beta']):
+            register_logical('X', a, basis['p'], basis['q'])
+            register_logical('Z', [b[0] + 1, b[1] + 1], transpose(basis['s']), transpose(basis['r']))
+        for a, b in zip(basis['alpha'], basis['beta']):
+            register_logical('X', [-b[0], -b[1]], basis['r'], basis['s'])
+            register_logical('Z', [1 - a[0], 1 - a[1]], transpose(basis['q']), transpose(basis['p']))
 
     def _build_logical_operators_polynomial(self):
         """Build logical X and Z from polynomial params (f,g,h,alpha,beta). O(k) in code size."""

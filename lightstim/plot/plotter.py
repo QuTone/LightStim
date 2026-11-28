@@ -4,7 +4,6 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
 
 from .config import PlotConfig
 from .styles import apply_theme, get_palette, PALETTE_DISTANCE
@@ -20,6 +19,8 @@ def plot_custom(
     Create a configurable plot from simulation results.
     Supports line plots with x, y, hue, optional facets, and error bars.
     """
+    import seaborn as sns
+
     apply_theme(cfg.figsize)
     df = sanitize_df(df, cfg.x, cfg.y, cfg.hue)
     if cfg.error_bars:
