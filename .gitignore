@@ -69,6 +69,9 @@ Thumbs.db
 # (reviewers compare their local results/ run against these)
 !paper_artifact/*/precompute/*.json
 !paper_artifact/*/precompute/*.csv
+!benchmarks/logical_ops/reference/bb_ppm/manifest.schema.json
+!benchmarks/logical_ops/reference/bb_ppm/y1_large_20261124/results.csv
+!benchmarks/logical_ops/reference/bb_ppm/y1_large_20261124/results.manifest.json
 
 # Local simulation outputs (not pushed; archived separately)
 benchmarks/*/results/

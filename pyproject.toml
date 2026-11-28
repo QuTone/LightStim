@@ -60,6 +60,7 @@ dev = [
     "ipykernel",
     "matplotlib",
     "seaborn",
+    "resvg-py>=0.5",
 ]
 
 [tool.setuptools]

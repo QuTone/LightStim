@@ -117,6 +117,30 @@ low-error points are not benchmark data.
 
 ## Related benchmarks
 
+### Gross-code Pauli product measurements
+
+The [BB PPM notebook](../../notebooks/LogicalOps/logical_PPM_BB_code.ipynb)
+builds the logical `Y1` measurement and plots the recorded full-circuit error
+rates. At `p = 0.0005`, `0.001`, and `0.002`, Relay-BP produced 4 failures
+in 1,000,000 shots, 19 in 1,000,000, and 116 in 100,000, respectively.
+The [recorded counts](reference/bb_ppm/y1_large_20261124/results.csv) and
+[run configuration](reference/bb_ppm/y1_large_20261124/results.manifest.json)
+are included in the repository.
+
+To run a five-shot check using the same target and noise model, install
+`relay-bp[stim]==0.2.2` and run the following from the repository root.
+
+```bash
+python benchmarks/logical_ops/run_bb_ppm.py --target Y1 --p-values 0.001 --shots 5 --workers 1 \
+    --run-dir benchmarks/logical_ops/results/bb_y1_check \
+    --output benchmarks/logical_ops/results/bb_y1_check/results.csv
+```
+
+The runner checkpoints completed shots. Use a new run directory when changing
+the target, noise points, shot budgets, or decoder configuration.
+
+### State injection
+
 For state injection benchmarks (Z/X/Y state injection into the unrotated surface code),
 see [`benchmarks/state_injection/`](../state_injection/README.md).
 

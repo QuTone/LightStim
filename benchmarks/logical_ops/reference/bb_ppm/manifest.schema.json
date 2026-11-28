@@ -1,0 +1,368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BB PPM recorded aggregate results, version 1",
+  "description": "Structural schema for fixed-shot BB PPM aggregate results. plot_bb_ppm.read_results additionally verifies CSV hashes, exact row equality, count identities, exact binomial intervals, shot budgets, and experiment identity. Relative archive paths identify local provenance files that are not bundled with the example.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "results_csv",
+    "requested_shots_by_p",
+    "rows",
+    "experiment",
+    "decoder",
+    "resources",
+    "points"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "bb_ppm_recorded_results"
+    },
+    "status": {
+      "enum": [
+        "partial",
+        "complete"
+      ]
+    },
+    "results_csv": {
+      "type": "object",
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^[^/\\\\]+\\.csv$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "requested_shots_by_p": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "p",
+          "shots",
+          "logical_failures",
+          "nonconverged",
+          "converged_correct",
+          "converged_logical_failure",
+          "unconverged_correct_observables",
+          "unconverged_logical_failure",
+          "ler",
+          "ler_95_exact_two_sided_low",
+          "ler_95_exact_two_sided_high",
+          "ler_95_one_sided_upper",
+          "nonconvergence_rate",
+          "sum_decode_cpu_seconds",
+          "source_manifest_sha256",
+          "decoder_manifest_sha256"
+        ],
+        "properties": {
+          "p": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "exclusiveMaximum": 1
+          },
+          "shots": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "logical_failures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nonconverged": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "converged_correct": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "converged_logical_failure": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unconverged_correct_observables": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unconverged_logical_failure": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ler": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "ler_95_exact_two_sided_low": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "ler_95_exact_two_sided_high": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "ler_95_one_sided_upper": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "nonconvergence_rate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "sum_decode_cpu_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "source_manifest_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "decoder_manifest_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "required": [
+        "target",
+        "compiled_plan_sha256",
+        "clean_circuit_sha256",
+        "noise_model",
+        "rounds",
+        "initial_state",
+        "final_basis"
+      ],
+      "properties": {
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "compiled_plan_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "clean_circuit_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "noise_model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "initial_state": {
+          "type": "string"
+        },
+        "final_basis": {
+          "type": "string"
+        },
+        "measurement_instructions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "shift_instructions": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "decoder": {
+      "type": "object",
+      "required": [
+        "name",
+        "parameters"
+      ],
+      "properties": {
+        "name": {
+          "const": "relay-bp"
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": [
+        "sequence",
+        "physical_qubits",
+        "ticks",
+        "detectors",
+        "observables",
+        "plan_sha256",
+        "circuit_sha256"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "string"
+        },
+        "physical_qubits": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ticks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "detectors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observables": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "plan_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "circuit_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "p0_silent": {
+          "type": "boolean"
+        }
+      }
+    },
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "p"
+        ],
+        "properties": {
+          "p": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "exclusiveMaximum": 1
+          },
+          "source_manifest_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "decoder_manifest_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_manifest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?!/)(?![A-Za-z]:)[^\\\\]+$"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          },
+          "decoder_manifest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?!/)(?![A-Za-z]:)[^\\\\]+$"
+              },
+              {
+                "type": "object"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "raw_shots_in_repository": {
+      "type": "boolean"
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "worker_processes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "threads_per_worker": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_method": {
+          "enum": [
+            "spawn",
+            "fork",
+            "forkserver"
+          ]
+        }
+      }
+    },
+    "campaign_identity": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sample_seed_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "no_outcome_based_stopping": {
+      "const": true
+    },
+    "example_only": {
+      "type": "boolean",
+      "description": "True identifies a small execution example rather than a precision low-LER measurement."
+    },
+    "description": {
+      "type": "string"
+    },
+    "local_archive": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)[^\\\\]+$"
+    },
+    "updated_utc": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

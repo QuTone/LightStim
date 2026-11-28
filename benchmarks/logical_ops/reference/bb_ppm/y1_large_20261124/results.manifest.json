@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "kind": "bb_ppm_recorded_results",
+  "status": "complete",
+  "raw_shots_in_repository": false,
+  "campaign_identity": "2bbbf4fca71e60568e8796b97002b585d1c88a9c940e84ef22dd8163fe850315",
+  "run_id": "1903aca5c0364e10b8b200648fae9a70",
+  "results_csv": {
+    "path": "results.csv",
+    "sha256": "717856c43992129473a1b333c3dad3415ed1c62ba7107ceeeaf85a8040705f05"
+  },
+  "experiment": {
+    "target": "Y1",
+    "compiled_plan_sha256": "e1662e140019b044fe0813d908dc5aea18680cd5f0571fd6451453524982ffb3",
+    "clean_circuit_sha256": "9f89848e4441e2049f7551735b5f77a119d4ae9e30d46da2b8895090c1319b77",
+    "noise_model": "circuit_level_with_idling",
+    "rounds": 10,
+    "initial_state": "X",
+    "final_basis": "X",
+    "measurement_instructions": 1,
+    "shift_instructions": 0
+  },
+  "resources": {
+    "sequence": "Y1",
+    "physical_qubits": 378,
+    "ticks": 175,
+    "detectors": 2300,
+    "observables": 11,
+    "p0_silent": true,
+    "plan_sha256": "e1662e140019b044fe0813d908dc5aea18680cd5f0571fd6451453524982ffb3",
+    "circuit_sha256": "9f89848e4441e2049f7551735b5f77a119d4ae9e30d46da2b8895090c1319b77"
+  },
+  "decoder": {
+    "name": "relay-bp",
+    "parameters": {
+      "alpha": 0.8,
+      "gamma0": 0.5,
+      "gamma_dist_interval": [
+        -0.1,
+        0.5
+      ],
+      "logging": false,
+      "num_sets": 600,
+      "pre_iter": 320,
+      "seed": 0,
+      "set_max_iter": 60,
+      "stop_nconv": 5,
+      "stopping_criterion": "nconv"
+    },
+    "version": "0.2.2"
+  },
+  "execution": {
+    "worker_processes": 96,
+    "threads_per_worker": 1,
+    "start_method": "spawn"
+  },
+  "requested_shots_by_p": {
+    "0.0005": 1000000,
+    "0.001": 1000000,
+    "0.002": 100000
+  },
+  "sample_seed_policy": "SeedSequence([sample_seed, point_index, batch_index]); fresh seed-0 Relay decoder per shot",
+  "no_outcome_based_stopping": true,
+  "points": [
+    {
+      "p": 0.0005,
+      "source_manifest_sha256": "45709abca040331078041be90a033b26d56f008e456855e9c9a28b3089f3add1",
+      "decoder_manifest_sha256": "e7e30ac46b6cd5dafc8ea1970b24ebef375c7959ff11704889bbdb93c35b9176",
+      "source_manifest": "point_000/inputs/manifest.json",
+      "decoder_manifest": "point_000/decoding/manifest.json"
+    },
+    {
+      "p": 0.001,
+      "source_manifest_sha256": "ed886be59c1b52c7208c1370efa20bee6e35eced6fa6e0a25111bd7b89a46577",
+      "decoder_manifest_sha256": "3248339072e002897af925cd8e3ecaf9758083c82adcb3795d1f7674cb7255bd",
+      "source_manifest": "point_001/inputs/manifest.json",
+      "decoder_manifest": "point_001/decoding/manifest.json"
+    },
+    {
+      "p": 0.002,
+      "source_manifest_sha256": "f9eae0d785429ac1eb969fa9f8c08070e94afc94097153f6b921a440529b2c85",
+      "decoder_manifest_sha256": "edf6db92cb5fd03dec9762fc9b83cd59a443a38aa978f7660511ac6def0fe4f4",
+      "source_manifest": "point_002/inputs/manifest.json",
+      "decoder_manifest": "point_002/decoding/manifest.json"
+    }
+  ],
+  "rows": [
+    {
+      "p": 0.0005,
+      "shots": 1000000,
+      "logical_failures": 4,
+      "nonconverged": 50,
+      "converged_correct": 999950,
+      "converged_logical_failure": 0,
+      "unconverged_correct_observables": 46,
+      "unconverged_logical_failure": 4,
+      "ler": 4e-06,
+      "nonconvergence_rate": 5e-05,
+      "ler_95_exact_two_sided_low": 1.0898664145228354e-06,
+      "ler_95_exact_two_sided_high": 1.02415567135497e-05,
+      "ler_95_one_sided_upper": 9.153495440240322e-06,
+      "sum_decode_cpu_seconds": 1541353.2411230232,
+      "source_manifest_sha256": "45709abca040331078041be90a033b26d56f008e456855e9c9a28b3089f3add1",
+      "decoder_manifest_sha256": "e7e30ac46b6cd5dafc8ea1970b24ebef375c7959ff11704889bbdb93c35b9176"
+    },
+    {
+      "p": 0.001,
+      "shots": 1000000,
+      "logical_failures": 19,
+      "nonconverged": 280,
+      "converged_correct": 999719,
+      "converged_logical_failure": 1,
+      "unconverged_correct_observables": 262,
+      "unconverged_logical_failure": 18,
+      "ler": 1.9e-05,
+      "nonconvergence_rate": 0.00028,
+      "ler_95_exact_two_sided_low": 1.1439278689686095e-05,
+      "ler_95_exact_two_sided_high": 2.967069526465139e-05,
+      "ler_95_one_sided_upper": 2.7879115866174384e-05,
+      "sum_decode_cpu_seconds": 3693145.452769491,
+      "source_manifest_sha256": "ed886be59c1b52c7208c1370efa20bee6e35eced6fa6e0a25111bd7b89a46577",
+      "decoder_manifest_sha256": "3248339072e002897af925cd8e3ecaf9758083c82adcb3795d1f7674cb7255bd"
+    },
+    {
+      "p": 0.002,
+      "shots": 100000,
+      "logical_failures": 116,
+      "nonconverged": 313,
+      "converged_correct": 99674,
+      "converged_logical_failure": 13,
+      "unconverged_correct_observables": 210,
+      "unconverged_logical_failure": 103,
+      "ler": 0.00116,
+      "nonconvergence_rate": 0.00313,
+      "ler_95_exact_two_sided_low": 0.0009586222428902025,
+      "ler_95_exact_two_sided_high": 0.0013911485602939337,
+      "ler_95_one_sided_upper": 0.001353288422566977,
+      "sum_decode_cpu_seconds": 2046235.9724549481,
+      "source_manifest_sha256": "f9eae0d785429ac1eb969fa9f8c08070e94afc94097153f6b921a440529b2c85",
+      "decoder_manifest_sha256": "edf6db92cb5fd03dec9762fc9b83cd59a443a38aa978f7660511ac6def0fe4f4"
+    }
+  ],
+  "updated_utc": "2026-11-25T14:25:21.109319+00:00",
+  "timings": {
+    "points": [
+      {
+        "p": 0.0005,
+        "shots": 1000000,
+        "mean_decode_cpu_seconds": 1.541353241123023,
+        "p95_decode_cpu_seconds": 2.9155846949985973,
+        "cohort_decode_wall_seconds": 21893.097917,
+        "cohort_shots_per_second": 45.67649602587762
+      },
+      {
+        "p": 0.001,
+        "shots": 1000000,
+        "mean_decode_cpu_seconds": 3.6931454527694907,
+        "p95_decode_cpu_seconds": 9.46772222985096,
+        "cohort_decode_wall_seconds": 45091.07885,
+        "cohort_shots_per_second": 22.177335861193306
+      },
+      {
+        "p": 0.002,
+        "shots": 100000,
+        "mean_decode_cpu_seconds": 20.46235972454948,
+        "p95_decode_cpu_seconds": 74.8802859519505,
+        "cohort_decode_wall_seconds": 52899.411089,
+        "cohort_shots_per_second": 1.890380212962223
+      }
+    ]
+  }
+}

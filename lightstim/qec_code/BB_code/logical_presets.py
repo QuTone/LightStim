@@ -2,7 +2,9 @@
 
 Keys: (l, m, tuple(A), tuple(B)) with A,B as tuples of tuples for hashability.
 
-Dispatch priority in BBCode._build_logical_operators():
+The named ``tour_de_gross`` preset selects the paper's logical basis and
+cannot be combined with explicit polynomial logicals. Without a named preset,
+BBCode._build_logical_operators() uses this order:
   1. Explicit f,g,h,alpha,beta passed to BBCode() constructor
   2. Preset lookup here (polynomial method, O(k), minimum-weight operators)
   3. Numerical fallback for l*m <= 200 (GF(2) RREF, O((lm)^3), higher-weight)
@@ -52,3 +54,23 @@ def get_preset(
     """Return preset dict for (l,m,A,B) if available, else None."""
     key = _key(l, m, A, B)
     return BB_LOGICAL_PRESETS.get(key)
+
+
+# Tour de gross, arXiv:2506.03094, Eqs. (27), (32), (34), (35).
+# This basis is intentionally named: it is not the older memory-code basis
+# above, and the paper's logical labels 1 and 7 refer to this ordering.
+TOUR_DE_GROSS_CONFIG = {
+    "l": 12, "m": 6, "d": 12,
+    "A": [[0, 0], [0, 1], [3, -1]],
+    "B": [[0, 0], [1, 0], [-1, -3]],
+    "logical_preset": "tour_de_gross",
+}
+TOUR_DE_GROSS_LOGICALS = {
+    "p": [[4, 0], [5, 0], [6, 1], [4, 2], [5, 4], [6, 5]],
+    "q": [[3, 0], [4, 0], [3, 1], [3, 2], [4, 2], [3, 5]],
+    "r": [[0, 0], [8, 0], [1, 1], [9, 1], [3, 4], [11, 4]],
+    "s": [[1, 0], [9, 0], [4, 4], [8, 4], [0, 5], [8, 5]],
+    "alpha": [[0, 0], [3, 5], [11, 5], [10, 1], [5, 4], [4, 2]],
+    "beta": [[0, 0], [2, 4], [1, 2], [2, 5], [1, 1], [3, 1]],
+    "mu": [1, 1], "nu": [1, 1],
+}
